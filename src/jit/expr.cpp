@@ -68,6 +68,7 @@ int KernelSpec::channelIndex(const std::string& name) {
     for (size_t i = 0; i < channels.size(); ++i)
         if (channels[i] == name) return static_cast<int>(i);
     channels.push_back(name);
+    channelTypes.push_back(AttribType::float32);
     return static_cast<int>(channels.size() - 1);
 }
 
@@ -82,6 +83,7 @@ std::string KernelSpec::signature() const {
     }
     s += '|';
     for (const auto& [channel, expr] : stores) s += std::to_string(channel) + ':' + std::to_string(expr) + ',';
+    for (AttribType t : channelTypes) s += static_cast<char>('0' + static_cast<int>(t));
     s += '|' + std::to_string(channels.size()) + '|' + std::to_string(paramCount);
     return s;
 }

@@ -5,6 +5,8 @@
 #include <utility>
 #include <vector>
 
+#include "jitnodes/geo/attribute.h"
+
 namespace jitnodes {
 
 // Per-element operations of the kernel IR. Values are 32-bit floats; comparison results are
@@ -31,6 +33,13 @@ enum class Op : uint8_t {
     logicalOr,
     logicalNot,
     select,  // select(mask, whenTrue, whenFalse)
+    sin,     // sin/cos/exp/log/pow are interpreter-only (no vector JIT yet)
+    cos,
+    exp,
+    log,
+    pow,
+    floor,
+    ceil,
 };
 
 struct ExprNode {
@@ -65,7 +74,8 @@ private:
 // A compilable unit: an expression graph plus which channels it reads and which it overwrites.
 struct KernelSpec {
     ExprGraph graph;
-    std::vector<std::string> channels;       // channel index -> point attribute name
+    std::vector<std::string> channels;       // channel index -> attribute name
+    std::vector<AttribType> channelTypes;    // parallel to channels; int channels convert at load/store
     std::vector<std::pair<int, int>> stores; // (channel index, expression node) written back
     int paramCount = 0;
 

@@ -23,7 +23,7 @@ public:
             for (const auto& p : paramNames_)
                 if (p == name) fail("cannot assign to parameter '" + name + "'");
             expect('=');
-            int value = expr();
+            int value = asValue(expr());
             expect(';');
             int channel = spec_.channelIndex(name);
             current_[channel] = value;
@@ -73,9 +73,22 @@ private:
         skipSpace();
         size_t start = pos_;
         if (pos_ < src_.size() && (std::isalpha(static_cast<unsigned char>(src_[pos_])) || src_[pos_] == '_')) {
-            while (pos_ < src_.size() && (std::isalnum(static_cast<unsigned char>(src_[pos_])) || src_[pos_] == '_')) ++pos_;
+            while (pos_ < src_.size() && (std::isalnum(static_cast<unsigned char>(src_[pos_])) || src_[pos_] == '_' || isComponentDot())) ++pos_;
         }
         return src_.substr(start, pos_ - start);
+    }
+
+    int asValue(int node) {
+        switch (spec_.graph.nodes()[static_cast<size_t>(node)].op) {
+            case Op::lt: case Op::gt: case Op::le: case Op::ge: case Op::eq:
+            case Op::logicalAnd: case Op::logicalOr: case Op::logicalNot:
+                return spec_.graph.select(node, spec_.graph.constant(1.0f), spec_.graph.constant(0.0f));
+            default: return node;
+        }
+    }
+
+    bool isComponentDot() const {
+        return src_[pos_] == '.' && pos_ + 1 < src_.size() && std::isalpha(static_cast<unsigned char>(src_[pos_ + 1]));
     }
 
     int expr() { return ternary(); }
@@ -181,6 +194,13 @@ private:
         if (fn == "max") { need(2); return g.binary(Op::max, args[0], args[1]); }
         if (fn == "abs") { need(1); return g.unary(Op::abs, args[0]); }
         if (fn == "sqrt") { need(1); return g.unary(Op::sqrt, args[0]); }
+        if (fn == "sin") { need(1); return g.unary(Op::sin, args[0]); }
+        if (fn == "cos") { need(1); return g.unary(Op::cos, args[0]); }
+        if (fn == "exp") { need(1); return g.unary(Op::exp, args[0]); }
+        if (fn == "log") { need(1); return g.unary(Op::log, args[0]); }
+        if (fn == "floor") { need(1); return g.unary(Op::floor, args[0]); }
+        if (fn == "ceil") { need(1); return g.unary(Op::ceil, args[0]); }
+        if (fn == "pow") { need(2); return g.binary(Op::pow, args[0], args[1]); }
         if (fn == "clamp") { need(3); return g.binary(Op::min, g.binary(Op::max, args[0], args[1]), args[2]); }
         if (fn == "lerp") {
             need(3);

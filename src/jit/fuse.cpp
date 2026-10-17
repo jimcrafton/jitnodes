@@ -25,7 +25,13 @@ std::vector<int> copyGraph(ExprGraph& dst, const KernelSpec& src, const std::vec
             case Op::neg:
             case Op::abs:
             case Op::sqrt:
-            case Op::logicalNot: map[i] = dst.unary(n.op, m(n.a)); break;
+            case Op::logicalNot:
+            case Op::sin:
+            case Op::cos:
+            case Op::exp:
+            case Op::log:
+            case Op::floor:
+            case Op::ceil: map[i] = dst.unary(n.op, m(n.a)); break;
             default: map[i] = dst.binary(n.op, m(n.a), m(n.b)); break;
         }
     }
@@ -39,8 +45,15 @@ KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second) {
     out.paramCount = first.paramCount + second.paramCount;
 
     std::vector<int> firstChannels, secondChannels;
-    for (const auto& name : first.channels) firstChannels.push_back(out.channelIndex(name));
-    for (const auto& name : second.channels) secondChannels.push_back(out.channelIndex(name));
+    auto addChannels = [&](const KernelSpec& spec, std::vector<int>& map) {
+        for (size_t i = 0; i < spec.channels.size(); ++i) {
+            int c = out.channelIndex(spec.channels[i]);
+            if (spec.channelTypes[i] != AttribType::float32) out.channelTypes[static_cast<size_t>(c)] = spec.channelTypes[i];
+            map.push_back(c);
+        }
+    };
+    addChannels(first, firstChannels);
+    addChannels(second, secondChannels);
 
     std::vector<int> firstMap = copyGraph(out.graph, first, firstChannels, 0, {});
     std::map<int, int> produced;  // output channel -> latest expression

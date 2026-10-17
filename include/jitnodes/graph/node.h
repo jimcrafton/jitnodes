@@ -2,10 +2,12 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "jitnodes/geo/geometry.h"
+#include "jitnodes/graph/animation.h"
 #include "jitnodes/jit/kernel.h"
 
 namespace jitnodes {
@@ -15,9 +17,26 @@ inline constexpr NodeId invalidNodeId = 0;
 
 class Network;
 
+struct CookTimings {
+    double compileMs = 0.0;
+    double kernelMs = 0.0;
+};
+
 struct CookContext {
     KernelCompiler& compiler;
     double time = 0.0;
+    ThreadPool* pool = nullptr;      // for data-parallel work inside a node; may be null
+    CookTimings* timings = nullptr;  // nodes add their compile/kernel time here; may be null
+};
+
+struct NodeStats {
+    size_t cooks = 0;
+    double lastCookMs = 0.0;
+    double totalCookMs = 0.0;
+    double lastCompileMs = 0.0;
+    double lastKernelMs = 0.0;
+    size_t lastChainLength = 1;
+    NodeId fusedInto = 0;  // tail node that cooked this node as part of a fused chain (0 = none)
 };
 
 struct PointKernel {
@@ -35,19 +54,38 @@ public:
     const std::string& name() const { return name_; }
     int inputCount() const { return inputCount_; }
 
+    // Float parameters have a base value and may instead be driven by an expression or keyframes.
+    // getFloat returns the value resolved for the time of the latest evaluation (cook).
     void setFloat(const std::string& name, float value);
     float getFloat(const std::string& name) const;
+    bool hasFloat(const std::string& name) const { return floats_.count(name) != 0; }
+    float baseFloat(const std::string& name) const;  // the stored value, ignoring any expression or keyframes
+    std::vector<std::string> floatNames() const;
+    std::vector<std::string> stringNames() const;
+
+    // Expression symbols: own parameter names, time, frame, pi, and node.param references to other
+    // nodes by name. Setting an expression replaces keyframes; an empty text clears it. Throws on
+    // syntax errors and leaves the parameter unchanged.
+    void setExpression(const std::string& name, const std::string& text);
+    const std::string& expression(const std::string& name) const;
+    void setKeyframes(const std::string& name, std::vector<Keyframe> keys);
+    const std::vector<Keyframe>& keyframes(const std::string& name) const;
+    void clearAnimation(const std::string& name);
+    bool isAnimated(const std::string& name) const;
+
     void setString(const std::string& name, const std::string& value);
     const std::string& getString(const std::string& name) const;
 
     bool dirty() const { return dirty_; }
     size_t cookCount() const { return cookCount_; }
+    const NodeStats& stats() const { return stats_; }
 
     virtual GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) = 0;
 
     // Point-wise nodes have one input, keep topology, and only rewrite point channels; the
     // network can fuse chains of them into a single kernel.
     virtual bool isPointwise() const { return false; }
+    virtual AttribClass attribClass() const { return AttribClass::point; }
     virtual bool pointKernel(PointKernel&) { return false; }
 
 protected:
@@ -56,6 +94,19 @@ protected:
 
 private:
     friend class Network;
+
+    struct FloatParam {
+        float value = 0.0f;
+        float resolved = 0.0f;
+        std::string expression;
+        KernelSpec expressionSpec;
+        std::vector<Keyframe> keys;
+        bool animated() const { return !expression.empty() || !keys.empty(); }
+    };
+
+    FloatParam& floatParam(const std::string& name);
+    const FloatParam& floatParam(const std::string& name) const;
+    void rebuildReferences();
     void markChanged();
 
     NodeId id_ = invalidNodeId;
@@ -63,10 +114,12 @@ private:
     std::string name_;
     int inputCount_ = 0;
     Network* network_ = nullptr;
-    std::map<std::string, float> floats_;
+    std::map<std::string, FloatParam> floats_;
     std::map<std::string, std::string> strings_;
+    std::set<std::string> referencedNodes_;
     bool dirty_ = true;
     size_t cookCount_ = 0;
+    NodeStats stats_;
     GeometryHandle cooked_;
 };
 

@@ -1,0 +1,21 @@
+// A circle that is smoothed, then wobbled over time. Try:
+//   jitnodesCli examples/graphs/wobble.json --time 1.5 --svg wobble.svg
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 5,
+  nodes: [
+    { id: 1, type: "circle", name: "base", floats: { count: 24, radius: 3 }, inputs: [] },
+    { id: 2, type: "subdivide", name: "smooth", floats: { iterations: 2 }, inputs: [1] },
+    {
+      id: 3, type: "wrangle", name: "wobble",
+      strings: { code: "x = x + sin(y * 2 + a) * b; y = y + cos(x * 2 + a) * b;" },
+      floats: { b: 0.35 },
+      expressions: { a: "time * 3" },   // animated phase
+      inputs: [2],
+    },
+    { id: 4, type: "transform", name: "place", floats: { sx: 1.5, sy: 1.5, tx: 4 }, inputs: [3] },
+    { id: 5, type: "null", name: "out", inputs: [4] },
+  ],
+}

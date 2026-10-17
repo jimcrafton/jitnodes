@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "jitnodes/graph/network.h"
+#include "jitnodes/jit/exprParser.h"
 
 namespace jitnodes {
 
@@ -10,22 +11,98 @@ Node::Node(std::string typeName, int inputCount) : typeName_(std::move(typeName)
 
 Node::~Node() = default;
 
-void Node::declareFloat(const std::string& name, float defaultValue) { floats_[name] = defaultValue; }
+void Node::declareFloat(const std::string& name, float defaultValue) {
+    FloatParam& p = floats_[name];
+    p.value = p.resolved = defaultValue;
+}
 
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
 
-void Node::setFloat(const std::string& name, float value) {
-    auto it = floats_.find(name);
-    if (it == floats_.end()) throw std::runtime_error("unknown float parameter '" + name + "' on " + typeName_);
-    if (it->second == value) return;
-    it->second = value;
-    markChanged();
-}
-
-float Node::getFloat(const std::string& name) const {
+Node::FloatParam& Node::floatParam(const std::string& name) {
     auto it = floats_.find(name);
     if (it == floats_.end()) throw std::runtime_error("unknown float parameter '" + name + "' on " + typeName_);
     return it->second;
+}
+
+const Node::FloatParam& Node::floatParam(const std::string& name) const {
+    auto it = floats_.find(name);
+    if (it == floats_.end()) throw std::runtime_error("unknown float parameter '" + name + "' on " + typeName_);
+    return it->second;
+}
+
+void Node::setFloat(const std::string& name, float value) {
+    FloatParam& p = floatParam(name);
+    if (p.value == value) return;
+    p.value = value;
+    if (p.animated()) return;
+    p.resolved = value;
+    markChanged();
+}
+
+float Node::getFloat(const std::string& name) const { return floatParam(name).resolved; }
+
+float Node::baseFloat(const std::string& name) const { return floatParam(name).value; }
+
+std::vector<std::string> Node::floatNames() const {
+    std::vector<std::string> names;
+    for (const auto& entry : floats_) names.push_back(entry.first);
+    return names;
+}
+
+std::vector<std::string> Node::stringNames() const {
+    std::vector<std::string> names;
+    for (const auto& entry : strings_) names.push_back(entry.first);
+    return names;
+}
+
+void Node::setExpression(const std::string& name, const std::string& text) {
+    FloatParam& p = floatParam(name);
+    KernelSpec spec;
+    if (!text.empty()) spec = parseWrangle("__result = " + text + ";", {});
+    p.expression = text;
+    p.expressionSpec = std::move(spec);
+    p.keys.clear();
+    if (text.empty()) p.resolved = p.value;
+    rebuildReferences();
+    markChanged();
+}
+
+const std::string& Node::expression(const std::string& name) const { return floatParam(name).expression; }
+
+void Node::setKeyframes(const std::string& name, std::vector<Keyframe> keys) {
+    FloatParam& p = floatParam(name);
+    sortKeyframes(keys);
+    p.keys = std::move(keys);
+    p.expression.clear();
+    p.expressionSpec = KernelSpec();
+    if (p.keys.empty()) p.resolved = p.value;
+    rebuildReferences();
+    markChanged();
+}
+
+const std::vector<Keyframe>& Node::keyframes(const std::string& name) const { return floatParam(name).keys; }
+
+void Node::clearAnimation(const std::string& name) {
+    FloatParam& p = floatParam(name);
+    if (!p.animated()) return;
+    p.expression.clear();
+    p.expressionSpec = KernelSpec();
+    p.keys.clear();
+    p.resolved = p.value;
+    rebuildReferences();
+    markChanged();
+}
+
+bool Node::isAnimated(const std::string& name) const { return floatParam(name).animated(); }
+
+void Node::rebuildReferences() {
+    referencedNodes_.clear();
+    for (const auto& [paramName, p] : floats_) {
+        for (const std::string& symbol : p.expressionSpec.channels) {
+            const size_t dot = symbol.find('.');
+            if (dot != std::string::npos) referencedNodes_.insert(symbol.substr(0, dot));
+        }
+    }
 }
 
 void Node::setString(const std::string& name, const std::string& value) {

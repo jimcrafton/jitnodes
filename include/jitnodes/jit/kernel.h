@@ -12,6 +12,7 @@
 
 namespace jitnodes {
 
+class ThreadPool;
 struct JitBackend;  // owns the asmjit runtime; defined in kernel.cpp so asmjit stays out of headers
 
 // A compiled per-point kernel. Executes the whole expression DAG for 8 points at a time with
@@ -26,21 +27,24 @@ public:
 
     // channels[i] is the 32-byte aligned array for spec().channels[i]; paddedCount must be a
     // multiple of simdLanes. params holds spec().paramCount runtime values.
-    void run(float* const* channels, const float* params, size_t paddedCount) const;
+    // With a pool, large ranges are split into 8-lane aligned chunks that run concurrently.
+    void run(void* const* channels, const float* params, size_t paddedCount, ThreadPool* pool = nullptr) const;
 
-    // Convenience: binds channels by name on geo (creating missing ones) and runs over all points.
-    void run(Geometry& geo, const std::vector<float>& params) const;
+    // Binds channels by name on geo (creating missing float ones) and runs over every element of cls.
+    void run(Geometry& geo, const std::vector<float>& params, AttribClass cls = AttribClass::point,
+             ThreadPool* pool = nullptr) const;
 
     bool isJitted() const { return fn_ != nullptr; }
     const KernelSpec& spec() const { return spec_; }
 
 private:
     friend class KernelCompiler;
-    using Fn = void (*)(float* const*, const float*, const float*, size_t);
+    using Fn = void (*)(void* const*, const float*, const float*, size_t);
 
     Kernel(KernelSpec spec, std::shared_ptr<JitBackend> backend);
     void compileJit();
-    void interpret(float* const* channels, const float* params, size_t paddedCount) const;
+    void runSerial(void* const* channels, const float* params, size_t paddedCount) const;
+    void interpret(void* const* channels, const float* params, size_t paddedCount) const;
 
     KernelSpec spec_;
     std::shared_ptr<JitBackend> backend_;
@@ -58,11 +62,15 @@ public:
 
     std::shared_ptr<const Kernel> compile(const KernelSpec& spec);
 
+    // Takes channel types from the attributes that already exist on geo (new channels are float).
+    std::shared_ptr<const Kernel> compileFor(KernelSpec spec, const Geometry& geo, AttribClass cls);
+
     bool jitSupported() const { return jitSupported_; }
     void setJitEnabled(bool enabled);  // clears the cache; false forces the interpreter
     bool jitEnabled() const { return jitEnabled_; }
 
     size_t compileCount() const { return compileCount_; }  // actual compilations (cache misses)
+    double compileMillis() const { return compileMillis_; }  // total time spent compiling
     size_t cacheSize() const;
 
 private:
@@ -72,6 +80,7 @@ private:
     bool jitSupported_ = false;
     bool jitEnabled_ = true;
     size_t compileCount_ = 0;
+    double compileMillis_ = 0.0;
 };
 
 }  // namespace jitnodes

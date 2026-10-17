@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <chrono>
 #include <memory>
+#include <stdexcept>
 
 #include "jitnodes/graph/network.h"
 #include "jitnodes/jit/exprParser.h"
@@ -7,6 +9,12 @@
 namespace jitnodes {
 
 namespace {
+
+AttribClass parseAttribClass(const std::string& s) {
+    if (s == "point") return AttribClass::point;
+    if (s == "primitive") return AttribClass::primitive;
+    throw std::runtime_error("attribute class must be 'point' or 'primitive', got '" + s + "'");
+}
 
 class LineNode : public Node {
 public:
@@ -27,7 +35,7 @@ public:
             x[i] = static_cast<float>(i) * step;
             y[i] = getFloat("y");
         }
-        if (n) geo->primitives().push_back({0, static_cast<uint32_t>(n), false});
+        if (n) geo->addPrimitive({0, static_cast<uint32_t>(n), false});
         return geo;
     }
 };
@@ -42,7 +50,16 @@ public:
         PointKernel kernel;
         pointKernel(kernel);
         auto geo = std::make_shared<Geometry>(*in[0]);
-        ctx.compiler.compile(kernel.spec)->run(*geo, kernel.params);
+        const AttribClass cls = attribClass();
+        const auto compileStart = std::chrono::steady_clock::now();
+        auto compiled = ctx.compiler.compileFor(kernel.spec, *geo, cls);
+        const auto runStart = std::chrono::steady_clock::now();
+        compiled->run(*geo, kernel.params, cls, ctx.pool);
+        if (ctx.timings) {
+            const auto runEnd = std::chrono::steady_clock::now();
+            ctx.timings->compileMs += std::chrono::duration<double, std::milli>(runStart - compileStart).count();
+            ctx.timings->kernelMs += std::chrono::duration<double, std::milli>(runEnd - runStart).count();
+        }
         return geo;
     }
 };
@@ -71,8 +88,11 @@ class WrangleNode : public KernelNode {
 public:
     WrangleNode() : KernelNode("wrangle") {
         declareString("code", "");
+        declareString("class", "point");
         for (const char* p : {"a", "b", "c", "d"}) declareFloat(p, 0.0f);
     }
+
+    AttribClass attribClass() const override { return parseAttribClass(getString("class")); }
 
     bool pointKernel(PointKernel& out) override {
         const std::string& code = getString("code");
@@ -103,6 +123,30 @@ public:
     }
 };
 
+class AttribCreateNode : public Node {
+public:
+    AttribCreateNode() : Node("attribCreate", 1) {
+        declareString("name", "attr");
+        declareString("class", "point");
+        declareString("type", "float");
+        declareFloat("value", 0.0f);
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const std::string& type = getString("type");
+        if (type != "float" && type != "int") throw std::runtime_error("attribCreate: type must be 'float' or 'int'");
+        AttribArray& a = geo->attrib(parseAttribClass(getString("class")), getString("name"),
+                                     type == "int" ? AttribType::int32 : AttribType::float32);
+        const float v = getFloat("value");
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (a.type() == AttribType::int32) a.ints()[i] = static_cast<int32_t>(v);
+            else a.floats()[i] = v;
+        }
+        return geo;
+    }
+};
+
 class NullNode : public Node {
 public:
     NullNode() : Node("null", 1) {}
@@ -122,7 +166,9 @@ void registerBuiltinNodes() {
     add<TransformNode>("transform");
     add<WrangleNode>("wrangle");
     add<MergeNode>("merge");
+    add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");
+    registerTopologyNodes();
 }
 
 }  // namespace jitnodes

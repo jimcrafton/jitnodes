@@ -13,9 +13,10 @@ namespace jitnodes {
 //   assign    := identifier '=' expr
 //   expr      := ternary with || && == != < > <= >= + - * / unary - ! and
 //                min(a,b) max(a,b) abs(a) sqrt(a) clamp(v,lo,hi) lerp(a,b,t)
+//                sin cos exp log floor ceil pow(a,b)
 //
 // Identifiers listed in paramNames read the runtime parameter block; every other identifier is
-// a point attribute (x, y, or any custom channel). Statements run in order, so later statements
+// an attribute channel (x, y, N.x, group.top, ...). Statements run in order, so later statements
 // see earlier assignments. Throws std::runtime_error with a message on syntax errors.
 KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames);
 

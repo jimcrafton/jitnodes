@@ -59,6 +59,80 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
 - Dead-code elimination: only expression nodes that reach a store are emitted. Constants and parameters are
   broadcast once before the loop.
 
+## Attributes
+- Classes: `AttribClass::point` and `AttribClass::primitive` (plus float-only detail values). Each class has its
+  own named, SIMD-padded arrays; `Geometry::addPrimitive` keeps primitive arrays sized with the primitive list.
+- Types: `AttribType::float32` and `int32` (`AttribArray`). Kernels compute in float; int channels convert at the
+  load (`vcvtdq2ps`) and store (`vcvttps2dq`, truncation toward zero, out-of-range gives INT_MIN), so integers are
+  exact up to 2^24. Channel types are part of the kernel cache key and come from the geometry via
+  `KernelCompiler::compileFor`; running a kernel against an attribute of another type throws.
+- Vector attributes are float components named `N.x`, `N.y`, ... (`Geometry::addVectorAttrib`); the wrangle
+  language accepts dotted names. Groups are int attributes named `group.<name>` (0/1), so wrangles read and write
+  them directly (`group.top = y > a;`). Assigning a comparison stores 1/0.
+- Wrangle nodes take `class` = `point` or `primitive`; a primitive wrangle runs over the primitive arrays.
+  Fusion only joins point-wise nodes of the same class. `attribCreate` adds a typed, constant filled attribute.
+- `Geometry::append` (merge) unions attributes of both classes and throws when an attribute has different types.
+
+## Threading and profiling
+- `ThreadPool::parallelFor(count, fn)`: the caller takes part and idle workers help, so it can be called from inside a
+  pool task (nested parallelism) and with zero workers (runs inline). The first exception is rethrown once all indices
+  have finished. `Network::setThreadCount(n)` sets total threads (1 = caller only; default is hardware threads - 1,
+  capped at 8).
+- Data parallelism: `Kernel::run(..., pool)` splits ranges of at least 32768 padded elements into chunks that are
+  multiples of 8 lanes (so every chunk stays 32-byte aligned) and runs the same compiled function on shifted channel
+  pointers. Results are bit-identical to a serial run (tested).
+- Task parallelism: `Network::cook` plans the dirty subgraph (one `CookTask` per node or fused chain), evaluates
+  animated parameters serially, then runs the tasks level by level (level = longest dependency path), each level with
+  `parallelFor`. Independent branches therefore cook concurrently; results do not depend on the thread count.
+- Rules for node authors: `cook` may run concurrently with other nodes' `cook`; touch only your own node state, treat
+  input geometry as immutable, and use `ctx.pool` for data-parallel work. `KernelCompiler::compile` is internally
+  locked; compiled kernels are immutable and shareable.
+- Profiling: every cook records `NodeStats` (cooks, last/total cook ms, compile ms, kernel ms, fused chain length, and
+  `fusedInto` for interior chain nodes); `Network::profileReport()` prints a table plus total kernel compile time and
+  thread count, `resetProfile()` clears it. `KernelCompiler::compileMillis()` is the cumulative JIT time.
+- Measured (`kernelBench`, 4M points, one machine, noisy): the kernel is memory-bound, so 4 threads give about 2.3x,
+  and more threads than memory bandwidth can feed do not help (8 threads was slower). A network of 8 branches of 1M
+  points recooked 60 ms -> 43 ms with 4 threads. The profile shows why it is not better: copying large geometries
+  and the merges dominate, and a left-deep chain of merges is entirely serial (use a balanced tree, or an N-ary
+  merge once it exists).
+- Not covered by tests: a thread sanitizer run (MSVC has none); the suite was stress-run 30 times instead.
+
+## Parameters and animation
+A float parameter has a base value and can be driven by exactly one of: an expression or a keyframe curve
+(`Node::setExpression`, `Node::setKeyframes`, `Node::clearAnimation`). `Node::getFloat` returns the value resolved
+at the latest evaluation; the network evaluates a node's animated parameters just before it cooks (including every
+member of a fused chain), so nodes and `pointKernel()` simply call `getFloat`.
+- Expressions reuse the wrangle language and IR (a parameter expression is a one-store `KernelSpec`, evaluated by
+  `evaluateScalar` with the same `evalOp` semantics as the kernel interpreter). Symbols: own parameter names,
+  `time` (seconds), `frame` (`time * fps`, default 24), `pi`, and `nodeName.param` for another node's parameter.
+  Functions include min/max/abs/sqrt/clamp/lerp plus `sin cos exp log floor ceil pow`.
+- `sin/cos/exp/log/pow` have no vector JIT yet: kernels using them fall back to the interpreter automatically
+  (`Kernel::isJitted()` is false). `floor`/`ceil` are JIT-compiled (`vroundps`).
+- Keyframes (`Keyframe{time, value, interp}`) support constant, linear and smoothstep segments; values hold outside
+  the keyed range. The interpolation mode belongs to the segment starting at that key.
+- Dependencies: `Network::markDirty` follows input wires and expression references (`nodeName.param`), so editing a
+  referenced parameter recooks the referencing node. `Network::setTime` only invalidates nodes whose parameters
+  depend on time (keyframes, `time`/`frame`, or references to such parameters, transitively); everything else keeps
+  its cache. Expression cycles and unknown symbols/nodes throw at cook time with the offending name.
+- Limits: references use node names, so they break if a node is removed or renamed; per-point time-varying values
+  go through a kernel parameter (a scalar per cook), not per-point expressions.
+
+## Topology nodes
+Topology nodes are ordinary (non-fused) nodes in `graph/topologyNodes.cpp`; the geometry algorithms live in
+`geo/topology.cpp` and are usable without a network. New points are described as `PointSample`s (two source
+points and a blend factor) and built by `gatherPoints`, which interpolates float attributes and takes the nearer
+point's value for ints (ties take the later point); primitive attributes are carried with `transferPrimAttribs`.
+- `circle`: closed polygon generator (count, radius, center).
+- `resample`: per primitive, by `count` or by `spacing` (> 0 wins). Open curves keep both endpoints; closed curves
+  keep the first point and do not repeat it. Points not owned by a primitive are dropped.
+- `subdivide`: Chaikin corner cutting, `iterations` 0..10. Open curves keep their endpoints; closed curves double
+  their point count each iteration.
+- `copyToPoints`: input 0 is instanced onto every point of input 1 with `scale` and `angle` (radians) multiplied/
+  added to optional per-point `scale` and `angle` attributes on the targets. Adds int `copyIndex` on points and
+  primitives. The transform is a scalar loop for now; large instance counts could move to a JIT kernel.
+- `blast`: deletes a group (`group.<name>`, class point or primitive; `keepGroup` inverts). Deleting primitives
+  also deletes their points; deleting points shrinks primitives and drops empty ones.
+
 ## Graph fusion
 `Node::isPointwise()` / `Node::pointKernel()` let a node expose its `KernelSpec` and current parameter values.
 When `Network::cook` reaches a point-wise node it walks upstream while the previous node is point-wise,
@@ -88,12 +162,14 @@ Remaining 3D work: indexed polygon/triangle primitives (vertex indirection), mat
    network with dirty/cook caching and cycle checks, built-in nodes (line, transform, wrangle, merge, null),
    tests and a benchmark.
 2. **Graph fusion (done)**: see "Graph fusion" below.
-3. **Richer data**: vertex/primitive attribute classes, groups, integer and vec2/vec3 attribute types, 3D primitives.
-4. **Topology nodes**: subdivide, resample, copy-to-points, boolean ops, stroke; per-primitive kernels
-   (segmented loops instead of masks for variable-length work).
-5. **Parameters**: expressions, channel references, time dependence and animation, extra inputs, spare parameters.
-6. **Execution**: multithreading (band/tile splitting, parallel independent branches), per-node profiling,
-   scratch-arena temporaries.
+3. **Richer data (first slice done)**: see "Attributes" below. Still open: vertex attributes, indexed 3D primitives,
+   string/matrix attribute types.
+4. **Topology nodes (first slice done)**: see "Topology nodes" below. Still open: boolean ops, stroke/offset, join,
+   sort, per-primitive kernels (segmented loops instead of masks for variable-length work).
+5. **Parameters (first slice done)**: see "Parameters and animation" below. Still open: string/int/vector parameters
+   and expressions, expression functions with node-graph queries, curve tangents/handles, spare parameters.
+6. **Execution (first slice done)**: see "Threading and profiling" below. Still open: scratch-arena temporaries wired into
+   cooking, 2D tile/band splitting for raster work, cooking an N-ary merge without repeated copies, cancellation.
 7. **Platform**: AArch64/NEON through asmjit, AVX-512 path, SSE2 fallback instead of the interpreter.
 8. **Persistence and tooling**: graph serialization (JSON), subnets/assets, plugin SDK for node types,
    undo/redo, optional ImGui front end, optional Blend2D output.
