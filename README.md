@@ -1,7 +1,7 @@
 # jitnodes
 
 JIT compiled execution nodes: a C++20 procedural node-graph library (Houdini-style cooking) whose per-point
-math is compiled to AVX2 machine code with [asmjit](https://asmjit.com).
+math is compiled to SIMD machine code (SSE2, AVX2 or AVX-512) with [asmjit](https://asmjit.com).
 
 ## Build
 ```
@@ -27,4 +27,16 @@ net.setDisplayNode(wr);
 GeometryHandle geo = net.cookDisplay();
 ```
 
-See [docs/design.md](docs/design.md) for the design, research notes and roadmap.
+## Tools
+```
+jitnodesCli examples/graphs/wobble.json --time 1.5 --svg wobble.svg --profile
+jitnodesCli --asset examples/assets/wobble.asset.json examples/graphs/assetDemo.json --time 1 --svg demo.svg
+jitnodesCli --types
+```
+Graphs are saved with `saveNetwork` / loaded with `loadNetwork` (JSON, JSON5 accepted on load). Subnets
+(`subnet`, `subnet2`, ...) contain child networks; `saveAsset` / `registerAsset` turn a subnet into a reusable node type, and `updateAssetInstances` rebuilds existing instances after a definition
+changes. `History` provides undo/redo that only touches the nodes that changed.
+
+## More
+- [docs/design.md](docs/design.md): design, research notes and roadmap.
+- [docs/performance.md](docs/performance.md): benchmarks with the JIT off and on, method and caveats.

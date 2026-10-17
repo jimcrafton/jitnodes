@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +15,26 @@
 
 namespace jitnodes {
 
+class CookCancelled : public std::runtime_error {
+public:
+    CookCancelled() : std::runtime_error("cook cancelled") {}
+};
+
+// Handed to an asset migration hook. `fresh` is built from the current definition and already holds the parameters
+// of `old` that exist under the same name (value, expression or keyframes); the hook fixes up the rest: renamed or
+// rescaled parameters, new parameters, rewired inputs. `old` carries only the saved parameters (no child graph).
+// `inputs` holds the node ids wired to the old inputs, padded or trimmed to the new input count; the hook may
+// reorder it (ids must belong to the same network and must not create cycles). Throwing aborts the migration of
+// that instance.
+struct AssetUpgrade {
+    int fromVersion;
+    int toVersion;
+    const Node& old;
+    Node& fresh;
+    std::vector<NodeId> inputs;
+};
+using AssetMigrationFn = std::function<void(AssetUpgrade&)>;
+
 class NodeRegistry {
 public:
     using Creator = std::function<std::unique_ptr<Node>()>;
@@ -22,13 +43,60 @@ public:
     void registerType(const std::string& typeName, Creator creator);
     std::unique_ptr<Node> create(const std::string& typeName) const;
     std::vector<std::string> typeNames() const;
+    bool has(const std::string& typeName) const { return creators_.count(typeName) != 0; }
+
+    // Asset types are registered through registerAsset (serialize.h); the definition text is kept here.
+    // The revision changes whenever the definition text does; instances remember the revision they were built from.
+    void setAssetText(const std::string& typeName, std::string text, int version = 1) {
+        Asset& a = assets_[typeName];
+        if (a.revision == 0 || a.text != text) ++a.revision;
+        a.text = std::move(text);
+        a.version = version;
+    }
+    const std::string* assetText(const std::string& typeName) const {
+        auto it = assets_.find(typeName);
+        return it == assets_.end() ? nullptr : &it->second.text;
+    }
+    std::vector<std::string> assetNames() const {
+        std::vector<std::string> names;
+        for (const auto& entry : assets_) names.push_back(entry.first);
+        return names;
+    }
+    int assetVersion(const std::string& typeName) const {
+        auto it = assets_.find(typeName);
+        return it == assets_.end() ? 0 : it->second.version;
+    }
+    size_t assetRevision(const std::string& typeName) const {
+        auto it = assets_.find(typeName);
+        return it == assets_.end() ? 0 : it->second.revision;
+    }
+
+    // Migration hook of an asset type, called when an instance built from an older assetVersion is brought up to
+    // date (see updateAssetInstances and loadNetwork). Independent of registerAsset; an empty function removes it.
+    void setAssetMigration(const std::string& typeName, AssetMigrationFn fn) {
+        if (fn) migrations_[typeName] = std::move(fn);
+        else migrations_.erase(typeName);
+    }
+    const AssetMigrationFn* assetMigration(const std::string& typeName) const {
+        auto it = migrations_.find(typeName);
+        return it == migrations_.end() ? nullptr : &it->second;
+    }
 
 private:
+    struct Asset {
+        std::string text;
+        int version = 1;
+        size_t revision = 0;
+    };
+
     std::map<std::string, Creator> creators_;
+    std::map<std::string, Asset> assets_;
+    std::map<std::string, AssetMigrationFn> migrations_;
 };
 
 void registerBuiltinNodes();
 void registerTopologyNodes();
+void registerSubnetNodes();
 
 class Network {
 public:
@@ -44,6 +112,9 @@ public:
     std::vector<NodeId> nodeIds() const;
     NodeId displayNode() const { return displayNode_; }
     void removeNode(NodeId id);
+    // Swaps the node for a fresh one (same id and name), keeping the wiring that still fits unless `inputs` gives
+    // the new wiring. Not allowed while cooking.
+    void replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs = nullptr);
     Node& node(NodeId id);
     const Node& node(NodeId id) const;
     NodeId findNode(const std::string& name) const;
@@ -56,7 +127,10 @@ public:
     void markDirty(NodeId id);
 
     GeometryHandle cook(NodeId id);
-    void setDisplayNode(NodeId id) { displayNode_ = id; }
+    void setDisplayNode(NodeId id) {
+        displayNode_ = id;
+        notifyOwner();
+    }
     GeometryHandle cookDisplay() { return cook(displayNode_); }
 
     // Upstream nodes of id (inclusive) in execution order.
@@ -65,20 +139,48 @@ public:
     // Chains of point-wise nodes are compiled into one kernel; intermediate nodes of a fused chain
     // are not cooked or cached, and the display node and fan-out points always break a chain.
     void setFusionEnabled(bool enabled) { fusionEnabled_ = enabled; }
-    bool fusionEnabled() const { return fusionEnabled_; }
+    // A network inside a subnet follows its parent's setting.
+    bool fusionEnabled() const { return parent_ ? parent_->fusionEnabled() : fusionEnabled_; }
     size_t fusedChainCount() const { return fusedChainCount_.load(); }
 
     // Independent branches and large kernels run on a pool of `threads` threads in total (1 = single
     // threaded, the caller only). Cooking plans the dirty nodes, groups them by dependency level and runs
     // each level in parallel; results do not depend on the thread count.
     void setThreadCount(size_t threads);
-    size_t threadCount() const { return pool_->concurrency(); }
+    size_t threadCount() const { return pool()->concurrency(); }
+
+    // Callable from any thread: makes the cook in progress throw CookCancelled before it starts its next node.
+    // Nodes that already finished keep their results; ignored when no cook is running.
+    void cancel();
 
     // Per-node timings of the latest cooks; see Node::stats().
     std::string profileReport() const;
     void resetProfile();
 
-    KernelCompiler& compiler() { return compiler_; }
+    // A network owned by a subnet node shares its parent's kernel cache and thread pool.
+    KernelCompiler& compiler() { return parent_ ? parent_->compiler() : ownCompiler_; }
+    const KernelCompiler& compiler() const { return parent_ ? parent_->compiler() : ownCompiler_; }
+    ThreadPool* pool() const { return parent_ ? parent_->pool() : pool_.get(); }
+    Network* parent() const { return parent_; }
+    NodeId ownerNode() const { return owner_; }
+    void setParent(Network* parent, NodeId owner) {
+        parent_ = parent;
+        owner_ = owner;
+    }
+    // Edits inside a child network dirty the owning subnet node. The subnet turns this off while it updates its
+    // own child during a cook. Returns the previous setting.
+    bool setPropagateToParent(bool enabled) {
+        const bool previous = propagateToParent_;
+        propagateToParent_ = enabled;
+        return previous;
+    }
+
+    // Geometry fed to `subnetInput` nodes of this network (set by the owning subnet before it cooks).
+    void setExternalInputs(const std::vector<GeometryHandle>& inputs);
+    GeometryHandle externalInput(int index) const;
+    // Marks every node whose expressions reference `nodeName` (e.g. "parent") dirty.
+    void invalidateReferencesTo(const std::string& nodeName);
+    bool anyDependsOnTime() const;
     // Only nodes whose parameters depend on time (keyframes, `time`/`frame` in expressions, or references
     // to such parameters on other nodes) are invalidated when the time changes.
     void setTime(double t);
@@ -104,11 +206,15 @@ private:
         NodeId tail = invalidNodeId;
         std::vector<NodeId> chain;  // fused point-wise chain, tail first (empty for ordinary nodes)
         std::vector<NodeId> inputs;
+        std::vector<NodeId> absorbed;  // merge nodes folded into this merge task
         AttribClass cls = AttribClass::point;
         int level = 0;
     };
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
+    void appendProfileRows(std::string& out, int depth) const;
     void runTask(const CookTask& task);
+    void collectMergeInputs(NodeId id, CookTask& task);
+    bool cancelRequested() const { return parent_ ? parent_->cancelRequested() : cancelRequested_.load(); }
     void evaluateParams(Node& n);
     float resolveSymbol(NodeId owner, const std::string& symbol);
     bool paramDependsOnTime(NodeId id, const std::string& name, std::set<std::pair<NodeId, std::string>>& visiting) const;
@@ -116,12 +222,22 @@ private:
     std::map<NodeId, Slot> slots_;
     NodeId nextId_ = 1;
     NodeId displayNode_ = invalidNodeId;
-    KernelCompiler compiler_;
+    KernelCompiler ownCompiler_;
+    void notifyOwner() {
+        if (parent_ && propagateToParent_) parent_->markDirty(owner_);
+    }
+
+    Network* parent_ = nullptr;
+    NodeId owner_ = invalidNodeId;
+    bool propagateToParent_ = true;
+    std::vector<GeometryHandle> externalInputs_;
     double time_ = 0.0;
     double fps_ = 24.0;
     std::set<std::pair<NodeId, std::string>> evaluating_;
     bool fusionEnabled_ = true;
     std::atomic<size_t> fusedChainCount_{0};
+    std::atomic<bool> cooking_{false};
+    std::atomic<bool> cancelRequested_{false};
     std::unique_ptr<ThreadPool> pool_;
 };
 

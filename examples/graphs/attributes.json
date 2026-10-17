@@ -1,0 +1,16 @@
+// A sine curve with point attributes to colour by in the editor:
+//   jitnodesEditor examples/graphs/attributes.json --attribute height
+{
+  format: "jitnodes",
+  version: 1,
+  display: 3,
+  nodes: [
+    { id: 1, type: "line", name: "base", floats: { count: 200, length: 10 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "wave",
+      strings: { code: "y = sin(x * 1.5); height = y * 2 + x * 0.1; N.x = cos(x * 1.5); N.y = 1;", class: "point" },
+      inputs: [1]
+    },
+    { id: 3, type: "null", name: "out", inputs: [2] }
+  ]
+}

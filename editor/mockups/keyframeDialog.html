@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Edit Keyframes</title>
+<style>
+  :root { --bg: #25272b; --text: #e6e6e6; --muted: #9a9ca3; --border: #3a3d43; --warn: #e5a93d; }
+  body { width: 480px; height: 480px; display: flex; flex-direction: column; gap: 8px; padding: 12px;
+         background: var(--bg); color: var(--text); font-family: "Segoe UI", sans-serif; font-size: 12px; }
+  h2 { font-size: 15px; font-weight: 600; }
+  .muted { color: var(--muted); }
+  #dlgTitle { width: 440px; }
+  #dlgInfo { width: 440px; color: var(--muted); }
+  #curvePreview { height: 150px; background: #1a1b1e; border: 1px solid var(--border); }
+  .head { display: flex; flex-direction: row; gap: 6px; height: 18px; color: var(--muted); }
+  .head .t { width: 96px; } .head .v { width: 96px; } .head .i { width: 120px; }
+  #dlgMessage { width: 440px; height: 18px; color: var(--warn); }
+  .buttons { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 30px; }
+  .right { display: flex; flex-direction: row; gap: 8px; }
+</style>
+</head>
+<body>
+  <h2 id="dlgTitle">transform1.tx</h2>
+  <span id="dlgInfo">Playhead 0.00 s</span>
+  <canvas id="curvePreview"></canvas>
+  <div class="head"><span class="t">Time (s)</span><span class="v">Value</span><span class="i">Interpolation</span></div>
+  <canvas id="keyRows" style="flex-grow: 1; background: transparent"></canvas>
+  <span id="dlgMessage">&middot;</span>
+  <div class="buttons">
+    <button id="addKeyButton">Add key at playhead</button>
+    <div class="right"><button id="okButton">OK</button><button id="cancelButton">Cancel</button></div>
+  </div>
+</body>
+</html>

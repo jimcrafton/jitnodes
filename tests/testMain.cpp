@@ -1,7 +1,8 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -42,7 +43,7 @@ struct Registrar {
 
 TEST(alignedArrayPadsAndZeroFills) {
     AlignedArray<float> a(5);
-    CHECK(a.paddedSize() == 8);
+    CHECK(a.paddedSize() == simdLanes);
     CHECK(reinterpret_cast<uintptr_t>(a.data()) % simdAlignment == 0);
     for (size_t i = 0; i < a.paddedSize(); ++i) CHECK(a.data()[i] == 0.0f);
     a[4] = 3.0f;
@@ -651,7 +652,7 @@ TEST(scalarMathOpsMatchBetweenJitAndInterpreter) {
     KernelCompiler compiler;
     Geometry g = makeRamp(16), ref = makeRamp(16);
     auto kernel = compiler.compile(spec);
-    CHECK(!kernel->isJitted());
+    CHECK(!compiler.jitSupported() || kernel->isJitted());
     kernel->run(g, {});
     for (size_t i = 0; i < 16; ++i) {
         const float x = ref.x()[i], y = ref.y()[i];
@@ -1138,6 +1139,874 @@ TEST(exampleGraphLoadsAndAnimates) {
     CHECK(maxDelta > 0.05f);
     CHECK(!throwsRuntimeError([&] { loadNetworkFromFile(net, std::string(JITNODES_SOURCE_DIR) + "/examples/graphs/wobble.json"); }));
     CHECK(throwsRuntimeError([&] { loadNetworkFromFile(net, "does/not/exist.json"); }));
+}
+
+namespace {
+
+bool nearBoth(float a, float b, float absTol, float relTol) {
+    if (std::isnan(a) || std::isnan(b)) return std::isnan(a) && std::isnan(b);
+    if (std::isinf(a) || std::isinf(b)) return a == b;
+    const float diff = std::fabs(a - b);
+    return diff <= absTol || diff <= relTol * std::max(std::fabs(a), std::fabs(b));
+}
+
+Geometry wideRamp(size_t n, float xScale) {
+    Geometry g;
+    g.resizePoints(n);
+    for (size_t i = 0; i < n; ++i) {
+        g.x()[i] = (static_cast<float>(i) - static_cast<float>(n) / 2) * xScale;
+        g.y()[i] = static_cast<float>(i % 50) * 0.1f;
+    }
+    return g;
+}
+
+void expectIsaMatchesInterpreter(Isa isa, const std::string& code, const std::vector<std::string>& names,
+                                 const std::vector<float>& params, float absTol, float relTol, size_t points = 203) {
+    KernelCompiler jit, interp;
+    jit.setIsa(isa);
+    interp.setJitEnabled(false);
+    KernelSpec spec = parseWrangle(code, names);
+    Geometry a = wideRamp(points, 0.37f), b = a;
+    AttribArray& idA = a.attrib(AttribClass::point, "id", AttribType::int32);
+    AttribArray& idB = b.attrib(AttribClass::point, "id", AttribType::int32);
+    for (size_t i = 0; i < points; ++i) idA.ints()[i] = idB.ints()[i] = static_cast<int32_t>(i) - 20;
+    auto kj = jit.compileFor(spec, a, AttribClass::point);
+    auto ki = interp.compileFor(spec, b, AttribClass::point);
+    CHECK(kj->isJitted() && kj->isa() == isa);
+    kj->run(a, params);
+    ki->run(b, params);
+    for (const auto& [name, arrayA] : a.attribs(AttribClass::point)) {
+        const AttribArray& arrayB = *b.findAttrib(AttribClass::point, name);
+        for (size_t i = 0; i < points; ++i) {
+            if (!nearBoth(arrayA.at(i), arrayB.at(i), absTol, relTol)) {
+                throw std::runtime_error(std::string(isaName(isa)) + ": " + code + " -> " + name + "[" + std::to_string(i) + "] jit=" +
+                                         std::to_string(arrayA.at(i)) + " interp=" + std::to_string(arrayB.at(i)));
+            }
+        }
+    }
+}
+
+}  // namespace
+
+TEST(everySupportedInstructionSetMatchesInterpreter) {
+    KernelCompiler probe;
+    const auto isas = probe.supportedIsas();
+    CHECK(!isas.empty() && probe.isaSupported(Isa::sse2));
+    for (Isa isa : isas) {
+        expectIsaMatchesInterpreter(isa, "x = x * s + t; y = -y / 2 + abs(x) - sqrt(abs(y));", {"s", "t"}, {2.0f, 0.5f}, 1e-4f, 1e-5f);
+        expectIsaMatchesInterpreter(isa,
+            "y = (x > th && y < 3) ? y + off : (x <= 0 || y == 3 ? -y : max(y, min(x, 4)));"
+            "x = !(x >= 2) ? x * 2 : clamp(x, 0, 6); w = lerp(x, y, 0.25) + (x != y ? 1 : 0);",
+            {"th", "off"}, {5.0f, 100.0f}, 1e-4f, 1e-5f);
+        expectIsaMatchesInterpreter(isa, "id = id * 3 + 1; x = x + id; w = id / 2; z = x >= y; q = x < y; r = x <= y; p = x > y; e = x == x;", {}, {}, 1e-4f, 1e-5f);
+        expectIsaMatchesInterpreter(isa, "x = floor(x * 0.7) + ceil(y * 0.3); w = floor(-x) - ceil(-y * 1.5); z = floor(x * 100000) + ceil(x * -100000);", {}, {}, 1e-4f, 1e-5f);
+        expectIsaMatchesInterpreter(isa, "x = x ? 1 : 2; y = (x - 1) ? y : -y;", {}, {}, 1e-4f, 1e-5f);
+    }
+}
+
+TEST(vectorMathFunctionsAreAccurateOnEveryInstructionSet) {
+    KernelCompiler probe;
+    for (Isa isa : probe.supportedIsas()) {
+        expectIsaMatchesInterpreter(isa, "w = sin(x); z = cos(x);", {}, {}, 5e-6f, 0.0f, 1601);
+        expectIsaMatchesInterpreter(isa, "w = exp(x * 0.1); z = exp(-y);", {}, {}, 0.0f, 1e-5f, 1601);
+        expectIsaMatchesInterpreter(isa, "w = log(abs(x) + 0.001); z = log(y + 1);", {}, {}, 1e-5f, 1e-5f, 1601);
+        expectIsaMatchesInterpreter(isa, "w = pow(abs(x) + 1, y * 0.1 + 0.5); z = pow(2, x * 0.05);", {}, {}, 0.0f, 1e-4f, 1601);
+    }
+}
+
+TEST(vectorMathEdgeCases) {
+    KernelCompiler probe;
+    for (Isa isa : probe.supportedIsas()) {
+        KernelCompiler compiler;
+        compiler.setIsa(isa);
+        Geometry g;
+        g.resizePoints(16);
+        const float inputs[16] = {0.0f, -0.0f, 1.0f, -1.0f, 0.5f, 100000.0f, -100000.0f, 3.14159265f, 1e-10f, 88.0f, -88.0f, 120.0f, -120.0f, 1e30f, 2.0f, 10.0f};
+        for (size_t i = 0; i < 16; ++i) g.x()[i] = inputs[i];
+        compiler.compileFor(parseWrangle("y = log(x); z = exp(x); w = sin(x);", {}), g, AttribClass::point)->run(g, {});
+        const float* y = g.findPointAttrib("y")->data();
+        const float* z = g.findPointAttrib("z")->data();
+        CHECK(std::isinf(y[0]) && y[0] < 0 && std::isinf(y[1]) && y[1] < 0);
+        CHECK(std::isnan(y[3]) && std::isnan(y[6]));
+        CHECK_NEAR(y[2], 0.0f);
+        CHECK(nearBoth(y[5], std::log(100000.0f), 1e-4f, 1e-6f));
+        CHECK(nearBoth(z[0], 1.0f, 1e-6f, 1e-6f) && nearBoth(z[9], std::exp(88.0f), 0.0f, 2e-5f));
+        CHECK(z[11] > 1e37f && std::isfinite(z[11]) && z[12] < 1e-37f && z[12] >= 0.0f);
+        CHECK(nearBoth(g.findPointAttrib("w")->data()[7], std::sin(3.14159265f), 2e-6f, 0.0f));
+    }
+}
+
+TEST(networkResultsDoNotDependOnInstructionSet) {
+    auto build = [](Network& net, Isa isa) {
+        net.compiler().setIsa(isa);
+        NodeId line = net.addNode("line");
+        NodeId wr = net.addNode("wrangle");
+        NodeId xf = net.addNode("transform");
+        net.node(line).setFloat("count", 1001.0f);
+        net.node(line).setFloat("length", 30.0f);
+        net.node(wr).setString("code", "y = sin(x * 0.3) * a + cos(x) * 0.1; w = exp(-abs(x) * 0.05);");
+        net.node(wr).setFloat("a", 2.0f);
+        net.node(xf).setFloat("sx", 1.5f);
+        net.connect(line, wr);
+        net.connect(wr, xf);
+        return xf;
+    };
+    KernelCompiler probe;
+    Network reference(1);
+    reference.compiler().setJitEnabled(false);
+    const NodeId refOut = build(reference, Isa::sse2);
+    auto expected = reference.cook(refOut);
+    for (Isa isa : probe.supportedIsas()) {
+        Network net(2);
+        const NodeId out = build(net, isa);
+        auto geo = net.cook(out);
+        CHECK(geo->pointCount() == expected->pointCount());
+        for (const auto& [name, array] : geo->attribs(AttribClass::point))
+            for (size_t i = 0; i < geo->pointCount(); ++i)
+                CHECK(nearBoth(array.at(i), expected->findAttrib(AttribClass::point, name)->at(i), 5e-6f, 2e-5f));
+        CHECK(net.compiler().isa() == isa);
+    }
+}
+
+TEST(paddingAndAlignmentCoverWidestVectors) {
+    Geometry g;
+    g.resizePoints(5);
+    CHECK(g.paddedPointCount() == simdLanes && simdLanes == 16 && simdAlignment == 64);
+    CHECK(reinterpret_cast<uintptr_t>(g.x()) % simdAlignment == 0);
+    KernelCompiler compiler;
+    for (Isa isa : compiler.supportedIsas()) CHECK(simdLanes % isaLanes(isa) == 0);
+}
+
+namespace {
+
+SubnetNode& subnetOf(Network& net, NodeId id) { return dynamic_cast<SubnetNode&>(net.node(id)); }
+
+// line(3, length 2) -> subnet -> null; inside: subnetInput -> transform. Returns the ids.
+struct SubnetRig {
+    Network net;
+    NodeId line, sub, out, in, xf;
+    SubnetRig() {
+        line = net.addNode("line", "src");
+        sub = net.addNode("subnet", "sub");
+        out = net.addNode("null", "out");
+        net.node(line).setFloat("count", 3.0f);
+        net.node(line).setFloat("length", 2.0f);
+        Network& inner = subnetOf(net, sub).network();
+        in = inner.addNode("subnetInput", "in");
+        xf = inner.addNode("transform", "xf");
+        inner.connect(in, xf);
+        inner.setDisplayNode(xf);
+        net.connect(line, sub);
+        net.connect(sub, out);
+        net.setDisplayNode(out);
+    }
+    Network& inner() { return subnetOf(net, sub).network(); }
+};
+
+}  // namespace
+
+TEST(subnetCooksItsChildNetworkAndCachesIt) {
+    SubnetRig rig;
+    rig.inner().node(rig.xf).setFloat("tx", 10.0f);
+    auto geo = rig.net.cookDisplay();
+    CHECK(geo->pointCount() == 3);
+    CHECK_NEAR(geo->x()[2], 12.0f);
+    rig.net.cookDisplay();
+    CHECK(rig.net.node(rig.sub).cookCount() == 1 && rig.inner().node(rig.xf).cookCount() == 1);
+    CHECK(&rig.inner().compiler() == &rig.net.compiler());
+    CHECK(rig.net.compiler().compileCount() == 1);
+
+    rig.net.node(rig.line).setFloat("count", 5.0f);
+    CHECK(rig.net.cookDisplay()->pointCount() == 5);
+    CHECK(rig.inner().node(rig.in).cookCount() == 2 && rig.inner().node(rig.xf).cookCount() == 2);
+    rig.inner().node(rig.xf).setFloat("tx", 1.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 1.0f);
+    CHECK(rig.inner().node(rig.in).cookCount() == 2);
+}
+
+TEST(promotedParametersAreVisibleInsideAsParentReferences) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 3");
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
+    rig.net.node(rig.sub).setFloat("amount", 5.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 15.0f);
+    CHECK(rig.inner().node(rig.in).cookCount() == 1);
+    CHECK(rig.net.node(rig.sub).isSpare("amount") && rig.net.node(rig.sub).spareNames().size() == 1);
+
+    rig.net.node(rig.sub).setKeyframes("amount", {{0.0, 0.0f, KeyInterp::linear}, {2.0, 4.0f, KeyInterp::linear}});
+    CHECK(rig.net.dependsOnTime(rig.sub) && !rig.net.dependsOnTime(rig.line));
+    rig.net.setTime(1.0);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
+    CHECK(rig.net.node(rig.line).cookCount() == 1);
+}
+
+TEST(subnetsFollowTimeAndNest) {
+    SubnetRig rig;
+    rig.inner().node(rig.xf).setExpression("tx", "time * 2");
+    rig.net.cookDisplay();
+    CHECK(rig.net.dependsOnTime(rig.sub) && !rig.net.dependsOnTime(rig.line));
+    rig.net.setTime(1.5);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 3.0f);
+    CHECK(rig.net.node(rig.line).cookCount() == 1);
+
+    Network net;
+    NodeId line = net.addNode("line", "src");
+    NodeId outer = net.addNode("subnet", "outer");
+    net.connect(line, outer);
+    net.setDisplayNode(outer);
+    SubnetNode& outerNode = subnetOf(net, outer);
+    outerNode.addSpareFloat("a", 0.0f);
+    outerNode.network();
+    NodeId in1 = outerNode.network().addNode("subnetInput", "in");
+    NodeId middle = outerNode.network().addNode("subnet", "middle");
+    outerNode.network().connect(in1, middle);
+    outerNode.network().setDisplayNode(middle);
+    SubnetNode& middleNode = subnetOf(outerNode.network(), middle);
+    middleNode.addSpareFloat("b", 0.0f);
+    outerNode.network().node(middle).setExpression("b", "parent.a * 2");
+    NodeId in2 = middleNode.network().addNode("subnetInput", "in");
+    NodeId xf = middleNode.network().addNode("transform", "xf");
+    middleNode.network().connect(in2, xf);
+    middleNode.network().setDisplayNode(xf);
+    middleNode.network().node(xf).setExpression("tx", "parent.b + 1");
+
+    net.node(outer).setFloat("a", 3.0f);
+    CHECK_NEAR(net.cook(outer)->x()[0], 7.0f);
+    net.node(outer).setFloat("a", 10.0f);
+    CHECK_NEAR(net.cook(outer)->x()[0], 21.0f);
+}
+
+TEST(subnetsSupportSeveralInputsAndReportErrors) {
+    Network net;
+    NodeId a = net.addNode("line", "a");
+    NodeId b = net.addNode("line", "b");
+    NodeId sub = net.addNode("subnet2", "sub");
+    net.node(a).setFloat("count", 3.0f);
+    net.node(b).setFloat("count", 5.0f);
+    net.connect(a, sub, 0);
+    net.connect(b, sub, 1);
+    Network& inner = subnetOf(net, sub).network();
+    NodeId in0 = inner.addNode("subnetInput", "in0");
+    NodeId in1 = inner.addNode("subnetInput", "in1");
+    inner.node(in1).setFloat("index", 1.0f);
+    NodeId merge = inner.addNode("merge", "merge");
+    inner.connect(in0, merge, 0);
+    inner.connect(in1, merge, 1);
+    std::string message;
+    CHECK(throwsRuntimeError([&] { net.cook(sub); }, &message));
+    CHECK(message.find("no output") != std::string::npos);
+    inner.setDisplayNode(merge);
+    CHECK(net.cook(sub)->pointCount() == 8);
+
+    NodeId loose = net.addNode("transform", "loose");
+    net.connect(a, loose);
+    net.node(loose).setExpression("tx", "parent.x");
+    CHECK(throwsRuntimeError([&] { net.cook(loose); }, &message));
+    CHECK(message.find("only valid inside a subnet") != std::string::npos);
+}
+
+TEST(subnetsRoundTripThroughFiles) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.net.node(rig.sub).setKeyframes("amount", {{0.0, 1.0f, KeyInterp::linear}, {4.0, 5.0f, KeyInterp::smooth}});
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount + time");
+    rig.inner().node(rig.xf).setFloat("sy", 3.0f);
+    const std::string text = saveNetwork(rig.net);
+    CHECK(text.find("\"graph\"") != std::string::npos && text.find("\"spare\"") != std::string::npos);
+
+    Network copy(1);
+    loadNetwork(copy, text);
+    CHECK(saveNetwork(copy) == text);
+    CHECK(subnetOf(copy, copy.findNode("sub")).network().nodeIds().size() == 2);
+    for (double t : {0.0, 1.0, 3.5}) {
+        rig.net.setTime(t);
+        copy.setTime(t);
+        expectSameGeometry(*rig.net.cookDisplay(), *copy.cookDisplay());
+    }
+    CHECK(!throwsRuntimeError([&] { loadNetwork(copy, text); }));
+    CHECK(throwsRuntimeError([&] {
+        loadNetwork(copy, R"({ format: "jitnodes", version: 1, nodes: [ { id: 1, type: "null", name: "x", graph: { nodes: [] }, inputs: [0] } ] })");
+    }));
+}
+
+TEST(assetsRegisterAsNodeTypesAndInstancesAreIndependent) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 0.5f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    const std::string definition = saveAsset(rig.net, rig.sub, "scaleAssetT");
+    registerAsset(definition);
+    CHECK(NodeRegistry::instance().assetText("scaleAssetT") != nullptr);
+
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId one = net.addNode("scaleAssetT", "one");
+    NodeId two = net.addNode("scaleAssetT", "two");
+    net.node(line).setFloat("count", 3.0f);
+    net.connect(line, one);
+    net.connect(line, two);
+    net.node(two).setFloat("amount", 1.0f);
+    CHECK_NEAR(net.cook(one)->x()[0], 5.0f);
+    CHECK_NEAR(net.cook(two)->x()[0], 10.0f);
+    CHECK(net.node(one).isAssetInstance() && net.node(one).inputCount() == 1);
+
+    const std::string graphText = saveNetwork(net);
+    CHECK(graphText.find("\"assets\"") != std::string::npos);
+    size_t graphKeys = 0;
+    for (size_t pos = 0; (pos = graphText.find("\"graph\"", pos)) != std::string::npos; ++pos) ++graphKeys;
+    CHECK(graphKeys == 1);  // only the embedded definition, not the instances
+
+    Network copy(1);
+    loadNetwork(copy, graphText);
+    CHECK(saveNetwork(copy) == graphText);
+    CHECK_NEAR(copy.cook(copy.findNode("two"))->x()[0], 10.0f);
+
+    registerAsset(definition.substr(0, definition.find("\"amount\": 0.5")) + "\"amount\": 0.1" + definition.substr(definition.find("\"amount\": 0.5") + 13));
+    NodeId fresh = net.addNode("scaleAssetT", "fresh");
+    net.connect(line, fresh);
+    CHECK_NEAR(net.cook(fresh)->x()[0], 1.0f);
+    CHECK_NEAR(net.cook(one)->x()[0], 5.0f);
+}
+
+TEST(embeddedAssetsMakeGraphFilesSelfContained) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount + 100");
+    registerAsset(saveAsset(rig.net, rig.sub, "embedSourceAsset"));
+
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId inst = net.addNode("embedSourceAsset", "inst");
+    net.connect(line, inst);
+    net.setDisplayNode(inst);
+    std::string text = saveNetwork(net);
+    for (size_t pos = 0; (pos = text.find("embedSourceAsset", pos)) != std::string::npos; pos += 16) text.replace(pos, 16, "embedLoadedAsset");
+
+    CHECK(NodeRegistry::instance().assetText("embedLoadedAsset") == nullptr);
+    Network loaded(1);
+    loadNetwork(loaded, text);
+    CHECK(NodeRegistry::instance().assetText("embedLoadedAsset") != nullptr);
+    CHECK_NEAR(loaded.cookDisplay()->x()[0], 102.0f);
+
+    std::string message;
+    CHECK(throwsRuntimeError([&] { registerAsset("{ format: 'jitnodes-asset', version: 1, type: 'line', inputs: 1, promote: {}, graph: { nodes: [] } }"); }, &message));
+    CHECK(message.find("conflicts") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { registerAsset("{ format: 'wrong', version: 1 }"); }));
+    CHECK(throwsRuntimeError([&] { registerAsset("{ format: 'jitnodes-asset', version: 1, type: 'x', inputs: 99, promote: {}, graph: { nodes: [] } }"); }));
+    CHECK(throwsRuntimeError([&] { saveAsset(rig.net, rig.line, "notASubnet"); }));
+}
+
+TEST(assetFilesRoundTripAndExamplesWork) {
+    const std::string dir = std::string(JITNODES_SOURCE_DIR) + "/examples/";
+    registerAssetFromFile(dir + "assets/wobble.asset.json");
+    Network net(1);
+    loadNetworkFromFile(net, dir + "graphs/assetDemo.json");
+    CHECK(net.nodeIds().size() == 5 && net.node(net.findNode("wobbleA")).isAssetInstance());
+    net.setTime(0.0);
+    Geometry atZero = *net.cookDisplay();
+    net.setTime(1.0);
+    auto later = net.cookDisplay();
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < atZero.pointCount(); ++i) maxDelta = std::max(maxDelta, std::fabs(atZero.x()[i] - later->x()[i]));
+    CHECK(atZero.pointCount() == 96 && maxDelta > 0.05f);
+
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_asset.json").string();
+    saveAssetToFile(net, net.findNode("wobbleA"), "wobbleAssetCopy", path);
+    registerAssetFromFile(path);
+    std::filesystem::remove(path);
+    Network other(1);
+    NodeId line = other.addNode("line");
+    NodeId inst = other.addNode("wobbleAssetCopy");
+    other.connect(line, inst);
+    CHECK(other.cook(inst)->pointCount() == 100);
+}
+
+TEST(parallelSubnetBranchesMatchSingleThreadAndProfileNests) {
+    auto build = [](Network& net) {
+        std::vector<NodeId> tails;
+        for (int b = 0; b < 6; ++b) {
+            NodeId line = net.addNode("line");
+            NodeId sub = net.addNode("subnet", "sub" + std::to_string(b));
+            net.node(line).setFloat("count", 70000.0f + static_cast<float>(b));
+            net.node(line).setFloat("length", 10.0f);
+            SubnetNode& sn = dynamic_cast<SubnetNode&>(net.node(sub));
+            sn.addSpareFloat("k", static_cast<float>(b));
+            Network& inner = sn.network();
+            NodeId in = inner.addNode("subnetInput", "in");
+            NodeId xf = inner.addNode("transform", "innerXf");
+            NodeId wr = inner.addNode("wrangle", "innerWr");
+            inner.node(xf).setExpression("tx", "parent.k * 2 + time");
+            inner.node(wr).setString("code", "y = y + x * a + sin(x);");
+            inner.node(wr).setFloat("a", 0.5f);
+            inner.connect(in, xf);
+            inner.connect(xf, wr);
+            inner.setDisplayNode(wr);
+            net.connect(line, sub);
+            tails.push_back(sub);
+        }
+        while (tails.size() > 1) {
+            std::vector<NodeId> next;
+            for (size_t i = 0; i + 1 < tails.size(); i += 2) {
+                NodeId merge = net.addNode("merge");
+                net.connect(tails[i], merge, 0);
+                net.connect(tails[i + 1], merge, 1);
+                next.push_back(merge);
+            }
+            tails = next;
+        }
+        net.setDisplayNode(tails[0]);
+    };
+    Network single(1), threaded(4);
+    build(single);
+    build(threaded);
+    expectSameGeometry(*single.cookDisplay(), *threaded.cookDisplay());
+    for (double t : {0.5, 2.0}) {
+        single.setTime(t);
+        threaded.setTime(t);
+        for (Network* net : {&single, &threaded}) net->node(net->findNode("sub3")).setFloat("k", static_cast<float>(t) * 3.0f);
+        expectSameGeometry(*single.cookDisplay(), *threaded.cookDisplay());
+    }
+    CHECK(threaded.compiler().compileCount() == single.compiler().compileCount());
+
+    const std::string report = threaded.profileReport();
+    CHECK(report.find("  innerXf") != std::string::npos && report.find("fused into innerWr") != std::string::npos);
+    threaded.resetProfile();
+    CHECK(dynamic_cast<SubnetNode&>(threaded.node(threaded.findNode("sub0"))).network().node(1).stats().cooks == 0);
+}
+
+TEST(copyOnWriteSharesUntouchedAttributes) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    NodeId wr = net.addNode("wrangle");
+    net.node(line).setFloat("count", 1000.0f);
+    net.node(wr).setString("code", "y = y + 1;");
+    net.connect(line, wr);
+    net.setDisplayNode(wr);
+    GeometryHandle in = net.cook(line);
+    GeometryHandle out = net.cook(wr);
+    CHECK(out->findAttrib(AttribClass::point, "x")->sharesStorageWith(*in->findAttrib(AttribClass::point, "x")));
+    CHECK(!out->findAttrib(AttribClass::point, "y")->sharesStorageWith(*in->findAttrib(AttribClass::point, "y")));
+    CHECK_NEAR(in->y()[10], 0.0f);
+    CHECK_NEAR(out->y()[10], 1.0f);
+
+    Geometry a = *in;
+    Geometry b = a;
+    b.x()[3] = 99.0f;
+    CHECK_NEAR(a.x()[3], in->x()[3]);
+    CHECK_NEAR(b.x()[3], 99.0f);
+    b.resizePoints(2000);
+    CHECK_NEAR(a.x()[999], in->x()[999]);
+    CHECK_NEAR(b.x()[999], in->x()[999]);
+    CHECK(a.pointCount() == 1000 && b.pointCount() == 2000);
+}
+
+TEST(concatMatchesSequentialAppend) {
+    auto make = [](size_t n, float base, const char* extra, bool prim) {
+        Geometry g;
+        g.resizePoints(n);
+        for (size_t i = 0; i < n; ++i) {
+            g.x()[i] = base + static_cast<float>(i);
+            g.y()[i] = -base;
+        }
+        if (n) g.addPrimitive({0, static_cast<uint32_t>(n), false});
+        if (extra) {
+            AttribArray& a = g.attrib(AttribClass::point, extra);
+            for (size_t i = 0; i < n; ++i) a.floats()[i] = base * 2;
+        }
+        if (prim) g.attrib(AttribClass::primitive, "tag", AttribType::int32).ints()[0] = 7;
+        g.setDetail("d", base);
+        return g;
+    };
+    Geometry g1 = make(5, 1, nullptr, false), g2 = make(0, 2, "q", false), g3 = make(37, 3, "q", true), g4 = make(20, 4, nullptr, true);
+    Geometry sequential;
+    for (const Geometry* g : {&g1, &g2, &g3, &g4}) sequential.append(*g);
+    ThreadPool pool(3);
+    for (ThreadPool* p : {static_cast<ThreadPool*>(nullptr), &pool}) {
+        Geometry merged = Geometry::concat({&g1, &g2, &g3, &g4}, p);
+        CHECK(merged.pointCount() == sequential.pointCount());
+        CHECK(merged.primitiveCount() == sequential.primitiveCount());
+        for (size_t i = 0; i < merged.primitiveCount(); ++i)
+            CHECK(merged.primitives()[i].start == sequential.primitives()[i].start && merged.primitives()[i].count == sequential.primitives()[i].count);
+        for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+            CHECK(merged.attribs(cls).size() == sequential.attribs(cls).size());
+            for (const auto& [name, array] : sequential.attribs(cls)) {
+                const AttribArray* m = merged.findAttrib(cls, name);
+                CHECK(m && m->type() == array.type());
+                for (size_t i = 0; m && i < array.size(); ++i) CHECK_NEAR(m->at(i), array.at(i));
+            }
+        }
+        CHECK_NEAR(merged.detail("d"), 1.0f);
+    }
+}
+
+TEST(mergeTreesFlattenIntoOneTask) {
+    auto build = [](Network& net, std::vector<NodeId>& merges) {
+        std::vector<NodeId> tails;
+        for (int i = 0; i < 4; ++i) {
+            NodeId line = net.addNode("line");
+            net.node(line).setFloat("count", 5000.0f + static_cast<float>(i));
+            net.node(line).setFloat("y", static_cast<float>(i));
+            tails.push_back(line);
+        }
+        while (tails.size() > 1) {
+            std::vector<NodeId> next;
+            for (size_t i = 0; i + 1 < tails.size(); i += 2) {
+                NodeId merge = net.addNode("merge");
+                net.connect(tails[i], merge, 0);
+                net.connect(tails[i + 1], merge, 1);
+                merges.push_back(merge);
+                next.push_back(merge);
+            }
+            tails = next;
+        }
+        net.setDisplayNode(tails[0]);
+    };
+    Network flat(4), plain(4);
+    plain.setFusionEnabled(false);
+    std::vector<NodeId> flatMerges, plainMerges;
+    build(flat, flatMerges);
+    build(plain, plainMerges);
+    GeometryHandle a = flat.cookDisplay();
+    GeometryHandle b = plain.cookDisplay();
+    expectSameGeometry(*a, *b);
+    CHECK(a->primitiveCount() == 4);
+    CHECK(flat.node(flatMerges[0]).cookCount() == 0 && flat.node(flatMerges[1]).cookCount() == 0);
+    CHECK(flat.node(flatMerges[2]).cookCount() == 1);
+    CHECK(plain.node(plainMerges[0]).cookCount() == 1);
+    CHECK(flat.profileReport().find("fused into merge") != std::string::npos);
+
+    flat.node(flat.findNode("line1")).setFloat("count", 123.0f);
+    plain.node(plain.findNode("line1")).setFloat("count", 123.0f);
+    expectSameGeometry(*flat.cookDisplay(), *plain.cookDisplay());
+}
+
+class CancelNode : public Node {
+public:
+    static inline bool armed = false;
+    CancelNode() : Node("testCancel", 0) {}
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>&) override {
+        if (armed) ctx.network->cancel();
+        return std::make_shared<Geometry>();
+    }
+};
+
+TEST(cancelAbortsTheCookInProgress) {
+    NodeRegistry::instance().registerType("testCancel", [] { return std::make_unique<CancelNode>(); });
+    Network net(2);
+    NodeId c = net.addNode("testCancel");
+    NodeId n1 = net.addNode("null");
+    NodeId n2 = net.addNode("null");
+    net.connect(c, n1);
+    net.connect(n1, n2);
+    net.setDisplayNode(n2);
+
+    net.cancel();
+    CancelNode::armed = true;
+    bool threw = false;
+    try { net.cookDisplay(); } catch (const CookCancelled&) { threw = true; }
+    CHECK(threw);
+    CHECK(net.node(c).cookCount() == 1);
+    CHECK(net.node(n2).cookCount() == 0);
+
+    CancelNode::armed = false;
+    CHECK(net.cookDisplay() != nullptr);
+    CHECK(net.node(n2).cookCount() == 1);
+}
+
+TEST(undoOnlyTouchesTheNodesThatDiffer) {
+    Network net(1);
+    net.setFusionEnabled(false);
+    NodeId line = net.addNode("line", "src");
+    NodeId xf = net.addNode("transform", "xf");
+    NodeId wr = net.addNode("wrangle", "wr");
+    NodeId out = net.addNode("null", "out");
+    net.connect(line, xf);
+    net.connect(xf, wr);
+    net.connect(wr, out);
+    net.setDisplayNode(out);
+    net.node(line).setFloat("count", 100.0f);
+    net.node(wr).setString("code", "y = x * a;");
+    net.node(wr).setFloat("a", 1.0f);
+    History history(net);
+    net.cookDisplay();
+
+    net.node(wr).setFloat("a", 3.0f);
+    CHECK(history.commit("edit a"));
+    CHECK_NEAR(net.cookDisplay()->y()[10], 3.0f * net.cookDisplay()->x()[10]);
+
+    CHECK(history.undo());
+    const RestoreStats& stats = history.lastRestore();
+    CHECK(stats.updated == 1 && stats.added == 0 && stats.removed == 0 && stats.rebuilt == 0 && stats.rewired == 0);
+    auto geo = net.cookDisplay();
+    CHECK_NEAR(geo->y()[10], geo->x()[10]);
+    CHECK(net.node(line).cookCount() == 1 && net.node(xf).cookCount() == 1);
+    CHECK(net.node(wr).cookCount() == 3 && net.node(out).cookCount() == 3);
+}
+
+TEST(undoRestoresStructureWiringAnimationAndSubnets) {
+    SubnetRig rig;
+    Network& net = rig.net;
+    History history(net);
+    std::vector<std::string> saved{saveNetwork(net, false)};
+    auto step = [&](const char* label) {
+        CHECK(history.commit(label));
+        saved.push_back(saveNetwork(net, false));
+    };
+
+    net.node(rig.line).setExpression("length", "2 + time");
+    step("expression");
+    rig.inner().node(rig.xf).setFloat("tx", 7.0f);
+    step("edit inside subnet");
+    NodeId extra = net.addNode("transform", "extra");
+    net.connect(rig.sub, extra);
+    net.setDisplayNode(extra);
+    step("add node");
+    net.disconnect(rig.out, 0);
+    net.connect(extra, rig.out);
+    step("rewire");
+    subnetOf(net, rig.sub).addSpareFloat("amount", 1.0f);
+    step("spare parameter");
+    net.removeNode(rig.out);
+    step("delete");
+
+    for (size_t i = saved.size() - 1; i > 0; --i) {
+        CHECK(history.undo());
+        CHECK(saveNetwork(net, false) == saved[i - 1]);
+    }
+    CHECK(!net.node(rig.line).isAnimated("length"));
+    for (size_t i = 1; i < saved.size(); ++i) {
+        CHECK(history.redo());
+        CHECK(saveNetwork(net, false) == saved[i]);
+    }
+    CHECK(net.node(rig.line).isAnimated("length") && rig.inner().node(rig.xf).baseFloat("tx") == 7.0f);
+    CHECK_NEAR(net.cook(extra)->x()[2], 2.0f + 7.0f);
+
+    net.node(rig.line).setFloat("count", 50.0f);
+    CHECK(history.undo());
+    CHECK(saveNetwork(net, false) == saved[saved.size() - 2]);
+    CHECK(history.redo());
+    CHECK(saveNetwork(net, false) == saved.back());
+}
+
+TEST(historySharesUnchangedNodeText) {
+    Network net(1);
+    std::vector<NodeId> ids;
+    for (int i = 0; i < 60; ++i) {
+        ids.push_back(net.addNode(i == 0 ? "line" : "transform"));
+        if (i) net.connect(ids[static_cast<size_t>(i) - 1], ids.back());
+    }
+    History history(net);
+    const size_t fullSnapshot = saveNetwork(net, false).size();
+    for (int i = 0; i < 30; ++i) {
+        net.node(ids[static_cast<size_t>(i) + 1]).setFloat("tx", static_cast<float>(i) + 1.0f);
+        CHECK(history.commit("edit"));
+    }
+    CHECK(history.size() == 31);
+    CHECK(history.storedBytes() < 3 * fullSnapshot);
+}
+
+TEST(assetInstancesUpdateWhenTheDefinitionChanges) {
+    auto define = [](int version, float scale, bool withExtra) {
+        SubnetRig rig;
+        SubnetNode& s = subnetOf(rig.net, rig.sub);
+        s.addSpareFloat("amount", 1.0f);
+        if (withExtra) s.addSpareFloat("extra", 0.5f);
+        rig.inner().node(rig.xf).setExpression("tx", "parent.amount * " + std::to_string(scale) + (withExtra ? " + parent.extra" : ""));
+        registerAsset(saveAsset(rig.net, rig.sub, "updAsset", version));
+    };
+    define(1, 10.0f, false);
+
+    Network net;
+    NodeId line = net.addNode("line", "src");
+    NodeId a = net.addNode("updAsset", "a");
+    NodeId b = net.addNode("updAsset", "b");
+    NodeId holder = net.addNode("subnet", "holder");
+    net.connect(line, a);
+    net.connect(line, b);
+    net.connect(line, holder);
+    net.node(a).setFloat("amount", 2.0f);
+    net.node(b).setExpression("amount", "time + 1");
+    Network& inner = subnetOf(net, holder).network();
+    NodeId in = inner.addNode("subnetInput", "in");
+    NodeId c = inner.addNode("updAsset", "c");
+    inner.connect(in, c);
+    inner.setDisplayNode(c);
+    CHECK_NEAR(net.cook(a)->x()[0], 20.0f);
+    CHECK_NEAR(net.cook(holder)->x()[0], 10.0f);
+
+    define(2, 100.0f, true);
+    CHECK(NodeRegistry::instance().assetVersion("updAsset") == 2);
+    CHECK(outdatedAssetInstances(net) == 3 && outdatedAssetInstances(net, "somethingElse") == 0);
+    CHECK_NEAR(net.cook(a)->x()[0], 20.0f);
+
+    CHECK(updateAssetInstances(net, "somethingElse") == 0);
+    CHECK(updateAssetInstances(net) == 3);
+    CHECK(updateAssetInstances(net) == 0 && outdatedAssetInstances(net) == 0);
+    CHECK(net.node(a).isAssetInstance() && net.inputOf(a, 0) == line && net.node(a).hasFloat("extra"));
+    CHECK_NEAR(net.cook(a)->x()[0], 200.5f);
+    CHECK(net.node(b).isAnimated("amount"));
+    net.setTime(2.0);
+    CHECK_NEAR(net.cook(b)->x()[0], 300.5f);
+    CHECK_NEAR(net.cook(holder)->x()[0], 100.5f);
+
+    define(3, 100.0f, false);
+    CHECK(updateAssetInstances(net) == 3);
+    CHECK(!net.node(a).hasFloat("extra"));
+    CHECK_NEAR(net.cook(a)->x()[0], 200.0f);
+
+    const std::string text = saveNetwork(net);
+    define(1, 10.0f, false);
+    CHECK(NodeRegistry::instance().assetVersion("updAsset") == 1);
+    Network loaded(1);
+    loadNetwork(loaded, text);
+    CHECK(NodeRegistry::instance().assetVersion("updAsset") == 3);
+    CHECK_NEAR(loaded.cook(loaded.findNode("a"))->x()[0], 200.0f);
+}
+
+TEST(assetMigrationHooksUpgradeInstancesInPlaceAndOnLoad) {
+    auto define = [](int version, bool renamed) {
+        SubnetRig rig;
+        SubnetNode& s = subnetOf(rig.net, rig.sub);
+        const std::string param = renamed ? "gain" : "amount";
+        s.addSpareFloat(param, 1.0f);
+        rig.inner().node(rig.xf).setExpression("tx", "parent." + param);
+        registerAsset(saveAsset(rig.net, rig.sub, "migAsset", version));
+    };
+    NodeRegistry& registry = NodeRegistry::instance();
+    auto calls = std::make_shared<std::vector<std::pair<int, int>>>();
+    registry.setAssetMigration("migAsset", [calls](AssetUpgrade& up) {
+        calls->emplace_back(up.fromVersion, up.toVersion);
+        if (up.old.hasFloat("amount")) up.fresh.setFloat("gain", up.old.baseFloat("amount") * 10.0f);
+    });
+
+    define(1, false);
+    Network net;
+    NodeId line = net.addNode("line", "src");
+    NodeId a = net.addNode("migAsset", "a");
+    net.connect(line, a);
+    net.setDisplayNode(a);
+    net.node(a).setFloat("amount", 2.0f);
+    CHECK_NEAR(net.cookDisplay()->x()[0], 2.0f);
+    const std::string oldText = saveNetwork(net);
+    CHECK(oldText.find("\"assetVersion\"") != std::string::npos);
+
+    define(2, true);
+    CHECK(outdatedAssetInstances(net) == 1 && updateAssetInstances(net) == 1);
+    CHECK(calls->size() == 1 && calls->front() == std::make_pair(1, 2));
+    CHECK(net.node(a).hasFloat("gain") && !net.node(a).hasFloat("amount") && net.inputOf(a, 0) == line);
+    CHECK_NEAR(net.cookDisplay()->x()[0], 20.0f);
+    CHECK(updateAssetInstances(net) == 0 && calls->size() == 1);
+
+    Network loaded(1);
+    loadNetwork(loaded, oldText);
+    CHECK(calls->size() > 1 && calls->back() == std::make_pair(1, 2));
+    CHECK(loaded.node(loaded.findNode("a")).hasFloat("gain") && loaded.inputOf(loaded.findNode("a"), 0) == loaded.findNode("src"));
+    CHECK_NEAR(loaded.cookDisplay()->x()[0], 20.0f);
+
+    registry.setAssetMigration("migAsset", nullptr);
+    Network plain(1);
+    CHECK(!throwsRuntimeError([&] { loadNetwork(plain, oldText); }));
+    CHECK_NEAR(plain.cookDisplay()->x()[0], 1.0f);
+
+    registry.setAssetMigration("migAsset", [](AssetUpgrade&) { throw std::runtime_error("boom"); });
+    define(3, true);
+    std::string message;
+    CHECK(throwsRuntimeError([&] { updateAssetInstances(net); }, &message));
+    CHECK(message.find("asset migration of 'a'") != std::string::npos && message.find("boom") != std::string::npos);
+    CHECK(outdatedAssetInstances(net) == 1 && net.inputOf(a, 0) == line);
+
+    registry.setAssetMigration("migAsset", [](AssetUpgrade& up) { up.inputs.assign(up.inputs.size(), invalidNodeId); });
+    CHECK(updateAssetInstances(net) == 1 && net.inputOf(a, 0) == invalidNodeId);
+    registry.setAssetMigration("migAsset", nullptr);
+}
+
+TEST(nodePositionsRoundTripAndFollowUndo) {
+    Network net(1);
+    NodeId a = net.addNode("line", "a");
+    NodeId b = net.addNode("null", "b");
+    net.connect(a, b);
+    CHECK(!net.node(a).hasPosition());
+    net.node(a).setPosition(10.5f, -20.0f);
+    History history(net);
+    net.node(b).setPosition(30.0f, 40.0f);
+    CHECK(history.commit("place b"));
+    net.node(b).setPosition(35.0f, 45.0f);
+    CHECK(history.commit("move b"));
+
+    const std::string text = saveNetwork(net, false);
+    Network copy(1);
+    loadNetwork(copy, text);
+    CHECK(copy.node(copy.findNode("a")).posX() == 10.5f && copy.node(copy.findNode("a")).posY() == -20.0f);
+    CHECK(copy.node(copy.findNode("b")).hasPosition() && copy.node(copy.findNode("b")).posX() == 35.0f);
+    CHECK(saveNetwork(copy, false) == text);
+
+    CHECK(history.undo());
+    CHECK(net.node(b).posX() == 30.0f && net.node(b).posY() == 40.0f);
+    CHECK(net.node(b).cookCount() == 0 && net.node(a).cookCount() == 0);
+    CHECK(throwsRuntimeError([&] { loadNetwork(copy, R"({ format: "jitnodes", version: 1, nodes: [ { id: 1, type: "null", name: "x", pos: [1], inputs: [0] } ] })"); }));
+}
+
+TEST(subnetsFollowTheParentFusionSetting) {
+    auto build = [](Network& net, NodeId& first, NodeId& second) {
+        NodeId line = net.addNode("line");
+        NodeId sub = net.addNode("subnet", "sub");
+        net.connect(line, sub);
+        net.setDisplayNode(sub);
+        Network& inner = dynamic_cast<SubnetNode&>(net.node(sub)).network();
+        NodeId in = inner.addNode("subnetInput", "in");
+        first = inner.addNode("transform", "x1");
+        second = inner.addNode("transform", "x2");
+        inner.connect(in, first);
+        inner.connect(first, second);
+        inner.setDisplayNode(second);
+    };
+    Network fused(1), plain(1);
+    plain.setFusionEnabled(false);
+    NodeId f1, f2, p1, p2;
+    build(fused, f1, f2);
+    build(plain, p1, p2);
+    CHECK(fused.fusionEnabled() && !plain.fusionEnabled());
+    expectSameGeometry(*fused.cookDisplay(), *plain.cookDisplay());
+    Network& fusedInner = dynamic_cast<SubnetNode&>(fused.node(fused.findNode("sub"))).network();
+    Network& plainInner = dynamic_cast<SubnetNode&>(plain.node(plain.findNode("sub"))).network();
+    CHECK(fusedInner.fusionEnabled() && !plainInner.fusionEnabled());
+    CHECK(fusedInner.node(f1).cookCount() == 0 && fusedInner.node(f2).cookCount() == 1);
+    CHECK(plainInner.node(p1).cookCount() == 1 && plainInner.node(p2).cookCount() == 1);
+}
+
+TEST(unlockingAnAssetInstanceGivesAnEditableSubnetWithTheSameBehaviour) {
+    SubnetRig rig;
+    SubnetNode& s = subnetOf(rig.net, rig.sub);
+    s.addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    registerAsset(saveAsset(rig.net, rig.sub, "unlockTestAsset"));
+
+    Network net(1);
+    NodeId line = net.addNode("line", "src");
+    NodeId inst = net.addNode("unlockTestAsset", "inst");
+    net.connect(line, inst);
+    net.setDisplayNode(inst);
+    net.node(inst).setFloat("amount", 4.0f);
+    CHECK_NEAR(net.cookDisplay()->x()[0], 40.0f);
+    net.node(inst).setPosition(5.0f, 6.0f);
+
+    CHECK(throwsRuntimeError([&] { unlockAssetInstance(net, line); }));
+    unlockAssetInstance(net, inst);
+    CHECK(net.node(inst).typeName() == "subnet" && !net.node(inst).isAssetInstance() && net.node(inst).name() == "inst");
+    CHECK(net.inputOf(inst, 0) == line && net.displayNode() == inst);
+    CHECK(net.node(inst).hasPosition() && net.node(inst).posX() == 5.0f && net.node(inst).posY() == 6.0f);
+    Network& inner = dynamic_cast<SubnetNode&>(net.node(inst)).network();
+    CHECK(inner.nodeIds().size() == 2 && inner.findNode("xf") != invalidNodeId);
+    CHECK(net.node(inst).hasFloat("amount") && net.node(inst).baseFloat("amount") == 4.0f);
+    CHECK_NEAR(net.cookDisplay()->x()[0], 40.0f);
+
+    inner.node(inner.findNode("xf")).setExpression("tx", "parent.amount * 100");
+    net.node(inst).setFloat("amount", 5.0f);
+    CHECK_NEAR(net.cookDisplay()->x()[0], 500.0f);
+    CHECK(saveNetwork(net).find("\"graph\"") != std::string::npos);
+    CHECK(NodeRegistry::instance().assetNames().size() >= 1);
+    const std::vector<std::string> names = NodeRegistry::instance().assetNames();
+    CHECK(std::find(names.begin(), names.end(), "unlockTestAsset") != names.end());
 }
 
 TEST(emptyGeometryIsSafe) {

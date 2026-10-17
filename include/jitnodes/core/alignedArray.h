@@ -10,8 +10,8 @@
 namespace jitnodes {
 
 // SIMD friendly constants shared by the data layer and the JIT.
-inline constexpr size_t simdAlignment = 32;  // AVX2 register width in bytes
-inline constexpr size_t simdLanes = 8;       // floats per AVX2 register
+inline constexpr size_t simdAlignment = 64;  // AVX-512 register width in bytes (also covers SSE2/AVX2)
+inline constexpr size_t simdLanes = 16;      // floats per AVX-512 register; arrays are padded to this
 
 inline constexpr size_t padToLanes(size_t n) { return (n + simdLanes - 1) & ~(simdLanes - 1); }
 
@@ -34,7 +34,7 @@ inline void alignedFree(void* p) {
 #endif
 }
 
-// Contiguous, 32-byte aligned array whose storage is always padded to a multiple of
+// Contiguous, 64-byte aligned array whose storage is always padded to a multiple of
 // simdLanes elements and zero-initialised, so JIT kernels never need a tail loop.
 template <class T>
 class AlignedArray {
@@ -93,9 +93,19 @@ public:
 
 private:
     void assign(const AlignedArray& o) {
-        resize(0);
-        resize(o.size_);
-        if (o.size_) std::memcpy(data_, o.data_, o.size_ * sizeof(T));
+        const size_t n = o.size_;
+        const size_t needed = padToLanes(n);
+        if (needed > capacity_) {
+            alignedFree(data_);
+            data_ = static_cast<T*>(alignedAlloc(needed * sizeof(T), simdAlignment));
+            capacity_ = needed;
+            std::memcpy(data_, o.data_, n * sizeof(T));
+            std::memset(data_ + n, 0, (needed - n) * sizeof(T));
+        } else {
+            if (n) std::memcpy(data_, o.data_, n * sizeof(T));
+            if (size_ > n) std::memset(data_ + n, 0, (size_ - n) * sizeof(T));
+        }
+        size_ = n;
     }
 
     T* data_ = nullptr;

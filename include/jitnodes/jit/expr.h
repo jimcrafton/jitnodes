@@ -33,7 +33,7 @@ enum class Op : uint8_t {
     logicalOr,
     logicalNot,
     select,  // select(mask, whenTrue, whenFalse)
-    sin,     // sin/cos/exp/log/pow are interpreter-only (no vector JIT yet)
+    sin,     // sin/cos/exp/log/pow: JIT uses single-precision polynomial approximations, see docs/design.md
     cos,
     exp,
     log,

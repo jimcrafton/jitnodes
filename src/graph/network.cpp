@@ -70,6 +70,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
     nextId_ = std::max(nextId_, id + 1);
+    slots_.at(id).node->onAttached(*this);
     return id;
 }
 
@@ -98,6 +99,26 @@ void Network::removeNode(NodeId id) {
     }
     slots_.erase(id);
     if (displayNode_ == id) displayNode_ = invalidNodeId;
+}
+
+void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs) {
+    Slot& s = slot(id);
+    if (inputs) {
+        for (NodeId in : *inputs) {
+            if (in == invalidNodeId) continue;
+            slot(in);
+            if (reaches(in, id)) throw std::runtime_error("new inputs of " + s.node->name() + " would create a cycle");
+        }
+        s.inputs = *inputs;
+    }
+    fresh->id_ = id;
+    fresh->network_ = this;
+    fresh->name_ = s.node->name_;
+    if (s.node->hasPosition() && !fresh->hasPosition()) fresh->setPosition(s.node->posX(), s.node->posY());
+    s.inputs.resize(static_cast<size_t>(fresh->inputCount()), invalidNodeId);
+    s.node = std::move(fresh);
+    s.node->onAttached(*this);
+    markDirty(id);
 }
 
 Node& Network::node(NodeId id) { return *slot(id).node; }
@@ -156,6 +177,7 @@ void Network::markDirty(NodeId id) {
             if (wired || other.node->referencedNodes_.count(currentName)) pending.push_back(otherId);
         }
     }
+    notifyOwner();
 }
 
 void Network::setTime(double t) {
@@ -172,6 +194,10 @@ float Network::resolveSymbol(NodeId owner, const std::string& symbol) {
     if (symbol == "frame") return static_cast<float>(time_ * fps_);
     if (symbol == "pi") return 3.14159265358979f;
     const size_t dot = symbol.find('.');
+    if (dot != std::string::npos && symbol.compare(0, dot, "parent") == 0) {
+        if (!parent_) throw std::runtime_error("'parent.' references are only valid inside a subnet");
+        return parent_->paramValue(owner_, symbol.substr(dot + 1));
+    }
     if (dot != std::string::npos) {
         const NodeId target = findNode(symbol.substr(0, dot));
         if (target == invalidNodeId) throw std::runtime_error("expression references unknown node '" + symbol.substr(0, dot) + "'");
@@ -213,6 +239,12 @@ bool Network::paramDependsOnTime(NodeId id, const std::string& name, std::set<st
         if (symbol == "time" || symbol == "frame") return true;
         if (symbol == "pi") continue;
         const size_t dot = symbol.find('.');
+        if (dot != std::string::npos && symbol.compare(0, dot, "parent") == 0) {
+            const std::string param = symbol.substr(dot + 1);
+            std::set<std::pair<NodeId, std::string>> parentVisiting;
+            if (parent_ && parent_->node(owner_).hasFloat(param) && parent_->paramDependsOnTime(owner_, param, parentVisiting)) return true;
+            continue;
+        }
         if (dot != std::string::npos) {
             const NodeId target = findNode(symbol.substr(0, dot));
             const std::string param = symbol.substr(dot + 1);
@@ -228,7 +260,38 @@ bool Network::dependsOnTime(NodeId id) const {
     std::set<std::pair<NodeId, std::string>> visiting;
     for (const auto& entry : node(id).floats_)
         if (paramDependsOnTime(id, entry.first, visiting)) return true;
+    return node(id).childDependsOnTime();
+}
+
+bool Network::anyDependsOnTime() const {
+    for (const auto& entry : slots_)
+        if (dependsOnTime(entry.first)) return true;
     return false;
+}
+
+void Network::setExternalInputs(const std::vector<GeometryHandle>& inputs) {
+    auto at = [](const std::vector<GeometryHandle>& v, int i) { return i >= 0 && static_cast<size_t>(i) < v.size() ? v[static_cast<size_t>(i)] : GeometryHandle(); };
+    std::vector<NodeId> changed;
+    for (const auto& [id, s] : slots_) {
+        if (s.node->typeName() != "subnetInput") continue;
+        const int index = static_cast<int>(s.node->baseFloat("index"));
+        if (at(externalInputs_, index).get() != at(inputs, index).get()) changed.push_back(id);
+    }
+    externalInputs_ = inputs;
+    for (NodeId id : changed) markDirty(id);
+}
+
+GeometryHandle Network::externalInput(int index) const {
+    if (index < 0 || static_cast<size_t>(index) >= externalInputs_.size() || !externalInputs_[static_cast<size_t>(index)])
+        throw std::runtime_error("subnet input " + std::to_string(index) + " is not connected");
+    return externalInputs_[static_cast<size_t>(index)];
+}
+
+void Network::invalidateReferencesTo(const std::string& nodeName) {
+    std::vector<NodeId> affected;
+    for (const auto& [id, s] : slots_)
+        if (s.node->referencedNodes_.count(nodeName)) affected.push_back(id);
+    for (NodeId id : affected) markDirty(id);
 }
 
 size_t Network::consumerCount(NodeId id) const {
@@ -238,13 +301,29 @@ size_t Network::consumerCount(NodeId id) const {
     return count;
 }
 
+void Network::collectMergeInputs(NodeId id, CookTask& task) {
+    const Slot& s = slot(id);
+    for (size_t i = 0; i < s.inputs.size(); ++i) {
+        const NodeId up = s.inputs[i];
+        if (up == invalidNodeId) throw std::runtime_error(node(id).name() + ": input " + std::to_string(i) + " is not connected");
+        const Node& upNode = node(up);
+        const bool absorbable = upNode.isMerge() && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
+        if (absorbable) {
+            task.absorbed.push_back(up);
+            collectMergeInputs(up, task);
+        } else {
+            task.inputs.push_back(up);
+        }
+    }
+}
+
 void Network::planCook(NodeId id, std::map<NodeId, CookTask>& tasks) {
     Node& n = node(id);
     if ((!n.dirty_ && n.cooked_) || tasks.count(id)) return;
 
     CookTask task;
     task.tail = id;
-    if (fusionEnabled_ && n.isPointwise()) {
+    if (fusionEnabled() && n.isPointwise()) {
         task.cls = n.attribClass();
         task.chain.push_back(id);
         for (;;) {
@@ -259,6 +338,8 @@ void Network::planCook(NodeId id, std::map<NodeId, CookTask>& tasks) {
         const NodeId baseId = slot(task.chain.back()).inputs[0];
         if (baseId == invalidNodeId) throw std::runtime_error(node(task.chain.back()).name() + ": input 0 is not connected");
         task.inputs.push_back(baseId);
+    } else if (fusionEnabled() && n.isMerge()) {
+        collectMergeInputs(id, task);
     } else {
         const Slot& s = slot(id);
         for (size_t i = 0; i < s.inputs.size(); ++i) {
@@ -280,6 +361,7 @@ void Network::runTask(const CookTask& task) {
     using Clock = std::chrono::steady_clock;
     auto millis = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
 
+    if (cancelRequested()) throw CookCancelled();
     const auto start = Clock::now();
     Node& tail = node(task.tail);
     CookTimings timings;
@@ -301,9 +383,9 @@ void Network::runTask(const CookTask& task) {
 
         auto geo = std::make_shared<Geometry>(*base);
         const auto compileStart = Clock::now();
-        auto kernel = compiler_.compileFor(fused.spec, *geo, task.cls);
+        auto kernel = compiler().compileFor(fused.spec, *geo, task.cls);
         const auto runStart = Clock::now();
-        kernel->run(*geo, fused.params, task.cls, pool_.get());
+        kernel->run(*geo, fused.params, task.cls, pool());
         const auto runEnd = Clock::now();
         timings.compileMs = millis(compileStart, runStart);
         timings.kernelMs = millis(runStart, runEnd);
@@ -315,8 +397,9 @@ void Network::runTask(const CookTask& task) {
         std::vector<GeometryHandle> inputs;
         inputs.reserve(task.inputs.size());
         for (NodeId in : task.inputs) inputs.push_back(node(in).cooked_);
-        CookContext ctx{compiler_, time_, pool_.get(), &timings};
+        CookContext ctx{compiler(), time_, pool(), &timings, this};
         result = tail.cook(ctx, inputs);
+        for (NodeId a : task.absorbed) node(a).stats_.fusedInto = task.tail;
     }
 
     tail.cooked_ = result;
@@ -338,6 +421,19 @@ GeometryHandle Network::cook(NodeId id) {
     Node& n = node(id);
     if (!n.dirty_ && n.cooked_) return n.cooked_;
 
+    struct CookScope {
+        Network& net;
+        explicit CookScope(Network& n) : net(n) {
+            if (!net.parent_) net.cooking_ = true;
+        }
+        ~CookScope() {
+            if (!net.parent_) {
+                net.cooking_ = false;
+                net.cancelRequested_ = false;
+            }
+        }
+    } scope(*this);
+
     std::map<NodeId, CookTask> tasks;
     planCook(id, tasks);
 
@@ -346,22 +442,31 @@ GeometryHandle Network::cook(NodeId id) {
         maxLevel = std::max(maxLevel, task.level);
         if (task.chain.empty()) evaluateParams(node(tail));
         for (NodeId member : task.chain) evaluateParams(node(member));
+        for (NodeId member : task.absorbed) evaluateParams(node(member));
     }
 
     std::vector<std::vector<const CookTask*>> levels(static_cast<size_t>(maxLevel) + 1);
     for (const auto& entry : tasks) levels[static_cast<size_t>(entry.second.level)].push_back(&entry.second);
-    for (const auto& level : levels) pool_->parallelFor(level.size(), [&](size_t i) { runTask(*level[i]); });
+    for (const auto& level : levels) pool()->parallelFor(level.size(), [&](size_t i) { runTask(*level[i]); });
     return node(id).cooked_;
+}
+
+void Network::cancel() {
+    Network* root = this;
+    while (root->parent_) root = root->parent_;
+    if (root->cooking_) root->cancelRequested_ = true;
 }
 
 void Network::setThreadCount(size_t threads) { pool_ = std::make_unique<ThreadPool>(threads > 1 ? threads - 1 : 0); }
 
 void Network::resetProfile() {
-    for (auto& entry : slots_) entry.second.node->stats_ = NodeStats{};
+    for (auto& entry : slots_) {
+        entry.second.node->stats_ = NodeStats{};
+        if (Network* child = entry.second.node->childNetwork()) child->resetProfile();
+    }
 }
 
-std::string Network::profileReport() const {
-    std::string out = "node                 type          cooks  last ms  total ms  compile  kernel  note\n";
+void Network::appendProfileRows(std::string& out, int depth) const {
     char line[256];
     for (const auto& [id, s] : slots_) {
         const Node& n = *s.node;
@@ -369,12 +474,20 @@ std::string Network::profileReport() const {
         std::string note;
         if (st.fusedInto != invalidNodeId) note = "fused into " + node(st.fusedInto).name();
         else if (st.lastChainLength > 1) note = "fused chain of " + std::to_string(st.lastChainLength);
-        std::snprintf(line, sizeof(line), "%-20.20s %-12.12s %6zu %8.3f %9.3f %8.3f %7.3f  %s\n", n.name().c_str(),
-                      n.typeName().c_str(), st.cooks, st.lastCookMs, st.totalCookMs, st.lastCompileMs, st.lastKernelMs, note.c_str());
+        const std::string label = std::string(static_cast<size_t>(depth) * 2, ' ') + n.name();
+        std::snprintf(line, sizeof(line), "%-20.20s %-12.12s %6zu %8.3f %9.3f %8.3f %7.3f  %s\n", label.c_str(), n.typeName().c_str(), st.cooks,
+                      st.lastCookMs, st.totalCookMs, st.lastCompileMs, st.lastKernelMs, note.c_str());
         out += line;
+        if (const Network* child = n.childNetwork()) child->appendProfileRows(out, depth + 1);
     }
-    std::snprintf(line, sizeof(line), "kernels compiled: %zu (%.3f ms), threads: %zu\n", compiler_.compileCount(),
-                  compiler_.compileMillis(), pool_->concurrency());
+}
+
+std::string Network::profileReport() const {
+    std::string out = "node                 type          cooks  last ms  total ms  compile  kernel  note\n";
+    appendProfileRows(out, 0);
+    char line[256];
+    std::snprintf(line, sizeof(line), "kernels compiled: %zu (%.3f ms), threads: %zu\n", compiler().compileCount(),
+                  compiler().compileMillis(), pool()->concurrency());
     return out + line;
 }
 

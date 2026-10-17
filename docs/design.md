@@ -35,7 +35,7 @@ discussion of cook/dirty behaviour.
 - `JITNODES_JIT_LOG=1` in the environment dumps generated assembly to stderr.
 
 ### Notes on `jit-node-exec.docx`
-Ideas adopted: SoA data with 32-byte alignment and lane padding (no tail loop), branchless masks
+Ideas adopted: SoA data with 64-byte alignment and lane padding (no tail loop), branchless masks
 (`vcmpps` + `vandps`/`vblendvps`), a parameter block so sliders do not recompile, loop fusion,
 caching compiled kernels, scratch arena, topological ordering, dirty flags.
 
@@ -50,8 +50,8 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
          parseWrangle(text) -> KernelSpec (hash-consed ExprGraph + channel list)
                 |
          KernelCompiler::compile (cache by structure) -> Kernel
-                |-- AVX2 JIT (8 points per iteration, values stay in registers)
-                `-- scalar interpreter (non-AVX2 CPUs, reference for tests)
+                |-- JIT: SSE2 (4 lanes) / AVX2 (8, default) / AVX-512 (16); values stay in registers
+                `-- scalar interpreter (non-x86-64 hosts, JIT disabled, reference for tests)
 ```
 - Layers: `core` (aligned memory, arena), `geo`, `graph`, `jit`.
 - Kernel ABI: `void(float* const* channels, const float* params, const float* consts, size_t paddedCount)`.
@@ -73,13 +73,134 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
   Fusion only joins point-wise nodes of the same class. `attribCreate` adds a typed, constant filled attribute.
 - `Geometry::append` (merge) unions attributes of both classes and throws when an attribute has different types.
 
+## Subnets and assets
+- `SubnetNode` (`graph/subnet.h`) is a node that owns a child `Network`. Node types `subnet0`, `subnet` (1 input),
+  `subnet2`, `subnet3`, `subnet4` differ only in their number of inputs. Inside, a `subnetInput` node (parameter
+  `index`) delivers the geometry wired to that subnet input, and the result of the subnet is the child's display
+  node. Cooking is lazy and cached like any other network: the child only recooks nodes affected by changed inputs
+  (`Network::setExternalInputs` compares geometry handles), time, or promoted parameters.
+- Promoted parameters are spare parameters (`Node::addSpareFloat`, saved with the node, usable on any node). Inside
+  the subnet they are read as `parent.<name>` in expressions; `parent` is reserved. Editing one dirties exactly the
+  child nodes whose expressions mention `parent`, so the rest of the child stays cached. Subnets nest, and
+  `parent.x` may itself be an expression that reads the next level's `parent`.
+- A child network shares its owner's kernel cache and thread pool (so identical kernels in different instances
+  compile once) and follows its time and fps. `dependsOnTime` looks into children, and `setTime` only dirties the
+  subnets that actually depend on time. Editing anything inside a child dirties the owning subnet node
+  (`Network::setPropagateToParent` is switched off only while the subnet updates its own child during a cook, so no
+  worker thread touches the outer network).
+- Saving: a subnet stores its child graph inline (`"graph"`, same shape as the root: fps, display, nodes) and its
+  `"spare"` parameter names. Profiles (`profileReport`, `resetProfile`) descend into children, indented.
+- Assets: `saveAsset(net, subnetId, "typeName")` turns a subnet into a definition (`format: "jitnodes-asset"`: type,
+  number of inputs, `promote` names with their default values, and the child graph). `registerAsset(text)` /
+  `registerAssetFromFile` add it to `NodeRegistry` as a node type with that name (re-registering replaces the
+  definition for new instances only; a name that belongs to a built-in type is rejected, and a definition is
+  validated by building one instance first). Instances are `AssetNode`s: they copy the definition at creation, do
+  not store their child graph in files, and keep independent parameters and caches.
+- Graph files embed the definition of every asset they use (`"assets"`, transitive), so a file is self-contained.
+  On load, an embedded definition is registered if that type is not registered yet or the embedded `assetVersion`
+  is higher than the registered one (otherwise the registered definition wins); registrations are global and are not
+  undone if the load later fails. `jitnodesCli --asset
+  FILE` preloads library files; `examples/assets/wobble.asset.json` and `examples/graphs/assetDemo.json` show the
+  workflow.
+- Versions and updates: a definition carries an integer `assetVersion` (`saveAsset(..., assetVersion)`, default 1;
+  `NodeRegistry::assetVersion`). Every change of the registered text also bumps an internal revision, and instances
+  remember the revision they were built from. `updateAssetInstances(net, typeName = {})` rebuilds the outdated
+  instances in place, recursing into subnets and assets: it creates a fresh instance from the current definition,
+  copies over every parameter that still exists (base value, expression or keyframes, so values users set are kept
+  even when the new default differs), drops parameters that are gone, adds new ones at their defaults, and swaps it in
+  with `Network::replaceNode` (same id and name; wiring that still fits is kept, the instance and its consumers
+  recook). `outdatedAssetInstances` counts them. Updating is explicit, so a graph never changes under the user; it is
+  not undoable and must not run while the network cooks.
+- Migration hooks: instances remember the `assetVersion` they were built from (`AssetNode::version`) and save it
+  as `"assetVersion"` in graph files. `NodeRegistry::setAssetMigration(type, fn)` installs a hook (an empty function
+  removes it; it is independent of `registerAsset`) that receives an `AssetUpgrade`: `fromVersion`, `toVersion`, the
+  `old` node (saved parameters only, no child graph), the `fresh` node and the wiring `inputs`. When an instance is
+  brought up to date, `fresh` first receives every parameter that exists under the same name, then the hook runs and
+  can rename or rescale parameters, set new ones, or reorder `inputs` (padded or trimmed to the new input count).
+  The hook runs only when the versions differ, once per instance, in two places: `updateAssetInstances`, and
+  `loadNetwork` for an instance saved with an older version than the registered definition. Without a hook
+  such a load is lenient: parameters that no longer exist are dropped and a changed input count is padded or
+  trimmed (instances saved with the current version still fail on unknown parameters). An exception from the hook
+  aborts `updateAssetInstances` with `asset migration of '<name>' (<type>): ...`, leaving that instance and any later
+  ones untouched. `loadNetwork` loads the file twice (a validation pass, then the real one), so hooks must be pure
+  functions of their `AssetUpgrade`. Chaining steps (1 to 2 to 3) is up to the hook, which switches on `fromVersion`;
+  only the latest definition exists, so `old` is never rebuilt from an intermediate version. `History` should be
+  recreated after updating assets, since snapshots of nodes with renamed parameters no longer fit.
+- Unlocking: `unlockAssetInstance(net, id)` replaces an instance by an ordinary `subnet0`..`subnet4` (same id, name,
+  position and wiring) holding a copy of the asset's contents and promoted parameters with the instance's values, so the
+  contents become editable and are saved with the graph again. `NodeRegistry::assetNames()` lists the registered assets.
+- Not done: per-instance overrides of child nodes, string/int promoted parameters, and `parent.` references to
+  string parameters.
+
+## Platform support
+- Instruction-set tiers (`jit/isa.h`): `sse2` (4 lanes, the x86-64 baseline, so the JIT works on every x64 CPU),
+  `avx2` (8 lanes) and `avx512` (16 lanes, needs AVX512F+DQ). `KernelCompiler` defaults to AVX2 (or SSE2 without
+  it); `setIsa()`, `isaSupported()` and `supportedIsas()` select and query tiers, `jitnodesCli --isa` exposes it,
+  and the tier is part of the kernel cache key. AVX-512 stays opt-in: on this CPU it is 1.2-1.5x faster than AVX2
+  only for compute-heavy kernels, and some Intel parts lower their clock under AVX-512.
+- Code structure: `VecEmitter` (`src/jit/vecEmitter.*`, internal) hides the differences between tiers and emits one IR
+  op at a time into fresh virtual registers; `Kernel::compileJit` is tier-agnostic. SSE2 uses legacy two-operand
+  encodings (copy + op), emulates `blendvps` with and/andn/or, `cmpps` with swapped operands for `>`/`>=`, and
+  `floor/ceil` via an int32 round trip (no SSE4.1). AVX-512 builds masks with `vcmpps` + `vpmovm2d` and selects with
+  `vpternlogd`, so every tier works with the same all-ones/all-zeros vector masks.
+- Padding is 16 floats and alignment 64 bytes for every array, which fits all three tiers and parallel chunking.
+- Conditions are real masks: the wrangle parser turns any non-comparison condition (`x ? a : b`, `a && b` on plain
+  values) into `value != 0`, so the interpreter and every tier agree (NaN counts as true).
+- Vector math (Cephes single-precision polynomials, the same on all tiers; the interpreter uses the C library):
+  `sin/cos` are accurate to about 5e-6 absolute for |x| up to a few hundred (error grows with |x|; Cephes range
+  reduction is meant for |x| below about 8000); `exp` has about 1e-5 relative error and saturates its argument at
+  +-88.37 (results stay finite, no inf); `log` is accurate to about 1e-5 and returns -inf for 0 and NaN for negative
+  input; `pow(a, b)` is `exp(b * log(a))`, defined for a > 0 only (a <= 0 gives NaN or 0 where the C library would
+  give a real result for integer exponents). Parameter expressions still use the exact C library functions.
+- Non-x86-64 hosts: `JitBackend` only enables the JIT on x86-64, so other hosts (including AArch64) run kernels on the
+  interpreter. That path is plain C++ but has not been built or run on an ARM machine.
+- AArch64/NEON is not implemented. asmjit has an A64 backend and the work is a second `VecEmitter` (4 lanes, NEON has
+  native `fmin/fmax/fcm*/bsl`, `frintm/frintp`, `fsqrt` and integer shifts), but there is no ARM hardware or emulator
+  available in this environment to validate it, and untested numeric code generation is not worth shipping.
+
+## Persistence and tooling
+- Graph files (`graph/serialize.h`): `saveNetwork` writes strict JSON through the vendored json5 library
+  (`3rdparty/json5`, P-i-N/json5, MIT, header-only; the same library used by newui). `loadNetwork` accepts full
+  JSON5, so hand-edited files may contain comments, trailing commas and unquoted keys
+  (`examples/graphs/wobble.json`). The file stores `format`, `version` (currently 1), `fps`, optional `time`,
+  `display`, and per node: `id`, `type`, `name`, `floats` (base values), `strings`, optional `expressions` and
+  `keyframes`, and `inputs` (node ids, 0 = unconnected). Floats are written as the shortest text that round-trips,
+  so save -> load -> save is byte-identical. Cooked geometry is never saved.
+- Loading is atomic: the file is first loaded into a scratch network, and the real network is only replaced if that
+  succeeds. Errors name the node (`node #2 ('b', null): ...`) and cover unknown types and parameters, duplicate or
+  missing ids, cycles, bad expressions, unsupported versions and a missing display node. Node ids are preserved
+  (`Network::addNodeWithId`), which keeps references from editors stable.
+- json5 quirk found while integrating: `json5::value()` is a zeroed bit pattern, which reads as the number 0, so a
+  missing key is not null. The loader therefore checks key presence through `object_view::find` and never inspects
+  the value returned by `operator[]` for a missing key.
+- Undo/redo (`graph/history.h`): `History::commit(label)` after an edit, `undo()/redo()` with labels, a size limit,
+  and redo truncation on a new edit. A state is a `GraphSnapshot` (`serialize.h`): per node its JSON text (without
+  wiring), type, name, spare parameter names and input ids, plus the display node and fps; the playhead and asset
+  definitions are not included. Unchanged nodes share their text with the previous state (`shared_ptr`), so 30 edits
+  of a 60-node graph store about one graph plus 30 node texts (`History::storedBytes`).
+  `restoreSnapshot` compares the live graph (always re-snapshotted, so uncommitted edits are discarded) with the target
+  and only touches differences: nodes missing from the target are removed; nodes whose type, name or spare set changed
+  are removed and created again (`rebuilt`); nodes whose text changed are updated in place (animation cleared, then
+  the saved parameters and child graph applied, `updated`); new nodes are added; then wiring is diffed (disconnect
+  all differences first, then connect, so intermediate states cannot form cycles), then display node and fps. Every
+  node that is not touched, and not downstream of a touched one, keeps its cooked result. Limits: a changed subnet
+  reloads its whole child graph (its inner caches are lost), and a failure halfway through a restore, which cannot
+  happen for snapshots taken from a live network unless a node type was removed, leaves the network partly restored.
+- Plugin registration: custom node types derive from `Node` and are registered with
+  `NodeRegistry::instance().registerType(name, creator)`; they then work in networks, fusion planning (if
+  point-wise), profiling and save/load (tested with an `offsetX` node). A dynamically loaded plugin ABI is not done.
+- Tooling: `geometryToSvg` (`geo/svgExport.h`) draws polylines/polygons with +y up, and `jitnodesCli` loads a graph,
+  optionally sets the time/threads, cooks the display node (or `--node NAME`), prints a summary, writes SVG
+  (`--svg`, `--points`), re-saves the graph (`--save`), prints the profile (`--profile`) and lists node types
+  (`--types`).
+
 ## Threading and profiling
 - `ThreadPool::parallelFor(count, fn)`: the caller takes part and idle workers help, so it can be called from inside a
   pool task (nested parallelism) and with zero workers (runs inline). The first exception is rethrown once all indices
   have finished. `Network::setThreadCount(n)` sets total threads (1 = caller only; default is hardware threads - 1,
   capped at 8).
 - Data parallelism: `Kernel::run(..., pool)` splits ranges of at least 32768 padded elements into chunks that are
-  multiples of 8 lanes (so every chunk stays 32-byte aligned) and runs the same compiled function on shifted channel
+  multiples of 16 lanes (so every chunk stays 64-byte aligned) and runs the same compiled function on shifted channel
   pointers. Results are bit-identical to a serial run (tested).
 - Task parallelism: `Network::cook` plans the dirty subgraph (one `CookTask` per node or fused chain), evaluates
   animated parameters serially, then runs the tasks level by level (level = longest dependency path), each level with
@@ -90,11 +211,23 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
 - Profiling: every cook records `NodeStats` (cooks, last/total cook ms, compile ms, kernel ms, fused chain length, and
   `fusedInto` for interior chain nodes); `Network::profileReport()` prints a table plus total kernel compile time and
   thread count, `resetProfile()` clears it. `KernelCompiler::compileMillis()` is the cumulative JIT time.
-- Measured (`kernelBench`, 4M points, one machine, noisy): the kernel is memory-bound, so 4 threads give about 2.3x,
-  and more threads than memory bandwidth can feed do not help (8 threads was slower). A network of 8 branches of 1M
-  points recooked 60 ms -> 43 ms with 4 threads. The profile shows why it is not better: copying large geometries
-  and the merges dominate, and a left-deep chain of merges is entirely serial (use a balanced tree, or an N-ary
-  merge once it exists).
+- Measurements, including JIT off vs on, are in `docs/performance.md`. In short: kernels are memory-bound with the
+  JIT, so threads help little there; before the copy work below, copying large geometries and merging dominated.
+- Copy-on-write attributes: `AttribArray` shares its storage between copies and clones it on the first non-const
+  access (`floats()`, `ints()`, `data()`, `copyFrom`, `resize` of a shared array). Copying a `Geometry` is therefore
+  O(number of attributes), and a kernel node only clones the channels it stores to (`Kernel::run` fetches read-only
+  channels through the const accessors). Cloning happens on the cooking thread of the node that writes, so shared
+  arrays are only ever read by other threads; `sharesStorageWith` exposes the sharing for tests.
+- N-ary merge: `Geometry::concat(parts, pool)` builds the result with one allocation per attribute and runs the
+  per-attribute copies on the pool. `Network::planCook` flattens a tree of `merge` nodes (dirty, single consumer, not
+  the display node, fusion enabled) into one task over the leaf inputs, so a balanced or left-deep tree costs one
+  concat. The folded merge nodes are not cooked or cached (like interior nodes of a fused chain; profile note
+  `fused into <tail>`). Leaf order equals the tree's left-to-right order, so results are identical.
+- Cancellation: `Network::cancel()` (any thread) makes the cook in progress throw `CookCancelled` before it starts its
+  next task; finished nodes keep their results and unfinished ones stay dirty. Subnets check the root network's flag.
+  A cancel while no cook is running is ignored. Granularity is one node: a running kernel or node is not interrupted.
+- Scratch-arena temporaries were dropped from the plan: after the copy-on-write change no cook path allocates large
+  temporaries (what remains are small per-task vectors), so there is nothing for an arena to recycle.
 - Not covered by tests: a thread sanitizer run (MSVC has none); the suite was stress-run 30 times instead.
 
 ## Parameters and animation
@@ -106,8 +239,7 @@ member of a fused chain), so nodes and `pointKernel()` simply call `getFloat`.
   `evaluateScalar` with the same `evalOp` semantics as the kernel interpreter). Symbols: own parameter names,
   `time` (seconds), `frame` (`time * fps`, default 24), `pi`, and `nodeName.param` for another node's parameter.
   Functions include min/max/abs/sqrt/clamp/lerp plus `sin cos exp log floor ceil pow`.
-- `sin/cos/exp/log/pow` have no vector JIT yet: kernels using them fall back to the interpreter automatically
-  (`Kernel::isJitted()` is false). `floor`/`ceil` are JIT-compiled (`vroundps`).
+- `sin/cos/exp/log/pow/floor/ceil` are JIT-compiled on every instruction set (see "Platform support").
 - Keyframes (`Keyframe{time, value, interp}`) support constant, linear and smoothstep segments; values hold outside
   the keyed range. The interpolation mode belongs to the segment starting at that key.
 - Dependencies: `Network::markDirty` follows input wires and expression references (`nodeName.param`), so editing a
@@ -168,11 +300,55 @@ Remaining 3D work: indexed polygon/triangle primitives (vertex indirection), mat
    sort, per-primitive kernels (segmented loops instead of masks for variable-length work).
 5. **Parameters (first slice done)**: see "Parameters and animation" below. Still open: string/int/vector parameters
    and expressions, expression functions with node-graph queries, curve tangents/handles, spare parameters.
-6. **Execution (first slice done)**: see "Threading and profiling" below. Still open: scratch-arena temporaries wired into
-   cooking, 2D tile/band splitting for raster work, cooking an N-ary merge without repeated copies, cancellation.
-7. **Platform**: AArch64/NEON through asmjit, AVX-512 path, SSE2 fallback instead of the interpreter.
-8. **Persistence and tooling**: graph serialization (JSON), subnets/assets, plugin SDK for node types,
-   undo/redo, optional ImGui front end, optional Blend2D output.
+6. **Execution (done except raster/interruption)**: see "Threading and profiling" below. Still open: 2D tile/band
+   splitting for raster work, interrupting a running kernel (cancellation is per node today).
+7. **Platform (x86-64 done, AArch64 open)**: see "Platform support" below. Open: an AArch64/NEON backend (needs a device to
+   test on), FMA, an N-lane-agnostic remainder strategy for odd widths.
+8. **Persistence and tooling (first slice done)**: see "Persistence and tooling" below. Subnets and assets: see "Subnets and
+   assets". Done: diff-based undo, asset versions, `updateAssetInstances` and migration hooks. Still open: a loadable
+   plugin ABI, the editor front end (newui, see "Editor UI"), Blend2D output.
+
+## Editor UI
+- Decision: the editor is built on [newui](https://github.com/jimcrafton/newui) (checkout `D:\code\newui`; Win32,
+  Blend2D, own `View` tree and reflection), not on ImGui. The core library stays free of UI dependencies; the editor
+  is a separate executable target that links `jitnodes` and `newui` (not added to CMake yet).
+- Screens are designed as HTML mockups, converted once to `.newui` documents with the `html-mockup-to-newui` skill
+  (`.claude/skills/html-mockup-to-newui`: `html2newui.py` converter, `examples/parameterPanel.html`), checked with
+  `validateNewui.py` (`.claude/skills/newui-view-json5`) against newui's generated reflection data, and loaded at
+  run time with `newui::Bundle::loadFrame()`/`loadView()`. The editor code finds widgets by `name` and wires events
+  (`Button::onClick`, `Slider::onValueChanged`, ...) to `Network`/`History` calls.
+- What a `.newui` file cannot express is done in code: the node-graph canvas (a named placeholder `SubView` drawn
+  with Blend2D), `DropDownList`/`ListView`/`TreeView` models, slider ranges, image paths.
+- Planned panels: node-graph canvas with wiring, parameter panel (floats, expressions, keyframes), 2D viewport
+  (geometry through the SVG/Blend2D path), profile panel (`profileReport`), undo/redo from `History`, asset library.
+- The first screen is `editor/mockups/mainWindow.html` (1280 x 800: toolbar, node palette, graph canvas, parameter
+  panel, viewport, profile list, status bar) converted to `editor/ui/mainWindow.newui`; `editor/README.md` lists every
+  named view and what it is wired to.
+- Build: `JITNODES_BUILD_EDITOR` (off by default, Windows, single-config generators) adds `editor/` and builds newui
+  in its own `ExternalProject` tree (`JITNODES_NEWUI_DIR`, default `../newui`); the imported `newui::newui` target carries
+  its include paths, `BL_STATIC` and system libraries. Blend2D embeds its own asmjit under the `abi_bl` namespace, so it
+  does not clash with jitnodes' `v1_21` one. The editor target compiles with `/permissive` because newui's headers rely on
+  MSVC's lenient two-phase lookup (`/std:c++20` otherwise implies `/permissive-`). `jitnodesEditor --check` loads
+  `Resources/mainWindow.newui` and verifies every view the code looks up; see `editor/README.md`.
+- Wiring: `EditorModel` (UI-free, tested) plus `EditorWindow` (newui views by name) cover the toolbar and palette; see
+  `editor/README.md`. The graph canvas is `GraphCanvas` (Blend2D drawing, newui mouse/key events) over a UI-free
+  `GraphController`. Nodes carry an optional editor position (`Node::setPosition`, saved as `"pos": [x, y]`, part of the node
+  text in history snapshots so moves undo); it never dirties a node. The parameter panel (`ParameterPanel` over `EditorModel::parameters/setParameter/
+  toggleExpression/keyframeNow`) builds rows per selected node in a `ScrollView`; edits are single undo steps. The viewport
+  (`ViewportController` + `ViewportCanvas`) draws the display node's geometry (kept by `EditorModel::cook`) with a decimating
+  stride for huge point counts. The profile list
+  (`EditorModel::profile` over `NodeStats`, `ProfileController` + `ProfileCanvas`) shows cooks, last time and fusion notes
+  per node, subnet contents indented. Keyframes are edited in a modal dialog
+  (`KeyframeDialog` over a `KeyframeEditor` working copy, built from `keyframeDialog.newui`) opened from each float row;
+  OK replaces the keys in one undo step. The subnet view
+  (`EditorModel::enter/up`, `network()` = the network being edited, double-click or Enter to dive, Up or Backspace to
+  leave, Add parameter for promoted parameters) keeps one root-level history; child networks follow the parent's fusion
+  setting (`Network::fusionEnabled`). Assets are created from a subnet (`EditorModel::createAsset`: definition file, registration, the subnet replaced by an
+  instance, outdated instances updated), instanced from a palette list, loaded from files or an `Assets` folder, and
+  unlocked back into a subnet (`unlockAssetInstance`). `Network::replaceNode` keeps a node's editor position. The viewport colours by any point or primitive
+  attribute, or the length of a vector attribute (`ViewportController` computes the choices, values, range and colour map;
+  `ViewportCanvas` draws segments, dots, legend and a hover read-out). Open: an asset library browser and per-asset editing in place, dragging keys on a curve, and
+  the remaining screens.
 
 ## Conventions
 See `CLAUDE.md`: camelCase functions/variables/files, PascalCase types, `_` member postfix, minimal comments.

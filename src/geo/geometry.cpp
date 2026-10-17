@@ -79,4 +79,51 @@ void Geometry::append(const Geometry& other) {
     for (const auto& [name, value] : other.detail_) detail_.try_emplace(name, value);
 }
 
+Geometry Geometry::concat(const std::vector<const Geometry*>& parts, ThreadPool* pool) {
+    Geometry out;
+    size_t totalPoints = 0;
+    size_t totalPrims = 0;
+    for (const Geometry* g : parts) {
+        totalPoints += g->pointCount_;
+        totalPrims += g->primitives_.size();
+    }
+
+    out.primitives_.reserve(totalPrims);
+    size_t pointBase = 0;
+    for (const Geometry* g : parts) {
+        for (Primitive p : g->primitives_) {
+            p.start += static_cast<uint32_t>(pointBase);
+            out.primitives_.push_back(p);
+        }
+        pointBase += g->pointCount_;
+    }
+    out.resizePoints(totalPoints);
+
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+        for (const Geometry* g : parts)
+            for (const auto& [name, array] : g->attribMap(cls)) out.attrib(cls, name, array.type());
+
+    struct Copy {
+        AttribArray* dst;
+        size_t offset;
+        const AttribArray* src;
+    };
+    std::vector<Copy> copies;
+    size_t pointOffset = 0;
+    size_t primOffset = 0;
+    for (const Geometry* g : parts) {
+        for (const auto& [name, array] : g->pointAttribs_) copies.push_back({&out.pointAttribs_.at(name), pointOffset, &array});
+        for (const auto& [name, array] : g->primAttribs_) copies.push_back({&out.primAttribs_.at(name), primOffset, &array});
+        for (const auto& [name, value] : g->detail_) out.detail_.try_emplace(name, value);
+        pointOffset += g->pointCount_;
+        primOffset += g->primitives_.size();
+    }
+
+    auto run = [&](size_t i) { copies[i].dst->copyFrom(copies[i].offset, *copies[i].src); };
+    if (pool && copies.size() > 1) pool->parallelFor(copies.size(), run);
+    else
+        for (size_t i = 0; i < copies.size(); ++i) run(i);
+    return out;
+}
+
 }  // namespace jitnodes

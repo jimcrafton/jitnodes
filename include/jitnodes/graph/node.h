@@ -27,6 +27,7 @@ struct CookContext {
     double time = 0.0;
     ThreadPool* pool = nullptr;      // for data-parallel work inside a node; may be null
     CookTimings* timings = nullptr;  // nodes add their compile/kernel time here; may be null
+    Network* network = nullptr;      // the network that is cooking this node
 };
 
 struct NodeStats {
@@ -59,6 +60,12 @@ public:
     void setFloat(const std::string& name, float value);
     float getFloat(const std::string& name) const;
     bool hasFloat(const std::string& name) const { return floats_.count(name) != 0; }
+
+    // Spare parameters are added at run time (promoted subnet parameters, user parameters). They behave
+    // like declared ones and are saved with the node.
+    void addSpareFloat(const std::string& name, float defaultValue);
+    bool isSpare(const std::string& name) const { return spare_.count(name) != 0; }
+    std::vector<std::string> spareNames() const { return std::vector<std::string>(spare_.begin(), spare_.end()); }
     float baseFloat(const std::string& name) const;  // the stored value, ignoring any expression or keyframes
     std::vector<std::string> floatNames() const;
     std::vector<std::string> stringNames() const;
@@ -76,6 +83,16 @@ public:
     void setString(const std::string& name, const std::string& value);
     const std::string& getString(const std::string& name) const;
 
+    // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
+    void setPosition(float x, float y) {
+        posX_ = x;
+        posY_ = y;
+        hasPosition_ = true;
+    }
+    bool hasPosition() const { return hasPosition_; }
+    float posX() const { return posX_; }
+    float posY() const { return posY_; }
+
     bool dirty() const { return dirty_; }
     size_t cookCount() const { return cookCount_; }
     const NodeStats& stats() const { return stats_; }
@@ -87,6 +104,16 @@ public:
     virtual bool isPointwise() const { return false; }
     virtual AttribClass attribClass() const { return AttribClass::point; }
     virtual bool pointKernel(PointKernel&) { return false; }
+
+    // Merge nodes accept any number of inputs in cook, so the network flattens trees of them into one task.
+    virtual bool isMerge() const { return false; }
+
+    // Container nodes (subnets, assets) own a child network.
+    virtual Network* childNetwork() { return nullptr; }
+    virtual const Network* childNetwork() const { return nullptr; }
+    virtual bool isAssetInstance() const { return false; }  // child graph comes from the asset definition, not the file
+    virtual bool childDependsOnTime() const { return false; }
+    virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
 protected:
     void declareFloat(const std::string& name, float defaultValue);
@@ -117,7 +144,11 @@ private:
     std::map<std::string, FloatParam> floats_;
     std::map<std::string, std::string> strings_;
     std::set<std::string> referencedNodes_;
+    std::set<std::string> spare_;
     bool dirty_ = true;
+    float posX_ = 0.0f;
+    float posY_ = 0.0f;
+    bool hasPosition_ = false;
     size_t cookCount_ = 0;
     NodeStats stats_;
     GeometryHandle cooked_;

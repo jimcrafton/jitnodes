@@ -116,10 +116,13 @@ class MergeNode : public Node {
 public:
     MergeNode() : Node("merge", 2) {}
 
-    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
-        auto geo = std::make_shared<Geometry>();
-        for (const auto& g : in) geo->append(*g);
-        return geo;
+    bool isMerge() const override { return true; }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        std::vector<const Geometry*> parts;
+        parts.reserve(in.size());
+        for (const auto& g : in) parts.push_back(g.get());
+        return std::make_shared<Geometry>(Geometry::concat(parts, ctx.pool));
     }
 };
 
@@ -169,6 +172,7 @@ void registerBuiltinNodes() {
     add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");
     registerTopologyNodes();
+    registerSubnetNodes();
 }
 
 }  // namespace jitnodes

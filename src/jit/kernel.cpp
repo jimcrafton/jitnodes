@@ -2,43 +2,41 @@
 
 #include <asmjit/x86.h>
 
-#include <bit>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <stdexcept>
 
-#include <algorithm>
-#include <chrono>
-
 #include "jitnodes/core/threadPool.h"
 #include "jitnodes/jit/opEval.h"
+#include "vecEmitter.h"
 
 namespace jitnodes {
 
 struct JitBackend {
     asmjit::JitRuntime runtime;
+    bool sse2 = false;
     bool avx2 = false;
-    JitBackend() { avx2 = runtime.arch() == asmjit::Arch::kX64 && runtime.cpu_features().x86().has_avx2(); }
+    bool avx512 = false;
+
+    JitBackend() {
+        if (runtime.arch() != asmjit::Arch::kX64) return;
+        const auto& f = runtime.cpu_features().x86();
+        sse2 = true;  // part of the x86-64 baseline
+        avx2 = f.has_avx2();
+        avx512 = f.has_avx512_f() && f.has_avx512_dq();
+    }
+
+    bool supports(Isa isa) const { return isa == Isa::sse2 ? sse2 : isa == Isa::avx2 ? avx2 : avx512; }
 };
 
 namespace {
 
-// vcmpps predicates (ordered, quiet).
-constexpr uint32_t cmpEq = 0;
-constexpr uint32_t cmpLt = 17;
-constexpr uint32_t cmpLe = 18;
-constexpr uint32_t cmpGe = 29;
-constexpr uint32_t cmpGt = 30;
-constexpr uint32_t cmpTrue = 15;  // TRUE_UQ: all ones, used to build the NOT mask
-
 int32_t toInt32(float f) {
     return (f > -2147483648.0f && f < 2147483648.0f) ? static_cast<int32_t>(f) : INT32_MIN;
 }
-
-struct JitUnsupported : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
 
 // Marks expression nodes that influence a store; everything else is dead code and not emitted.
 std::vector<bool> liveNodes(const KernelSpec& spec) {
@@ -55,8 +53,8 @@ std::vector<bool> liveNodes(const KernelSpec& spec) {
 
 }  // namespace
 
-Kernel::Kernel(KernelSpec spec, std::shared_ptr<JitBackend> backend)
-    : spec_(std::move(spec)), backend_(std::move(backend)) {}
+Kernel::Kernel(KernelSpec spec, std::shared_ptr<JitBackend> backend, Isa isa)
+    : spec_(std::move(spec)), backend_(std::move(backend)), isa_(isa) {}
 
 Kernel::~Kernel() {
     if (fn_) backend_->runtime.release(fn_);
@@ -67,40 +65,28 @@ void Kernel::compileJit() {
     const auto& nodes = spec_.graph.nodes();
     const std::vector<bool> live = liveNodes(spec_);
 
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        if (!live[i]) continue;
-        const Op op = nodes[i].op;
-        if (op == Op::sin || op == Op::cos || op == Op::exp || op == Op::log || op == Op::pow)
-            throw JitUnsupported("op has no JIT implementation");
-    }
-
-    constantSlot_.assign(nodes.size(), -1);
-    bool needZero = false, needOnes = false;
     std::vector<bool> channelUsed(spec_.channels.size(), false);
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        if (!live[i]) continue;
-        const ExprNode& n = nodes[i];
-        if (n.op == Op::constant) {
-            constantSlot_[i] = static_cast<int>(constants_.size());
-            constants_.push_back(n.value);
-        }
-        if (n.op == Op::load) channelUsed[static_cast<size_t>(n.index)] = true;
-        if (n.op == Op::neg || n.op == Op::abs) needZero = true;
-        if (n.op == Op::logicalNot) needZero = needOnes = true;
-    }
+    for (size_t i = 0; i < nodes.size(); ++i)
+        if (live[i] && nodes[i].op == Op::load) channelUsed[static_cast<size_t>(nodes[i].index)] = true;
     for (const auto& s : spec_.stores) channelUsed[static_cast<size_t>(s.first)] = true;
 
     CodeHolder code;
     Error err = code.init(backend_->runtime.environment(), backend_->runtime.cpu_features());
     if (err != Error::kOk) throw std::runtime_error("asmjit: CodeHolder init failed");
+
     FileLogger logger(stderr);
     if (std::getenv("JITNODES_JIT_LOG")) code.set_logger(&logger);
     x86::Compiler cc(&code);
 
     // void kernel(void* const* channels, const float* params, const float* consts, size_t count)
     FuncNode* func = cc.add_func(FuncSignature::build<void, void* const*, const float*, const float*, size_t>());
-    func->frame().set_avx_enabled();
-    func->frame().set_avx_cleanup();
+    if (isa_ != Isa::sse2) {
+        // Without these asmjit spills wide registers with legacy SSE moves that only keep 128 bits.
+        func->frame().set_avx_enabled();
+        func->frame().set_avx_cleanup();
+    }
+    if (isa_ == Isa::avx512) func->frame().set_avx512_enabled();
+
     x86::Gp channelTable = cc.new_gp_ptr("channels");
     x86::Gp paramBlock = cc.new_gp_ptr("params");
     x86::Gp constPool = cc.new_gp_ptr("consts");
@@ -109,6 +95,8 @@ void Kernel::compileJit() {
     func->set_arg(1, paramBlock);
     func->set_arg(2, constPool);
     func->set_arg(3, count);
+
+    VecEmitter em(cc, isa_, constants_, constPool);
 
     std::vector<x86::Gp> channelPtr(spec_.channels.size());
     for (size_t c = 0; c < channelPtr.size(); ++c) {
@@ -123,27 +111,12 @@ void Kernel::compileJit() {
     cc.jz(done);
 
     std::vector<x86::Vec> value(nodes.size());
-    x86::Vec zero, ones;
-    if (needZero) {
-        zero = cc.new_ymm_ps("zero");
-        cc.vxorps(zero, zero, zero);
-    }
-    if (needOnes) {
-        ones = cc.new_ymm_ps("ones");
-        cc.vcmpps(ones, zero, zero, cmpTrue);
-    }
-
     // Loop invariants (constants, runtime parameters) are broadcast once, before the loop.
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (!live[i]) continue;
         const ExprNode& n = nodes[i];
-        if (n.op == Op::constant) {
-            value[i] = cc.new_ymm_ps("k");
-            cc.vbroadcastss(value[i], x86::dword_ptr(constPool, constantSlot_[i] * 4));
-        } else if (n.op == Op::param) {
-            value[i] = cc.new_ymm_ps("p");
-            cc.vbroadcastss(value[i], x86::dword_ptr(paramBlock, n.index * 4));
-        }
+        if (n.op == Op::constant) value[i] = em.konst(n.value);
+        else if (n.op == Op::param) value[i] = em.broadcast(x86::dword_ptr(paramBlock, n.index * 4));
     }
 
     x86::Gp index = cc.new_gp_ptr("i");
@@ -154,56 +127,25 @@ void Kernel::compileJit() {
         if (!live[i]) continue;
         const ExprNode& n = nodes[i];
         if (n.op == Op::constant || n.op == Op::param) continue;
-        x86::Vec d = cc.new_ymm_ps("v");
-        value[i] = d;
-        auto a = [&] { return value[static_cast<size_t>(n.a)]; };
-        auto b = [&] { return value[static_cast<size_t>(n.b)]; };
-        auto c = [&] { return value[static_cast<size_t>(n.c)]; };
-        switch (n.op) {
-            case Op::load:
-                if (spec_.channelTypes[static_cast<size_t>(n.index)] == AttribType::int32) {
-                    cc.vmovdqa(d, x86::ptr(channelPtr[static_cast<size_t>(n.index)], index, 2));
-                    cc.vcvtdq2ps(d, d);
-                } else {
-                    cc.vmovaps(d, x86::ptr(channelPtr[static_cast<size_t>(n.index)], index, 2));
-                }
-                break;
-            case Op::add: cc.vaddps(d, a(), b()); break;
-            case Op::sub: cc.vsubps(d, a(), b()); break;
-            case Op::mul: cc.vmulps(d, a(), b()); break;
-            case Op::div: cc.vdivps(d, a(), b()); break;
-            case Op::min: cc.vminps(d, a(), b()); break;
-            case Op::max: cc.vmaxps(d, a(), b()); break;
-            case Op::sqrt: cc.vsqrtps(d, a()); break;
-            case Op::neg: cc.vsubps(d, zero, a()); break;
-            case Op::abs: cc.vsubps(d, zero, a()); cc.vmaxps(d, a(), d); break;
-            case Op::lt: cc.vcmpps(d, a(), b(), cmpLt); break;
-            case Op::gt: cc.vcmpps(d, a(), b(), cmpGt); break;
-            case Op::le: cc.vcmpps(d, a(), b(), cmpLe); break;
-            case Op::ge: cc.vcmpps(d, a(), b(), cmpGe); break;
-            case Op::eq: cc.vcmpps(d, a(), b(), cmpEq); break;
-            case Op::logicalAnd: cc.vandps(d, a(), b()); break;
-            case Op::logicalOr: cc.vorps(d, a(), b()); break;
-            case Op::logicalNot: cc.vxorps(d, a(), ones); break;
-            case Op::select: cc.vblendvps(d, c(), b(), a()); break;  // mask ? b : c
-            case Op::floor: cc.vroundps(d, a(), 9); break;
-            case Op::ceil: cc.vroundps(d, a(), 10); break;
-            default: throw std::runtime_error("unhandled op in JIT");
+        if (n.op == Op::load) {
+            x86::Vec d = em.newVec("ld");
+            const x86::Mem mem = x86::ptr(channelPtr[static_cast<size_t>(n.index)], index, 2);
+            if (spec_.channelTypes[static_cast<size_t>(n.index)] == AttribType::int32) em.loadInt(d, mem);
+            else em.load(d, mem);
+            value[i] = d;
+            continue;
         }
+        auto operand = [&](int idx) { return idx >= 0 ? value[static_cast<size_t>(idx)] : x86::Vec(); };
+        value[i] = em.op(n.op, operand(n.a), operand(n.b), operand(n.c));
     }
 
     for (const auto& [channel, expr] : spec_.stores) {
         const x86::Mem dst = x86::ptr(channelPtr[static_cast<size_t>(channel)], index, 2);
-        if (spec_.channelTypes[static_cast<size_t>(channel)] == AttribType::int32) {
-            x86::Vec converted = cc.new_ymm_ps("cvt");
-            cc.vcvttps2dq(converted, value[static_cast<size_t>(expr)]);
-            cc.vmovdqa(dst, converted);
-        } else {
-            cc.vmovaps(dst, value[static_cast<size_t>(expr)]);
-        }
+        if (spec_.channelTypes[static_cast<size_t>(channel)] == AttribType::int32) em.storeInt(dst, value[static_cast<size_t>(expr)]);
+        else em.store(dst, value[static_cast<size_t>(expr)]);
     }
 
-    cc.add(index, static_cast<int>(simdLanes));
+    cc.add(index, static_cast<int>(em.lanes()));
     cc.cmp(index, count);
     cc.jb(loop);
 
@@ -224,9 +166,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
     for (size_t e = 0; e < paddedCount; ++e) {
         for (size_t i = 0; i < nodes.size(); ++i) {
             const ExprNode& n = nodes[i];
-            auto a = [&] { return v[static_cast<size_t>(n.a)]; };
-            auto b = [&] { return v[static_cast<size_t>(n.b)]; };
-            auto c = [&] { return v[static_cast<size_t>(n.c)]; };
+            auto operand = [&](int idx) { return idx >= 0 ? v[static_cast<size_t>(idx)] : 0.0f; };
             switch (n.op) {
                 case Op::constant: v[i] = n.value; break;
                 case Op::param: v[i] = params[n.index]; break;
@@ -235,7 +175,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
                                ? static_cast<float>(static_cast<const int32_t*>(channels[n.index])[e])
                                : static_cast<const float*>(channels[n.index])[e];
                     break;
-                default: v[i] = evalOp(n.op, n.a >= 0 ? a() : 0.0f, n.b >= 0 ? b() : 0.0f, n.c >= 0 ? c() : 0.0f); break;
+                default: v[i] = evalOp(n.op, operand(n.a), operand(n.b), operand(n.c)); break;
             }
         }
         for (const auto& [channel, expr] : spec_.stores) {
@@ -259,7 +199,7 @@ void Kernel::run(void* const* channels, const float* params, size_t paddedCount,
         return;
     }
 
-    // Channel elements are 4 bytes and chunks are multiples of simdLanes, so every chunk stays 32-byte aligned.
+    // Channel elements are 4 bytes and chunks are multiples of simdLanes, so every chunk keeps the alignment.
     const size_t chunkSize = padToLanes((paddedCount + chunks - 1) / chunks);
     const size_t channelCount = spec_.channels.size();
     pool->parallelFor(chunks, [&](size_t i) {
@@ -274,13 +214,22 @@ void Kernel::run(void* const* channels, const float* params, size_t paddedCount,
 void Kernel::run(Geometry& geo, const std::vector<float>& params, AttribClass cls, ThreadPool* pool) const {
     if (params.size() < static_cast<size_t>(spec_.paramCount))
         throw std::runtime_error("kernel: not enough parameters supplied");
+    std::vector<char> written(spec_.channels.size(), 0);
+    for (const auto& store : spec_.stores) written[static_cast<size_t>(store.first)] = 1;
     std::vector<void*> ptrs;
     ptrs.reserve(spec_.channels.size());
-    for (size_t c = 0; c < spec_.channels.size(); ++c) ptrs.push_back(geo.attrib(cls, spec_.channels[c], spec_.channelTypes[c]).data());
+    for (size_t c = 0; c < spec_.channels.size(); ++c) {
+        AttribArray& a = geo.attrib(cls, spec_.channels[c], spec_.channelTypes[c]);
+        ptrs.push_back(written[c] ? a.data() : const_cast<void*>(std::as_const(a).data()));
+    }
     run(ptrs.data(), params.data(), geo.paddedCount(cls), pool);
 }
 
-KernelCompiler::KernelCompiler() : backend_(std::make_shared<JitBackend>()) { jitSupported_ = backend_->avx2; }
+KernelCompiler::KernelCompiler() : backend_(std::make_shared<JitBackend>()) {
+    jitSupported_ = backend_->sse2;
+    // Conservative default: AVX2. AVX-512 is available through setIsa (see docs/performance.md).
+    isa_ = backend_->avx2 ? Isa::avx2 : Isa::sse2;
+}
 
 KernelCompiler::~KernelCompiler() = default;
 
@@ -288,6 +237,22 @@ void KernelCompiler::setJitEnabled(bool enabled) {
     std::lock_guard lock(mutex_);
     if (jitEnabled_ != enabled) cache_.clear();
     jitEnabled_ = enabled;
+}
+
+bool KernelCompiler::isaSupported(Isa isa) const { return backend_->supports(isa); }
+
+std::vector<Isa> KernelCompiler::supportedIsas() const {
+    std::vector<Isa> result;
+    for (Isa isa : {Isa::sse2, Isa::avx2, Isa::avx512})
+        if (backend_->supports(isa)) result.push_back(isa);
+    return result;
+}
+
+void KernelCompiler::setIsa(Isa isa) {
+    if (!isaSupported(isa)) throw std::runtime_error(std::string("instruction set '") + isaName(isa) + "' is not supported on this CPU");
+    std::lock_guard lock(mutex_);
+    if (isa_ != isa) cache_.clear();
+    isa_ = isa;
 }
 
 size_t KernelCompiler::cacheSize() const {
@@ -302,19 +267,14 @@ std::shared_ptr<const Kernel> KernelCompiler::compileFor(KernelSpec spec, const 
 }
 
 std::shared_ptr<const Kernel> KernelCompiler::compile(const KernelSpec& spec) {
-    const std::string key = spec.signature();
     std::lock_guard lock(mutex_);
+    const std::string key = spec.signature() + "#" + isaName(isa_);
     auto it = cache_.find(key);
     if (it != cache_.end()) return it->second;
 
     const auto compileStart = std::chrono::steady_clock::now();
-    std::shared_ptr<Kernel> kernel(new Kernel(spec, backend_));
-    if (jitSupported_ && jitEnabled_) {
-        try {
-            kernel->compileJit();
-        } catch (const JitUnsupported&) {
-        }
-    }
+    std::shared_ptr<Kernel> kernel(new Kernel(spec, backend_, isa_));
+    if (jitSupported_ && jitEnabled_) kernel->compileJit();
     ++compileCount_;
     compileMillis_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
     cache_.emplace(key, kernel);

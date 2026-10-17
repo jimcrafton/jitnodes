@@ -1,0 +1,15 @@
+// Two instances of the wobbleAsset asset on a circle. The asset must be registered first:
+//   jitnodesCli --asset examples/assets/wobble.asset.json examples/graphs/assetDemo.json --time 1 --svg demo.svg
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 5,
+  nodes: [
+    { id: 1, type: "circle", name: "base", floats: { count: 24, radius: 3 }, inputs: [] },
+    { id: 2, type: "subdivide", name: "smooth", floats: { iterations: 2 }, inputs: [1] },
+    { id: 3, type: "wobbleAsset", name: "wobbleA", floats: { amount: 0.5, speed: 2 }, inputs: [2], spare: ["amount", "speed"] },
+    { id: 4, type: "wobbleAsset", name: "wobbleB", floats: { amount: 0.15, speed: 5 }, inputs: [3], spare: ["amount", "speed"] },
+    { id: 5, type: "null", name: "out", inputs: [4] },
+  ],
+}

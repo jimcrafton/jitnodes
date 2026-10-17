@@ -93,9 +93,22 @@ private:
 
     int expr() { return ternary(); }
 
+    // Conditions must be real masks (all ones / all zeros) so every instruction set can blend with them;
+    // any other value is truthy when it is not zero (NaN counts as true), as in C.
+    int asMask(int node) {
+        switch (spec_.graph.nodes()[static_cast<size_t>(node)].op) {
+            case Op::lt: case Op::gt: case Op::le: case Op::ge: case Op::eq:
+            case Op::logicalAnd: case Op::logicalOr: case Op::logicalNot:
+                return node;
+            default:
+                return spec_.graph.unary(Op::logicalNot, spec_.graph.binary(Op::eq, node, spec_.graph.constant(0.0f)));
+        }
+    }
+
     int ternary() {
         int cond = logicalOr();
         if (accept("?")) {
+            cond = asMask(cond);
             int a = expr();
             expect(':');
             int b = expr();
@@ -106,13 +119,13 @@ private:
 
     int logicalOr() {
         int l = logicalAnd();
-        while (accept("||")) l = spec_.graph.binary(Op::logicalOr, l, logicalAnd());
+        while (accept("||")) l = spec_.graph.binary(Op::logicalOr, asMask(l), asMask(logicalAnd()));
         return l;
     }
 
     int logicalAnd() {
         int l = comparison();
-        while (accept("&&")) l = spec_.graph.binary(Op::logicalAnd, l, comparison());
+        while (accept("&&")) l = spec_.graph.binary(Op::logicalAnd, asMask(l), asMask(comparison()));
         return l;
     }
 
@@ -148,7 +161,7 @@ private:
 
     int unaryExpr() {
         if (accept("-")) return spec_.graph.unary(Op::neg, unaryExpr());
-        if (acceptOp("!", "=")) return spec_.graph.unary(Op::logicalNot, unaryExpr());
+        if (acceptOp("!", "=")) return spec_.graph.unary(Op::logicalNot, asMask(unaryExpr()));
         return primary();
     }
 

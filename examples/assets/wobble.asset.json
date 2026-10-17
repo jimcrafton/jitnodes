@@ -1,0 +1,23 @@
+// A reusable "wobble" node: takes geometry in, wobbles it over time.
+// Promoted parameters become parameters of every instance and are visible inside as parent.<name>.
+// Use it with:  jitnodesCli --asset examples/assets/wobble.asset.json examples/graphs/assetDemo.json
+{
+  format: "jitnodes-asset",
+  version: 1,
+  type: "wobbleAsset",
+  inputs: 1,
+  promote: { amount: 0.3, speed: 3 },
+  graph: {
+    fps: 24,
+    display: 2,
+    nodes: [
+      { id: 1, type: "subnetInput", name: "in", floats: { index: 0 }, inputs: [] },
+      {
+        id: 2, type: "wrangle", name: "wobble",
+        strings: { code: "x = x + sin(y * 2 + a) * b; y = y + cos(x * 2 + a) * b;" },
+        expressions: { a: "time * parent.speed", b: "parent.amount" },
+        inputs: [1],
+      },
+    ],
+  },
+}

@@ -16,6 +16,11 @@ void Node::declareFloat(const std::string& name, float defaultValue) {
     p.value = p.resolved = defaultValue;
 }
 
+void Node::addSpareFloat(const std::string& name, float defaultValue) {
+    declareFloat(name, defaultValue);
+    spare_.insert(name);
+}
+
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
 
 Node::FloatParam& Node::floatParam(const std::string& name) {

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "jitnodes/core/alignedArray.h"
+#include "jitnodes/core/threadPool.h"
 #include "jitnodes/geo/attribute.h"
 
 namespace jitnodes {
@@ -60,6 +61,9 @@ public:
 
     // Appends points, primitives and attributes of other; attributes missing on either side are zero filled.
     void append(const Geometry& other);
+
+    // Merges any number of geometries with one allocation per attribute; the copies run on the pool when given.
+    static Geometry concat(const std::vector<const Geometry*>& parts, ThreadPool* pool = nullptr);
 
 private:
     std::map<std::string, AttribArray>& attribMap(AttribClass cls) { return cls == AttribClass::point ? pointAttribs_ : primAttribs_; }

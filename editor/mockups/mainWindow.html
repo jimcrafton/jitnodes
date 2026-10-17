@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>jitnodes Editor</title>
+<style>
+  :root {
+    --bg: #1f2024; --panel: #2b2d31; --panelAlt: #25272b; --border: #3a3d43; --text: #e6e6e6;
+    --muted: #9a9ca3; --accent: #5a7cff; --good: #43b581; --warn: #e5a93d;
+  }
+  .muted { color: var(--muted); }
+  body { width: 1280px; height: 800px; display: flex; flex-direction: column; gap: 6px; padding: 6px;
+         background: var(--bg); color: var(--text); font-family: "Segoe UI", sans-serif; font-size: 12px; }
+
+  .toolbar { display: flex; flex-direction: row; align-items: center; gap: 8px; height: 36px; padding: 4px;
+             background: var(--panel); border-radius: 4px; }
+  .toolbar .sep { width: 1px; height: 22px; background: var(--border); }
+  .toolbar .spacer { flex-grow: 1; }
+  .toolbar .timeLabel { width: 70px; color: var(--muted); text-align: right; }
+  .toolbar input[type=range] { width: 240px; }
+
+  .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
+
+  .palette { display: flex; flex-direction: column; gap: 4px; width: 150px; padding: 8px; background: var(--panel); border-radius: 4px; }
+  .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .palette button { height: 24px; }
+  .palette select { height: 24px; }
+
+  .graphArea { display: flex; flex-direction: column; flex-grow: 1; gap: 4px; padding: 6px; background: var(--panel); border-radius: 4px; }
+  .graphHeader { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 20px; }
+  .graphHeader .title { color: var(--muted); }
+  #graphStatus { width: 200px; text-align: right; }
+  #graphPath { width: 200px; }
+  .graphHeader { height: 26px; }
+  #viewportInfo { width: 190px; text-align: right; }
+  .viewport .head2 { display: flex; flex-direction: row; gap: 8px; align-items: center; height: 26px; }
+  #attrSelect { width: 190px; }
+  #graphCanvas { flex-grow: 1; background: #1a1b1e; border: 1px solid var(--border); }
+
+  .side { display: flex; flex-direction: column; gap: 6px; width: 340px; }
+  .params { display: flex; flex-direction: column; gap: 6px; flex-grow: 3; padding: 8px; background: var(--panel); border-radius: 4px; }
+  .params .nodeTitle { font-size: 15px; font-weight: 600; }
+  .params .nodeType { color: var(--muted); }
+  .paramRow { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+  .paramRow .name { width: 84px; color: var(--muted); }
+  .paramRow input[type=text] { flex-grow: 1; color: #202020; }
+  .paramRow .mini { width: 30px; }
+  hr { border-color: var(--border); }
+  .error { width: 316px; color: var(--warn); }
+
+  .viewport { display: flex; flex-direction: column; gap: 4px; flex-grow: 2; padding: 6px; background: var(--panel); border-radius: 4px; }
+  .viewport .head { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 26px; }
+  #viewportCanvas { flex-grow: 1; background: #1a1b1e; border: 1px solid var(--border); }
+
+  .profile { display: flex; flex-direction: column; gap: 4px; height: 150px; padding: 6px; background: var(--panel); border-radius: 4px; }
+  .profileHead { display: flex; flex-direction: row; gap: 8px; height: 18px; color: var(--muted); }
+  .profileHead .c1 { width: 160px; } .profileHead .c2 { width: 100px; } .profileHead .c3 { width: 60px; }
+  .profileHead .c4 { width: 80px; } .profileHead .c5 { flex-grow: 1; }
+  #profileRows { flex-grow: 1; background: var(--panelAlt); }
+  .profileFoot { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 26px; color: var(--muted); }
+
+  #cookInfo { width: 260px; text-align: right; }
+  #statusText { width: 800px; }
+  .status { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 24px; padding: 4px;
+            background: var(--panel); border-radius: 4px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="newButton">New</button>
+    <button id="openButton">Open</button>
+    <button id="saveButton">Save</button>
+    <div class="sep"></div>
+    <button id="undoButton">Undo</button>
+    <button id="redoButton">Redo</button>
+    <div class="sep"></div>
+    <button id="playButton">Play</button>
+    <input id="timeSlider" type="range" min="0" max="100" value="0">
+    <span id="timeLabel" class="timeLabel">0.00 s</span>
+    <div class="spacer"></div>
+    <label><input id="fusionToggle" type="checkbox" checked> Fusion</label>
+    <span class="muted">Threads</span>
+    <select id="threadsSelect"><option>1</option><option>2</option><option>4</option><option>8</option></select>
+    <select id="isaSelect"><option>avx2</option><option>sse2</option><option>avx512</option></select>
+  </div>
+
+  <div class="main">
+    <div class="palette">
+      <h3>Nodes</h3>
+      <button id="addLine">line</button>
+      <button id="addTransform">transform</button>
+      <button id="addWrangle">wrangle</button>
+      <button id="addMerge">merge</button>
+      <button id="addAttribCreate">attribCreate</button>
+      <button id="addResample">resample</button>
+      <button id="addSubdivide">subdivide</button>
+      <button id="addCopyToPoints">copyToPoints</button>
+      <button id="addBlast">blast</button>
+      <button id="addSubnet">subnet</button>
+      <button id="addSubnetInput">subnetInput</button>
+      <button id="addNull">null</button>
+      <hr>
+      <h3>Assets</h3>
+      <select id="assetSelect"><option>wobbleAsset</option></select>
+      <button id="addAssetButton">Add asset</button>
+      <button id="loadAssetButton">Load asset...</button>
+    </div>
+
+    <div class="graphArea">
+      <div class="graphHeader">
+        <span class="title">Network</span>
+        <span id="graphPath" class="title">/</span>
+        <button id="upButton">Up</button>
+        <span id="graphStatus" class="title">9 nodes, display: out</span>
+        <button id="fitGraphButton">Fit</button>
+      </div>
+      <canvas id="graphCanvas"></canvas>
+    </div>
+
+    <div class="side">
+      <div class="params">
+        <span id="nodeTitle" class="nodeTitle">transform1</span>
+        <span id="nodeType" class="nodeType">transform, cooked 1x</span>
+        <hr>
+        <canvas id="paramList" style="flex-grow: 1; background: transparent"></canvas>
+        <hr>
+        <div class="paramRow"><input id="spareName" type="text" placeholder="new parameter"><button id="addSpareButton">Add parameter</button></div>
+        <div class="paramRow"><button id="createAssetButton">Create asset...</button><button id="unlockAssetButton">Unlock</button></div>
+        <div class="paramRow"><span class="name">Display node</span><input id="displayToggle" type="checkbox" checked></div>
+        <span id="paramError" class="error">&middot;</span>
+      </div>
+
+      <div class="viewport">
+        <div class="head"><span class="title">Viewport</span><span id="viewportInfo" class="title">100 points, 1 primitive</span><button id="fitButton">Fit</button></div>
+        <div class="head2"><span class="title">Color by</span><select id="attrSelect"><option>(none)</option></select></div>
+        <canvas id="viewportCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="profile">
+    <div class="profileHead"><span class="c1">node</span><span class="c2">type</span><span class="c3">cooks</span><span class="c4">last ms</span><span class="c5">note</span></div>
+    <canvas id="profileRows"></canvas>
+    <div class="profileFoot"><span id="profileSummary">kernels compiled: 1 (0.08 ms), threads: 4</span><button id="resetProfileButton">Reset</button></div>
+  </div>
+
+  <div class="status">
+    <span id="statusText">Ready</span>
+    <span id="cookInfo">last cook 1.7 ms</span>
+  </div>
+</body>
+</html>
