@@ -124,6 +124,10 @@ void GraphCanvas::paint(BLContext& ctx) {
         for (float y = std::fmod(pan.y, step); y < h; y += step) ctx.fill_rect(BLRect(0, y, w, 1));
     }
 
+    // A large graph is mostly off screen; skip what cannot touch the visible rectangle.
+    const float margin = 24.0f * zoom;
+    auto visible = [&](float x0, float y0, float x1, float y1) { return x1 >= -margin && x0 <= w + margin && y1 >= -margin && y0 <= h + margin; };
+
     ctx.set_stroke_width(std::max(1.5f, 2.0f * zoom));
     ctx.set_stroke_style(BLRgba32(0xFF8A93A6));
     for (NodeId id : net.nodeIds()) {
@@ -131,8 +135,11 @@ void GraphCanvas::paint(BLContext& ctx) {
         for (int i = 0; i < n.inputCount(); ++i) {
             const NodeId up = net.inputOf(id, i);
             if (up == invalidNodeId) continue;
+            const Vec from = controller_.toScreen(controller_.outputPort(up)), to = controller_.toScreen(controller_.inputPort(id, i));
+            const float reach = std::max(30.0f * zoom, std::fabs(to.y - from.y) * 0.5f);  // the curve bulges vertically by up to this much
+            if (!visible(std::min(from.x, to.x), std::min(from.y, to.y) - reach, std::max(from.x, to.x), std::max(from.y, to.y) + reach)) continue;
             BLPath path;
-            wirePath(path, controller_.toScreen(controller_.outputPort(up)), controller_.toScreen(controller_.inputPort(id, i)), zoom);
+            wirePath(path, from, to, zoom);
             ctx.stroke_path(path);
         }
     }
@@ -149,6 +156,7 @@ void GraphCanvas::paint(BLContext& ctx) {
         const Node& n = net.node(id);
         const Vec p = controller_.toScreen({n.posX(), n.posY()});
         const float nw = nodeWidth * zoom, nh = nodeHeight * zoom, r = 6.0f * zoom;
+        if (!visible(p.x, p.y, p.x + nw, p.y + nh)) continue;
         ctx.set_fill_style(nodeColor(n));
         ctx.fill_round_rect(BLRoundRect(p.x, p.y, nw, nh, r, r));
         const bool isSelected = controller_.model().isSelected(id);
