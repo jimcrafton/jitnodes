@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="430" viewBox="0 0 980 430" role="img">
+  <title>Conditionals without branches</title>
+  <desc>Comparisons produce per-lane masks and ? : blends lane by lane.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="430" fill="#ffffff"/>
+  <text x="490" y="24" text-anchor="middle" class="title" xml:space="preserve">y = x &gt; 3 ? 100 : 0;   evaluated for 8 points at once (AVX2)</text>
+  <text x="20" y="74" text-anchor="start" class="mono" xml:space="preserve">x</text>
+  <text x="20" y="134" text-anchor="start" class="mono" xml:space="preserve">x &gt; 3</text>
+  <text x="20" y="194" text-anchor="start" class="mono" xml:space="preserve">mask bits</text>
+  <text x="20" y="254" text-anchor="start" class="mono" xml:space="preserve">100 | 0</text>
+  <text x="20" y="314" text-anchor="start" class="mono" xml:space="preserve">y = select</text>
+  <rect x="140" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="177.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <rect x="140" y="112" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="177.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">false</text>
+  <rect x="140" y="172" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="177.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">00000000</text>
+  <rect x="140" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="177.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="140" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="177.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <rect x="220" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="257.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">1</text>
+  <rect x="220" y="112" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="257.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">false</text>
+  <rect x="220" y="172" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="257.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">00000000</text>
+  <rect x="220" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="257.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="220" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="257.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <rect x="300" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="337.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">2</text>
+  <rect x="300" y="112" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="337.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">false</text>
+  <rect x="300" y="172" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="337.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">00000000</text>
+  <rect x="300" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="337.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="300" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="337.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <rect x="380" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="417.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">3</text>
+  <rect x="380" y="112" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="417.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">false</text>
+  <rect x="380" y="172" width="74" height="34" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="417.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">00000000</text>
+  <rect x="380" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="417.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="380" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="417.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <rect x="460" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="497.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">4</text>
+  <rect x="460" y="112" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="497.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">true</text>
+  <rect x="460" y="172" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="497.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">FFFFFFFF</text>
+  <rect x="460" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="497.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="460" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="497.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">100</text>
+  <rect x="540" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="577.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">5</text>
+  <rect x="540" y="112" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="577.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">true</text>
+  <rect x="540" y="172" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="577.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">FFFFFFFF</text>
+  <rect x="540" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="577.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="540" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="577.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">100</text>
+  <rect x="620" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="657.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">6</text>
+  <rect x="620" y="112" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="657.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">true</text>
+  <rect x="620" y="172" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="657.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">FFFFFFFF</text>
+  <rect x="620" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="657.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="620" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="657.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">100</text>
+  <rect x="700" y="52" width="74" height="34" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="737.0" y="74" text-anchor="middle" class="mono" xml:space="preserve">7</text>
+  <rect x="700" y="112" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="737.0" y="134" text-anchor="middle" class="mono" xml:space="preserve">true</text>
+  <rect x="700" y="172" width="74" height="34" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="737.0" y="194" text-anchor="middle" class="mono" xml:space="preserve">FFFFFFFF</text>
+  <rect x="700" y="232" width="74" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="737.0" y="254" text-anchor="middle" class="mono" xml:space="preserve">100 | 0</text>
+  <rect x="700" y="292" width="74" height="34" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="737.0" y="314" text-anchor="middle" class="mono" xml:space="preserve">100</text>
+  <path d="M490,86 L490,112" class="arrow"/>
+  <text x="788" y="54" text-anchor="start" class="small" xml:space="preserve">all 8 lanes in</text>
+  <text x="788" y="68" text-anchor="start" class="small" xml:space="preserve">one register</text>
+  <rect x="20" y="346" width="940" height="70" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="34" y="368" text-anchor="start" class="sub" xml:space="preserve">A comparison does not produce 0.0 or 1.0: it produces a mask, a lane that is all one bits (which, read as a float, is NaN) or all zero bits.</text>
+  <text x="34" y="386" text-anchor="start" class="sub" xml:space="preserve">? : and &amp;&amp; || ! consume masks directly (vblendvps / and / or). Assigning a comparison to an attribute converts it to 1.0 / 0.0 first.</text>
+  <text x="34" y="404" text-anchor="start" class="sub" xml:space="preserve">So  y = x &gt; 3;  stores 0/1, but  y = (x &gt; 3) + 1;  is NaN for true lanes. Write  y = (x &gt; 3 ? 1 : 0) + 1;  instead.</text>
+</svg>

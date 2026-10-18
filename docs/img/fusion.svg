@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="440" viewBox="0 0 980 440" role="img">
+  <title>Graph fusion</title>
+  <desc>Three point-wise nodes cooked one by one touch memory three times; fused they touch it once.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="440" fill="#ffffff"/>
+  <text x="490" y="26" text-anchor="middle" class="title" xml:space="preserve">Graph fusion: line -&gt; transform -&gt; wrangle -&gt; transform</text>
+  <text x="24" y="62" text-anchor="start" class="bold" xml:space="preserve">Without fusion (setFusionEnabled(false))</text>
+  <rect x="24" y="78" width="104" height="54" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="76" y="100" text-anchor="middle" class="mono" xml:space="preserve">line</text>
+  <text x="76" y="118" text-anchor="middle" class="small" xml:space="preserve">generator</text>
+  <rect x="142" y="78" width="104" height="54" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="194" y="100" text-anchor="middle" class="mono" xml:space="preserve">transform</text>
+  <text x="194" y="118" text-anchor="middle" class="small" xml:space="preserve">kernel</text>
+  <path d="M128,105 L142,105" class="arrow"/>
+  <rect x="260" y="78" width="104" height="54" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="312" y="100" text-anchor="middle" class="mono" xml:space="preserve">wrangle</text>
+  <text x="312" y="118" text-anchor="middle" class="small" xml:space="preserve">kernel</text>
+  <path d="M246,105 L260,105" class="arrow"/>
+  <rect x="378" y="78" width="104" height="54" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="430" y="100" text-anchor="middle" class="mono" xml:space="preserve">transform</text>
+  <text x="430" y="118" text-anchor="middle" class="small" xml:space="preserve">kernel</text>
+  <path d="M364,105 L378,105" class="arrow"/>
+  <text x="500" y="100" text-anchor="start" class="sub" xml:space="preserve">each kernel node: copy-on-write clone of the channels it writes,</text>
+  <text x="500" y="118" text-anchor="start" class="sub" xml:space="preserve">load x,y -&gt; compute -&gt; store x,y, then cache a new geometry</text>
+  <rect x="24" y="150" width="470" height="70" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="36" y="170" text-anchor="start" class="bold" xml:space="preserve">memory traffic for 3 kernel nodes</text>
+  <rect x="36" y="180" width="136" height="30" rx="6" fill="#fde7e9" stroke="#c5392f" stroke-width="1.4"/>
+  <text x="104" y="200" text-anchor="middle" class="sub" xml:space="preserve">pass 1: read + write</text>
+  <rect x="184" y="180" width="136" height="30" rx="6" fill="#fde7e9" stroke="#c5392f" stroke-width="1.4"/>
+  <text x="252" y="200" text-anchor="middle" class="sub" xml:space="preserve">pass 2: read + write</text>
+  <rect x="332" y="180" width="136" height="30" rx="6" fill="#fde7e9" stroke="#c5392f" stroke-width="1.4"/>
+  <text x="400" y="200" text-anchor="middle" class="sub" xml:space="preserve">pass 3: read + write</text>
+  <text x="24" y="242" text-anchor="start" class="sub" xml:space="preserve">1M points, JIT on:  2.2 - 2.8 ms per recook (kernelBench, this machine)</text>
+  <text x="24" y="286" text-anchor="start" class="bold" xml:space="preserve">With fusion (default)</text>
+  <rect x="24" y="300" width="114" height="54" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="81" y="322" text-anchor="middle" class="mono" xml:space="preserve">line</text>
+  <text x="81" y="340" text-anchor="middle" class="small" xml:space="preserve">cached input</text>
+  <path d="M138,327 L170,327" class="arrow"/>
+  <rect x="170" y="296" width="540" height="62" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="440" y="316" text-anchor="middle" class="mono" xml:space="preserve">one kernel = composeKernels(transform, wrangle, transform)</text>
+  <text x="440" y="336" text-anchor="middle" class="sub" xml:space="preserve">load x,y once -&gt; three steps in registers (CSE + dead code removal) -&gt; store once</text>
+  <text x="440" y="350" text-anchor="middle" class="small" xml:space="preserve">parameters of all three nodes share one parameter block: sliders never recompile</text>
+  <path d="M710,327 L742,327" class="arrow"/>
+  <rect x="742" y="300" width="214" height="54" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="849" y="322" text-anchor="middle" class="sub" xml:space="preserve">tail node caches result</text>
+  <text x="849" y="340" text-anchor="middle" class="small" xml:space="preserve">interior nodes: no result</text>
+  <text x="24" y="390" text-anchor="start" class="sub" xml:space="preserve">1M points, JIT on:  1.65 - 2.1 ms per recook; the saving grows with chain length because every extra node costs a full pass otherwise.</text>
+  <text x="24" y="414" text-anchor="start" class="small" xml:space="preserve">A chain stops at: a node with several consumers, the display node, a node that is already clean, a node of another attribute class,</text>
+  <text x="24" y="428" text-anchor="start" class="small" xml:space="preserve">or any node that is not point-wise (merge, line, resample, copyToPoints, subnets, ...).</text>
+</svg>

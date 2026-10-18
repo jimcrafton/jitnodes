@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="470" viewBox="0 0 980 470" role="img">
+  <title>Subnets and assets</title>
+  <desc>A subnet node owns a child network; promoted parameters appear inside as parent.name.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="470" fill="#ffffff"/>
+  <text x="490" y="26" text-anchor="middle" class="title" xml:space="preserve">Subnets and assets</text>
+  <text x="24" y="56" text-anchor="start" class="bold" xml:space="preserve">Outer network</text>
+  <rect x="24" y="66" width="932" height="90" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <rect x="40" y="82" width="120" height="56" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="100.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">line</text>
+  <text x="100.0" y="120" text-anchor="middle" class="sub" xml:space="preserve">generator</text>
+  <rect x="220" y="76" width="250" height="68" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="345.0" y="96" text-anchor="middle" class="bold" xml:space="preserve">subnet  (node 'wobbler')</text>
+  <text x="345.0" y="114" text-anchor="middle" class="sub" xml:space="preserve">promoted parameter: amount = 0.3</text>
+  <rect x="530" y="82" width="120" height="56" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="590.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">transform</text>
+  <text x="590.0" y="120" text-anchor="middle" class="sub" xml:space="preserve"></text>
+  <rect x="710" y="82" width="120" height="56" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="770.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">null (display)</text>
+  <text x="770.0" y="120" text-anchor="middle" class="sub" xml:space="preserve"></text>
+  <path d="M160,110 L220,110" class="arrow"/>
+  <path d="M470,110 L530,110" class="arrow"/>
+  <path d="M650,110 L710,110" class="arrow"/>
+  <path d="M345,144 L345,188" class="arrow"/>
+  <text x="360" y="170" text-anchor="start" class="small" xml:space="preserve">double-click / Enter in the editor</text>
+  <text x="24" y="200" text-anchor="start" class="bold" xml:space="preserve">Child network (owned by the subnet node)</text>
+  <rect x="24" y="210" width="932" height="140" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <rect x="50" y="236" width="170" height="70" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="135.0" y="256" text-anchor="middle" class="bold" xml:space="preserve">subnetInput</text>
+  <text x="135.0" y="274" text-anchor="middle" class="sub" xml:space="preserve">index = 0</text>
+  <text x="135.0" y="289" text-anchor="middle" class="sub" xml:space="preserve">the geometry wired to</text>
+  <text x="135.0" y="304" text-anchor="middle" class="sub" xml:space="preserve">the subnet's input 0</text>
+  <rect x="300" y="232" width="300" height="78" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="450.0" y="252" text-anchor="middle" class="bold" xml:space="preserve">wrangle</text>
+  <text x="450.0" y="270" text-anchor="middle" class="sub" xml:space="preserve">code: x = x + sin(y*2) * a;</text>
+  <text x="450.0" y="285" text-anchor="middle" class="sub" xml:space="preserve">a  =  expression: parent.amount</text>
+  <rect x="680" y="236" width="170" height="70" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="765.0" y="256" text-anchor="middle" class="bold" xml:space="preserve">null  (display node)</text>
+  <text x="765.0" y="274" text-anchor="middle" class="sub" xml:space="preserve">= the subnet's output</text>
+  <path d="M220,270 L300,270" class="arrow"/>
+  <path d="M600,270 L680,270" class="arrow"/>
+  <text x="450" y="335" text-anchor="middle" class="small" xml:space="preserve">parent.amount reads the spare parameter 'amount' of the owning subnet node</text>
+  <rect x="24" y="368" width="460" height="82" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="36" y="388" text-anchor="start" class="bold" xml:space="preserve">Sharing and caching</text>
+  <text x="36" y="406" text-anchor="start" class="sub" xml:space="preserve">the child shares the owner's KernelCompiler cache and ThreadPool</text>
+  <text x="36" y="421" text-anchor="start" class="sub" xml:space="preserve">it follows the owner's time and fps; dependsOnTime looks inside</text>
+  <text x="36" y="436" text-anchor="start" class="sub" xml:space="preserve">editing inside dirties only the owning subnet node (and its consumers)</text>
+  <rect x="500" y="368" width="456" height="82" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="512" y="388" text-anchor="start" class="bold" xml:space="preserve">Assets</text>
+  <text x="512" y="406" text-anchor="start" class="sub" xml:space="preserve">saveAsset(subnet) -&gt; definition: type, inputs, promote{}, graph</text>
+  <text x="512" y="421" text-anchor="start" class="sub" xml:space="preserve">registerAsset -&gt; a new node type; instances copy the definition</text>
+  <text x="512" y="436" text-anchor="start" class="sub" xml:space="preserve">versions, updateAssetInstances, migration hooks, unlock back to a subnet</text>
+</svg>

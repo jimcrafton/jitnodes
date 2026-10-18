@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="330" viewBox="0 0 980 330" role="img">
+  <title>Two kinds of parallelism</title>
+  <desc>Independent tasks of one level run concurrently; a large kernel is split into aligned chunks.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="330" fill="#ffffff"/>
+  <text x="490" y="26" text-anchor="middle" class="title" xml:space="preserve">Two kinds of parallelism, one thread pool</text>
+  <rect x="24" y="46" width="460" height="250" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="40" y="68" text-anchor="start" class="bold" xml:space="preserve">Task parallelism (Network::cook)</text>
+  <rect x="46" y="82" width="130" height="44" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="111.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">task 1</text>
+  <text x="111.0" y="120" text-anchor="middle" class="sub" xml:space="preserve">level 0</text>
+  <rect x="190" y="82" width="130" height="44" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="255.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">task 2</text>
+  <text x="255.0" y="120" text-anchor="middle" class="sub" xml:space="preserve">level 0</text>
+  <rect x="334" y="82" width="130" height="44" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="399.0" y="102" text-anchor="middle" class="bold" xml:space="preserve">task 3</text>
+  <text x="399.0" y="120" text-anchor="middle" class="sub" xml:space="preserve">level 0</text>
+  <text x="255" y="148" text-anchor="middle" class="small" xml:space="preserve">parallelFor over the tasks of a level</text>
+  <path d="M255,154 L255,172" class="arrow"/>
+  <rect x="46" y="172" width="418" height="44" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="255.0" y="192" text-anchor="middle" class="bold" xml:space="preserve">task 4: merge</text>
+  <text x="255.0" y="210" text-anchor="middle" class="sub" xml:space="preserve">level 1, starts when every level 0 task has finished</text>
+  <text x="40" y="244" text-anchor="start" class="sub" xml:space="preserve">levels come from the dependency order, so results never depend</text>
+  <text x="40" y="260" text-anchor="start" class="sub" xml:space="preserve">on the thread count; nested parallelFor calls are allowed because</text>
+  <text x="40" y="276" text-anchor="start" class="sub" xml:space="preserve">the caller always takes part in the work</text>
+  <rect x="500" y="46" width="456" height="250" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="516" y="68" text-anchor="start" class="bold" xml:space="preserve">Data parallelism (Kernel::run)</text>
+  <text x="516" y="92" text-anchor="start" class="sub" xml:space="preserve">padded count &gt;= 32768 elements:</text>
+  <rect x="516" y="104" width="100" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="566" y="126" text-anchor="middle" class="mono" xml:space="preserve">chunk 1</text>
+  <rect x="624" y="104" width="100" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="674" y="126" text-anchor="middle" class="mono" xml:space="preserve">chunk 2</text>
+  <rect x="732" y="104" width="100" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="782" y="126" text-anchor="middle" class="mono" xml:space="preserve">chunk 3</text>
+  <rect x="840" y="104" width="100" height="34" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="890" y="126" text-anchor="middle" class="mono" xml:space="preserve">chunk 4</text>
+  <text x="516" y="160" text-anchor="start" class="sub" xml:space="preserve">chunks are multiples of 16 lanes, so each starts 64-byte aligned</text>
+  <text x="516" y="178" text-anchor="start" class="sub" xml:space="preserve">every chunk runs the same compiled function on shifted pointers</text>
+  <text x="516" y="214" text-anchor="start" class="sub" xml:space="preserve">default pool: hardware threads - 1 workers, at most 8 threads in total</text>
+  <text x="516" y="230" text-anchor="start" class="sub" xml:space="preserve">setThreadCount(1) keeps everything on the calling thread</text>
+  <text x="516" y="246" text-anchor="start" class="sub" xml:space="preserve">memory-bound kernels gain little from threads (see Performance)</text>
+</svg>

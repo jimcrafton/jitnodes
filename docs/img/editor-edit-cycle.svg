@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420" role="img">
+  <title>One edit in the editor</title>
+  <desc>From a user action to a new undo state, a recook and a refreshed window.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="420" fill="#ffffff"/>
+  <text x="490" y="24" text-anchor="middle" class="title" xml:space="preserve">What happens on one edit</text>
+  <rect x="14" y="44" width="146" height="96" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="87.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">1  Input</text>
+  <text x="87.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">click, key, drag,</text>
+  <text x="87.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">text field Enter</text>
+  <rect x="174" y="44" width="146" height="96" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="247.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">2  Handler</text>
+  <text x="247.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">canvas, panel or button</text>
+  <text x="247.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">calls the controller</text>
+  <text x="247.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">or a window action</text>
+  <path d="M160,92 L174,92" class="arrow"/>
+  <rect x="334" y="44" width="146" height="96" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="407.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">3  Model edit</text>
+  <text x="407.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">EditorModel changes</text>
+  <text x="407.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">the Network (addNode,</text>
+  <text x="407.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">setParameter, ...)</text>
+  <path d="M320,92 L334,92" class="arrow"/>
+  <rect x="494" y="44" width="146" height="96" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="567.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">4  History</text>
+  <text x="567.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">commit("label"):</text>
+  <text x="567.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">snapshot, diff-shared</text>
+  <text x="567.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">node texts</text>
+  <path d="M480,92 L494,92" class="arrow"/>
+  <rect x="654" y="44" width="146" height="96" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="727.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">5  cook()</text>
+  <text x="727.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">cook the display node;</text>
+  <text x="727.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">CookResult: ms, points,</text>
+  <text x="727.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">error text</text>
+  <path d="M640,92 L654,92" class="arrow"/>
+  <rect x="814" y="44" width="146" height="96" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="887.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">6  refresh()</text>
+  <text x="887.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">title, params, viewport,</text>
+  <text x="887.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">profile, buttons enabled,</text>
+  <text x="887.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">status line</text>
+  <path d="M800,92 L814,92" class="arrow"/>
+  <rect x="14" y="170" width="460" height="120" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="26" y="192" text-anchor="start" class="bold" xml:space="preserve">Undo / redo</text>
+  <text x="26" y="212" text-anchor="start" class="sub" xml:space="preserve">undoButton / Ctrl+Z calls History::undo: restoreSnapshot touches only</text>
+  <text x="26" y="229" text-anchor="start" class="sub" xml:space="preserve">the nodes that differ, so unrelated caches survive; then cook() and refresh()</text>
+  <text x="26" y="246" text-anchor="start" class="sub" xml:space="preserve">run exactly as in steps 5 and 6. Labels come from step 4 ("move node",</text>
+  <text x="26" y="263" text-anchor="start" class="sub" xml:space="preserve">"edit transform2.tx", "rename 3 nodes", ...).</text>
+  <rect x="494" y="170" width="472" height="120" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="506" y="192" text-anchor="start" class="bold" xml:space="preserve">Errors</text>
+  <text x="506" y="212" text-anchor="start" class="sub" xml:space="preserve">an action throws std::runtime_error (bad file, unknown type, cycle,</text>
+  <text x="506" y="229" text-anchor="start" class="sub" xml:space="preserve">bad expression): EditorWindow::guarded catches it, keeps the model</text>
+  <text x="506" y="246" text-anchor="start" class="sub" xml:space="preserve">consistent (nothing is committed) and shows the text in statusText or</text>
+  <text x="506" y="263" text-anchor="start" class="sub" xml:space="preserve">paramError. A failed cook shows "cook failed" and keeps the last geometry.</text>
+  <rect x="14" y="310" width="952" height="90" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="26" y="332" text-anchor="start" class="bold" xml:space="preserve">Playback</text>
+  <text x="26" y="352" text-anchor="start" class="sub" xml:space="preserve">A 33 ms RunLoop timer advances the playhead (EditorModel::advance -&gt; Network::setTime). Only nodes whose parameters depend on time are</text>
+  <text x="26" y="369" text-anchor="start" class="sub" xml:space="preserve">dirtied, so a static part of the graph is never recooked; each tick runs steps 5 and 6 without creating undo states.</text>
+</svg>

@@ -102,8 +102,8 @@ identifiers, unique in the network, and expressions that refer to `oldName.param
 buttons above the graph, or Ctrl+C, Ctrl+X, Ctrl+V with the graph focused) work on the selected node: parameters,
 expressions, keyframes, spare parameters and a subnet's contents. A paste gets a unique name (`wrangle1`, `wrangle3`, ...),
 is offset 30 px further for every paste of the same copy, reconnects its inputs to nodes of the same names in the current
-network, is selected, and leaves the display node alone. The clipboard lives in the editor (not the system clipboard), so
-it survives New and Open.
+network, is selected, and leaves the display node alone. The clipboard lives in the editor and is also put on the system clipboard as text (see
+"Shortcuts and renaming" below), so it survives New and Open.
 
 Selection: click selects a node, shift- or ctrl-click toggles it, and dragging on empty space draws a selection box (with
 shift or ctrl the nodes it touches are added to the current selection); Ctrl+A selects everything in the current network.

@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="470" viewBox="0 0 980 470" role="img">
+  <title>Geometry and attribute storage</title>
+  <desc>Struct-of-arrays attributes, padded and aligned, shared copy-on-write.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="470" fill="#ffffff"/>
+  <text x="490" y="26" text-anchor="middle" class="title" xml:space="preserve">Geometry: struct of arrays, padded, copy-on-write</text>
+  <rect x="20" y="46" width="280" height="200" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="160" y="68" text-anchor="middle" class="bold" xml:space="preserve">Geometry</text>
+  <text x="34" y="90" text-anchor="start" class="mono" xml:space="preserve">pointCount</text>
+  <text x="34" y="112" text-anchor="start" class="mono" xml:space="preserve">point attribs   name -&gt; AttribArray</text>
+  <text x="34" y="134" text-anchor="start" class="mono" xml:space="preserve">     x  y  Cd.x  radius  group.top ...</text>
+  <text x="34" y="156" text-anchor="start" class="mono" xml:space="preserve">primitives   { start, count, closed }</text>
+  <text x="34" y="178" text-anchor="start" class="mono" xml:space="preserve">prim attributes   name -&gt; AttribArray</text>
+  <text x="34" y="200" text-anchor="start" class="mono" xml:space="preserve">detail   name -&gt; float</text>
+  <text x="320" y="66" text-anchor="start" class="bold" xml:space="preserve">One AttribArray (float32 or int32) of 100 points</text>
+  <rect x="320" y="78" width="640" height="28" rx="3" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <rect x="320" y="78" width="572" height="28" rx="3" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <path d="M411.42857142857144,106 L411.42857142857144,112" class="line"/>
+  <path d="M502.8571428571429,106 L502.8571428571429,112" class="line"/>
+  <path d="M594.2857142857142,106 L594.2857142857142,112" class="line"/>
+  <path d="M685.7142857142858,106 L685.7142857142858,112" class="line"/>
+  <path d="M777.1428571428571,106 L777.1428571428571,112" class="line"/>
+  <path d="M868.5714285714286,106 L868.5714285714286,112" class="line"/>
+  <text x="606.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">100 values</text>
+  <text x="926" y="97" text-anchor="middle" class="small" xml:space="preserve">12 padding</text>
+  <text x="320" y="124" text-anchor="start" class="small" xml:space="preserve">7 groups of 16 lanes = 112 floats allocated</text>
+  <text x="320" y="160" text-anchor="start" class="sub" xml:space="preserve">Allocated size is rounded up to a multiple of 16 floats, zero filled,</text>
+  <text x="320" y="176" text-anchor="start" class="sub" xml:space="preserve">and aligned to 64 bytes: AVX-512 loads never straddle the end</text>
+  <text x="320" y="192" text-anchor="start" class="sub" xml:space="preserve">and the kernel loop needs no tail case.</text>
+  <text x="320" y="224" text-anchor="start" class="sub" xml:space="preserve">int32 channels convert to float on load, truncate on store (exact to 2^24).</text>
+  <text x="24" y="280" text-anchor="start" class="bold" xml:space="preserve">Copy-on-write sharing between cooked geometries</text>
+  <rect x="24" y="296" width="436" height="160" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="36" y="316" text-anchor="start" class="sub" xml:space="preserve">after a wrangle writes only y</text>
+  <rect x="40" y="328" width="170" height="44" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="125" y="346" text-anchor="middle" class="bold" xml:space="preserve">input geometry</text>
+  <text x="125" y="362" text-anchor="middle" class="mono" xml:space="preserve">x  y  Cd.x</text>
+  <rect x="250" y="328" width="190" height="44" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="345" y="346" text-anchor="middle" class="bold" xml:space="preserve">output geometry</text>
+  <text x="345" y="362" text-anchor="middle" class="mono" xml:space="preserve">x  y' Cd.x</text>
+  <rect x="36" y="392" width="96" height="38" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="84.0" y="416" text-anchor="middle" class="mono" xml:space="preserve">y storage</text>
+  <rect x="136" y="392" width="96" height="38" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="184.0" y="416" text-anchor="middle" class="mono" xml:space="preserve">x storage</text>
+  <rect x="236" y="392" width="108" height="38" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="290.0" y="416" text-anchor="middle" class="mono" xml:space="preserve">Cd.x storage</text>
+  <rect x="352" y="392" width="96" height="38" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="400.0" y="416" text-anchor="middle" class="mono" xml:space="preserve">y' (new)</text>
+  <path d="M100,372 L84,392" class="arrow"/>
+  <path d="M125,372 L184,392" class="arrow"/>
+  <path d="M160,372 L280,392" class="arrow"/>
+  <path d="M290,372 L184,392" class="arrow" stroke-dasharray="5 4"/>
+  <path d="M345,372 L400,392" class="arrow"/>
+  <path d="M420,372 L300,392" class="arrow" stroke-dasharray="5 4"/>
+  <text x="40" y="448" text-anchor="start" class="small" xml:space="preserve">dashed: output geometry; y' is the only new storage</text>
+  <rect x="480" y="296" width="476" height="160" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="492" y="316" text-anchor="start" class="bold" xml:space="preserve">Why it matters</text>
+  <text x="492" y="336" text-anchor="start" class="sub" xml:space="preserve">copying a Geometry costs O(number of attributes), not O(points)</text>
+  <text x="492" y="353" text-anchor="start" class="sub" xml:space="preserve">a kernel clones only the channels it stores to (read-only ones are shared)</text>
+  <text x="492" y="370" text-anchor="start" class="sub" xml:space="preserve">null, merge of one input, and clean branches return the same handle</text>
+  <text x="492" y="387" text-anchor="start" class="sub" xml:space="preserve">cooked results are immutable (GeometryHandle = shared_ptr&lt;const Geometry&gt;),</text>
+  <text x="492" y="404" text-anchor="start" class="sub" xml:space="preserve">so any thread may read them while another node writes its own copy</text>
+  <text x="492" y="421" text-anchor="start" class="sub" xml:space="preserve">merge builds its output with one allocation per attribute (Geometry::concat)</text>
+</svg>

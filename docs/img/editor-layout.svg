@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" viewBox="0 0 980 640" role="img">
+  <title>Editor main window</title>
+  <desc>Regions of the editor window and the named views in each.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="640" fill="#ffffff"/>
+  <text x="490" y="24" text-anchor="middle" class="title" xml:space="preserve">The editor window (mainWindow.newui) and the views the code looks up by name</text>
+  <rect x="10" y="38" width="960" height="590" rx="8" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <rect x="18" y="46" width="944" height="36" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="28" y="68" text-anchor="start" class="mono" xml:space="preserve">newButton  openButton  saveButton  |  undoButton  redoButton  |  playButton  timeSlider  timeLabel</text>
+  <text x="950" y="68" text-anchor="end" class="mono" xml:space="preserve">fusionToggle  threadsSelect  isaSelect</text>
+  <rect x="18" y="90" width="120" height="372" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="78" y="108" text-anchor="middle" class="bold" xml:space="preserve">Palette</text>
+  <text x="26" y="128" text-anchor="start" class="small" xml:space="preserve">addLine</text>
+  <text x="26" y="143" text-anchor="start" class="small" xml:space="preserve">addTransform</text>
+  <text x="26" y="158" text-anchor="start" class="small" xml:space="preserve">addWrangle</text>
+  <text x="26" y="173" text-anchor="start" class="small" xml:space="preserve">addMerge</text>
+  <text x="26" y="188" text-anchor="start" class="small" xml:space="preserve">addAttribCreate</text>
+  <text x="26" y="203" text-anchor="start" class="small" xml:space="preserve">addResample</text>
+  <text x="26" y="218" text-anchor="start" class="small" xml:space="preserve">addSubdivide</text>
+  <text x="26" y="233" text-anchor="start" class="small" xml:space="preserve">addCopyToPoints</text>
+  <text x="26" y="248" text-anchor="start" class="small" xml:space="preserve">addBlast</text>
+  <text x="26" y="263" text-anchor="start" class="small" xml:space="preserve">addSubnet</text>
+  <text x="26" y="278" text-anchor="start" class="small" xml:space="preserve">addSubnetInput</text>
+  <text x="26" y="293" text-anchor="start" class="small" xml:space="preserve">addNull</text>
+  <text x="78" y="322" text-anchor="middle" class="bold" xml:space="preserve">Assets</text>
+  <text x="26" y="340" text-anchor="start" class="small" xml:space="preserve">assetList (tree)</text>
+  <text x="26" y="355" text-anchor="start" class="small" xml:space="preserve">assetDetails</text>
+  <text x="26" y="370" text-anchor="start" class="small" xml:space="preserve">addAssetButton</text>
+  <text x="26" y="385" text-anchor="start" class="small" xml:space="preserve">reloadAssetButton</text>
+  <text x="26" y="400" text-anchor="start" class="small" xml:space="preserve">loadAssetButton</text>
+  <rect x="146" y="90" width="480" height="372" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="160" y="108" text-anchor="start" class="bold" xml:space="preserve">Graph</text>
+  <text x="160" y="124" text-anchor="start" class="small" xml:space="preserve">graphPath  upButton  copy/cut/paste  graphStatus  fitGraphButton</text>
+  <rect x="156" y="134" width="460" height="318" rx="3" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="386" y="156" text-anchor="middle" class="mono" xml:space="preserve">graphCanvas  (GraphCanvas, drawn with Blend2D)</text>
+  <rect x="210" y="190" width="90" height="28" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="255" y="208" text-anchor="middle" class="mono" xml:space="preserve">line1</text>
+  <rect x="210" y="250" width="90" height="28" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="255" y="268" text-anchor="middle" class="mono" xml:space="preserve">transform2</text>
+  <rect x="350" y="250" width="90" height="28" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="395" y="268" text-anchor="middle" class="mono" xml:space="preserve">wrangle3</text>
+  <rect x="280" y="330" width="90" height="28" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="325" y="348" text-anchor="middle" class="mono" xml:space="preserve">merge4</text>
+  <rect x="280" y="390" width="90" height="28" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="325" y="408" text-anchor="middle" class="mono" xml:space="preserve">null5</text>
+  <path d="M255,218 L255,250" class="arrow"/>
+  <path d="M255,278 L300,330" class="arrow"/>
+  <path d="M395,278 L340,330" class="arrow"/>
+  <path d="M325,358 L325,390" class="arrow"/>
+  <rect x="634" y="90" width="328" height="190" rx="6" fill="#fff8d6" stroke="#b59a1a" stroke-width="1.4"/>
+  <text x="648" y="108" text-anchor="start" class="bold" xml:space="preserve">Parameters</text>
+  <text x="648" y="126" text-anchor="start" class="small" xml:space="preserve">nodeTitle  nodeType  nodeName  renameButton</text>
+  <text x="648" y="143" text-anchor="start" class="small" xml:space="preserve">paramList: rows built per node</text>
+  <text x="648" y="160" text-anchor="start" class="small" xml:space="preserve">   param.&lt;name&gt;  fx.&lt;name&gt;  key.&lt;name&gt;  keys.&lt;name&gt;</text>
+  <text x="648" y="177" text-anchor="start" class="small" xml:space="preserve">displayToggle  spareName  addSpareButton</text>
+  <text x="648" y="194" text-anchor="start" class="small" xml:space="preserve">createAssetButton  unlockAssetButton  paramError</text>
+  <rect x="634" y="288" width="328" height="174" rx="6" fill="#f3e8fd" stroke="#8a4fbf" stroke-width="1.4"/>
+  <text x="648" y="306" text-anchor="start" class="bold" xml:space="preserve">Viewport</text>
+  <text x="648" y="324" text-anchor="start" class="small" xml:space="preserve">viewportInfo  fitButton</text>
+  <text x="648" y="340" text-anchor="start" class="small" xml:space="preserve">attrSelect (Color by)  mapSelect</text>
+  <text x="648" y="356" text-anchor="start" class="small" xml:space="preserve">rangeMin  rangeMax  autoRangeButton</text>
+  <rect x="648" y="376" width="300" height="76" rx="3" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="798" y="418" text-anchor="middle" class="mono" xml:space="preserve">viewportCanvas (ViewportCanvas)</text>
+  <rect x="18" y="470" width="944" height="110" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="32" y="488" text-anchor="start" class="bold" xml:space="preserve">Profile</text>
+  <text x="32" y="506" text-anchor="start" class="small" xml:space="preserve">profileRows (ProfileCanvas): node, type, cooks, last ms, total ms, note</text>
+  <text x="32" y="522" text-anchor="start" class="small" xml:space="preserve">profileSummary  resetProfileButton</text>
+  <rect x="32" y="532" width="916" height="36" rx="3" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="490" y="555" text-anchor="middle" class="mono" xml:space="preserve">line1  line  1  0.04 ms ...    wrangle3  wrangle  2  1.9 ms  fused chain of 2</text>
+  <rect x="18" y="588" width="944" height="30" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="28" y="608" text-anchor="start" class="mono" xml:space="preserve">statusText</text>
+  <text x="950" y="608" text-anchor="end" class="mono" xml:space="preserve">cookInfo</text>
+</svg>

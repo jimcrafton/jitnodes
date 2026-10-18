@@ -38,5 +38,8 @@ Graphs are saved with `saveNetwork` / loaded with `loadNetwork` (JSON, JSON5 acc
 changes. `History` provides undo/redo that only touches the nodes that changed.
 
 ## More
+- [docs/architecture.md](docs/architecture.md): code layout, the node execution (cooking) design with diagrams, the JIT, and performance figures.
+- [docs/wrangle.md](docs/wrangle.md): the wrangle scripting language: syntax, types, operators, functions, examples.
+- [docs/editor.md](docs/editor.md): the newui desktop editor: how to use it and how it is built.
 - [docs/design.md](docs/design.md): design, research notes and roadmap.
 - [docs/performance.md](docs/performance.md): benchmarks with the JIT off and on, method and caveats.

@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="620" viewBox="0 0 1020 620" role="img">
+  <title>From wrangle text to machine code</title>
+  <desc>Parser, expression DAG, kernel cache, asmjit emitter, execution.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1020" height="620" fill="#ffffff"/>
+  <text x="510" y="26" text-anchor="middle" class="title" xml:space="preserve">From wrangle text to machine code</text>
+  <rect x="20" y="44" width="190" height="76" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="115.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">wrangle text</text>
+  <text x="115.0" y="82" text-anchor="middle" class="mono" xml:space="preserve">y = y + (x &gt; a ? b : 0);</text>
+  <rect x="215" y="44" width="190" height="76" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="310.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">parseWrangle</text>
+  <text x="310.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">recursive descent,</text>
+  <text x="310.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">builds an ExprGraph</text>
+  <path d="M210,82 L215,82" class="arrow"/>
+  <rect x="410" y="44" width="190" height="76" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="505.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">KernelSpec</text>
+  <text x="505.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">DAG + channels + stores</text>
+  <text x="505.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">+ parameter count</text>
+  <path d="M405,82 L410,82" class="arrow"/>
+  <rect x="605" y="44" width="190" height="76" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="700.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">KernelCompiler</text>
+  <text x="700.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">key = signature + ISA</text>
+  <text x="700.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">hit: reuse, miss: emit</text>
+  <path d="M600,82 L605,82" class="arrow"/>
+  <rect x="800" y="44" width="190" height="76" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="895.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">Kernel::run</text>
+  <text x="895.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">per padded count,</text>
+  <text x="895.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">chunks on the pool</text>
+  <path d="M795,82 L800,82" class="arrow"/>
+  <text x="20" y="160" text-anchor="start" class="bold" xml:space="preserve">ExprGraph for  y = y + (x &gt; a ? b : 0)</text>
+  <text x="20" y="176" text-anchor="start" class="small" xml:space="preserve">operands precede their users; identical subtrees are shared</text>
+  <rect x="20" y="186" width="480" height="236" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <circle cx="60" cy="372" r="19" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="60" y="376" text-anchor="middle" class="mono" xml:space="preserve">y</text>
+  <text x="60" y="408" text-anchor="middle" class="small" xml:space="preserve">load</text>
+  <circle cx="150" cy="372" r="19" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="150" y="376" text-anchor="middle" class="mono" xml:space="preserve">x</text>
+  <text x="150" y="408" text-anchor="middle" class="small" xml:space="preserve">load</text>
+  <circle cx="240" cy="372" r="19" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="240" y="376" text-anchor="middle" class="mono" xml:space="preserve">a</text>
+  <text x="240" y="408" text-anchor="middle" class="small" xml:space="preserve">param</text>
+  <circle cx="340" cy="372" r="19" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="340" y="376" text-anchor="middle" class="mono" xml:space="preserve">b</text>
+  <text x="340" y="408" text-anchor="middle" class="small" xml:space="preserve">param</text>
+  <circle cx="440" cy="372" r="19" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="440" y="376" text-anchor="middle" class="mono" xml:space="preserve">0</text>
+  <text x="440" y="408" text-anchor="middle" class="small" xml:space="preserve">const</text>
+  <circle cx="195" cy="300" r="19" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="195" y="304" text-anchor="middle" class="mono" xml:space="preserve">&gt;</text>
+  <text x="167" y="304" text-anchor="end" class="small" xml:space="preserve">mask</text>
+  <circle cx="330" cy="262" r="19" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="330" y="266" text-anchor="middle" class="mono" xml:space="preserve">sel</text>
+  <text x="356" y="266" text-anchor="start" class="small" xml:space="preserve">select(mask, b, 0)</text>
+  <circle cx="195" cy="222" r="19" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="195" y="226" text-anchor="middle" class="mono" xml:space="preserve">+</text>
+  <path d="M160.1,355.9 L183.9,317.8" class="arrow"/>
+  <path d="M229.9,355.9 L206.1,317.8" class="arrow"/>
+  <path d="M213.3,294.9 L309.8,267.7" class="arrow"/>
+  <path d="M338.3,353.1 L331.9,282.9" class="arrow"/>
+  <path d="M426.6,358.6 L344.8,276.8" class="arrow"/>
+  <path d="M311.8,256.6 L215.1,228.0" class="arrow"/>
+  <path d="M72.7,357.9 L181.0,237.6" class="arrow"/>
+  <path d="M195,203 L195,196" class="arrow"/>
+  <text x="215" y="200" text-anchor="start" class="small" xml:space="preserve">store y</text>
+  <text x="530" y="160" text-anchor="start" class="bold" xml:space="preserve">What the emitter generates</text>
+  <text x="530" y="176" text-anchor="start" class="small" xml:space="preserve">AVX2, 8 points per iteration</text>
+  <rect x="530" y="186" width="470" height="236" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="544" y="208" text-anchor="start" class="mono" xml:space="preserve">broadcast a, b, 0 once, before the loop</text>
+  <text x="544" y="225" text-anchor="start" class="mono" xml:space="preserve">i = 0</text>
+  <text x="544" y="242" text-anchor="start" class="mono" xml:space="preserve">loop:</text>
+  <text x="544" y="259" text-anchor="start" class="mono" xml:space="preserve">  ymm0 = load y[i..i+7]        ; vmovaps</text>
+  <text x="544" y="276" text-anchor="start" class="mono" xml:space="preserve">  ymm1 = load x[i..i+7]</text>
+  <text x="544" y="293" text-anchor="start" class="mono" xml:space="preserve">  mask = ymm1 &gt; a              ; vcmpps  (all ones / all zeros)</text>
+  <text x="544" y="310" text-anchor="start" class="mono" xml:space="preserve">  sel  = blend(0, b, mask)     ; vblendvps</text>
+  <text x="544" y="327" text-anchor="start" class="mono" xml:space="preserve">  ymm0 = ymm0 + sel            ; vaddps</text>
+  <text x="544" y="344" text-anchor="start" class="mono" xml:space="preserve">  store y[i..i+7] = ymm0</text>
+  <text x="544" y="361" text-anchor="start" class="mono" xml:space="preserve">  i += 8 ; if (i &lt; count) goto loop</text>
+  <text x="544" y="378" text-anchor="start" class="mono" xml:space="preserve"></text>
+  <text x="544" y="395" text-anchor="start" class="mono" xml:space="preserve">no branches, no tail loop: arrays are padded to 16</text>
+  <rect x="20" y="440" width="980" height="160" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="34" y="462" text-anchor="start" class="bold" xml:space="preserve">Around the compiler</text>
+  <text x="34" y="482" text-anchor="start" class="sub" xml:space="preserve">Dead-code elimination: only expression nodes that reach a store are emitted.   Constants and parameters are broadcast once outside the loop.</text>
+  <text x="34" y="499" text-anchor="start" class="sub" xml:space="preserve">Instruction sets: SSE2 (4 lanes, always available on x86-64), AVX2 (8, default), AVX-512 (16, opt-in).  The ISA is part of the cache key.</text>
+  <text x="34" y="516" text-anchor="start" class="sub" xml:space="preserve">Parameters (a, b, c, d, transform sx/tx/...) live in a runtime parameter block, so changing a slider reuses the cached kernel.</text>
+  <text x="34" y="533" text-anchor="start" class="sub" xml:space="preserve">Interpreter: the same ExprGraph evaluated one element at a time with the same evalOp() semantics; used off x86-64, with JIT disabled, and as the test reference.</text>
+  <text x="34" y="550" text-anchor="start" class="sub" xml:space="preserve">sin/cos/exp/log/pow are vector polynomial approximations in the JIT (about 1e-5 accurate); the interpreter and parameter expressions use the C library.</text>
+  <text x="34" y="567" text-anchor="start" class="sub" xml:space="preserve">Large ranges (&gt;= 32768 elements) are split into aligned chunks and run on the thread pool; results are bit-identical to a serial run.</text>
+</svg>

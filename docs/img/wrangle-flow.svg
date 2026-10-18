@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="440" viewBox="0 0 980 440" role="img">
+  <title>How a wrangle program runs</title>
+  <desc>Statements run in order per point; later statements see earlier assignments; only final values are stored.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="440" fill="#ffffff"/>
+  <text x="490" y="24" text-anchor="middle" class="title" xml:space="preserve">A wrangle program, per point (all points at once, 8 or 16 per step)</text>
+  <rect x="20" y="44" width="940" height="70" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="34" y="66" text-anchor="start" class="bold" xml:space="preserve">Wrangle node parameters</text>
+  <text x="34" y="86" text-anchor="start" class="mono" xml:space="preserve">code (the program)      class = point | primitive      a  b  c  d (float parameters: constants, keyframes or expressions such as sin(time))</text>
+  <text x="34" y="104" text-anchor="start" class="sub" xml:space="preserve">input geometry attributes are the variables;  assigning a name that does not exist creates a float attribute</text>
+  <text x="40" y="144" text-anchor="start" class="bold" xml:space="preserve">Attributes read</text>
+  <rect x="30" y="154" width="130" height="120" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="46" y="178" text-anchor="start" class="mono" xml:space="preserve">x   (load)</text>
+  <text x="46" y="198" text-anchor="start" class="mono" xml:space="preserve">y   (load)</text>
+  <text x="46" y="218" text-anchor="start" class="mono" xml:space="preserve"></text>
+  <text x="46" y="238" text-anchor="start" class="mono" xml:space="preserve">a b c d (params)</text>
+  <text x="200" y="144" text-anchor="start" class="bold" xml:space="preserve">Program</text>
+  <rect x="190" y="154" width="380" height="120" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="204" y="178" text-anchor="start" class="mono" xml:space="preserve">tmp = x * 2;</text>
+  <text x="204" y="204" text-anchor="start" class="mono" xml:space="preserve">y   = tmp + 1;</text>
+  <text x="204" y="230" text-anchor="start" class="mono" xml:space="preserve">x   = x + 100;</text>
+  <text x="340" y="178" text-anchor="start" class="small" xml:space="preserve">x from memory</text>
+  <text x="340" y="204" text-anchor="start" class="small" xml:space="preserve">tmp from statement 1</text>
+  <text x="340" y="230" text-anchor="start" class="small" xml:space="preserve">x from memory (not yet written)</text>
+  <text x="610" y="144" text-anchor="start" class="bold" xml:space="preserve">Written back (last value of each name)</text>
+  <rect x="600" y="154" width="190" height="120" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="614" y="178" text-anchor="start" class="mono" xml:space="preserve">tmp  &lt;- x * 2</text>
+  <text x="614" y="204" text-anchor="start" class="mono" xml:space="preserve">y    &lt;- tmp + 1</text>
+  <text x="614" y="230" text-anchor="start" class="mono" xml:space="preserve">x    &lt;- x + 100</text>
+  <rect x="810" y="154" width="150" height="120" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="820" y="178" text-anchor="start" class="sub" xml:space="preserve">tmp: new float</text>
+  <text x="820" y="196" text-anchor="start" class="sub" xml:space="preserve">attribute</text>
+  <text x="820" y="214" text-anchor="start" class="sub" xml:space="preserve">x, y: overwritten</text>
+  <text x="820" y="232" text-anchor="start" class="sub" xml:space="preserve">in place</text>
+  <path d="M160,214 L190,214" class="arrow"/>
+  <path d="M570,214 L600,214" class="arrow"/>
+  <text x="40" y="306" text-anchor="start" class="bold" xml:space="preserve">Rules this follows</text>
+  <rect x="30" y="316" width="930" height="100" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="44" y="338" text-anchor="start" class="sub" xml:space="preserve">Statements run top to bottom. A name read after it was assigned means the new value; before that it is the stored attribute (0 if missing).</text>
+  <text x="44" y="358" text-anchor="start" class="sub" xml:space="preserve">y = x; x = y + 10;  therefore gives y = old x and x = old x + 10.  Each assigned name is stored once, with its last value.</text>
+  <text x="44" y="378" text-anchor="start" class="sub" xml:space="preserve">There are no variables apart from attributes: any identifier is an attribute channel, except a, b, c, d (read-only parameters).</text>
+  <text x="44" y="398" text-anchor="start" class="sub" xml:space="preserve">Everything is 32-bit float arithmetic; int attributes are converted to float on load and truncated on store.</text>
+</svg>

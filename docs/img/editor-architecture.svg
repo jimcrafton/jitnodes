@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="560" viewBox="0 0 980 560" role="img">
+  <title>Editor architecture</title>
+  <desc>newui views, UI-free controllers, the editor model, and the jitnodes library.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="980" height="560" fill="#ffffff"/>
+  <text x="490" y="24" text-anchor="middle" class="title" xml:space="preserve">Editor architecture</text>
+  <rect x="20" y="40" width="700" height="150" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="34" y="60" text-anchor="start" class="bold" xml:space="preserve">View layer   (newui + Blend2D; needs a window)</text>
+  <rect x="34" y="72" width="210" height="104" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="139.0" y="92" text-anchor="middle" class="bold" xml:space="preserve">EditorWindow</text>
+  <text x="139.0" y="110" text-anchor="middle" class="sub" xml:space="preserve">finds every view by name</text>
+  <text x="139.0" y="125" text-anchor="middle" class="sub" xml:space="preserve">(throws if one is missing)</text>
+  <text x="139.0" y="140" text-anchor="middle" class="sub" xml:space="preserve">wires events to the model</text>
+  <text x="139.0" y="155" text-anchor="middle" class="sub" xml:space="preserve">owns refresh()</text>
+  <rect x="256" y="72" width="210" height="104" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="361.0" y="92" text-anchor="middle" class="bold" xml:space="preserve">Canvases</text>
+  <text x="361.0" y="110" text-anchor="middle" class="sub" xml:space="preserve">GraphCanvas</text>
+  <text x="361.0" y="125" text-anchor="middle" class="sub" xml:space="preserve">ViewportCanvas</text>
+  <text x="361.0" y="140" text-anchor="middle" class="sub" xml:space="preserve">ProfileCanvas</text>
+  <text x="361.0" y="155" text-anchor="middle" class="sub" xml:space="preserve">draw + forward input</text>
+  <rect x="478" y="72" width="226" height="104" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="591.0" y="92" text-anchor="middle" class="bold" xml:space="preserve">Panels and dialogs</text>
+  <text x="591.0" y="110" text-anchor="middle" class="sub" xml:space="preserve">ParameterPanel (rows)</text>
+  <text x="591.0" y="125" text-anchor="middle" class="sub" xml:space="preserve">KeyframeDialog (modal)</text>
+  <text x="591.0" y="140" text-anchor="middle" class="sub" xml:space="preserve">asset list, Color by,</text>
+  <text x="591.0" y="155" text-anchor="middle" class="sub" xml:space="preserve">range fields</text>
+  <rect x="20" y="214" width="700" height="128" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="34" y="234" text-anchor="start" class="bold" xml:space="preserve">Controller layer   (editorCore: no UI dependency, unit-tested)</text>
+  <rect x="34" y="246" width="160" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="114.0" y="266" text-anchor="middle" class="bold" xml:space="preserve">GraphController</text>
+  <text x="114.0" y="284" text-anchor="middle" class="sub" xml:space="preserve">select, drag, wire,</text>
+  <text x="114.0" y="299" text-anchor="middle" class="sub" xml:space="preserve">box select, nudge,</text>
+  <text x="114.0" y="314" text-anchor="middle" class="sub" xml:space="preserve">clipboard hooks</text>
+  <rect x="206" y="246" width="160" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="286.0" y="266" text-anchor="middle" class="bold" xml:space="preserve">ViewportController</text>
+  <text x="286.0" y="284" text-anchor="middle" class="sub" xml:space="preserve">fit, pan, zoom,</text>
+  <text x="286.0" y="299" text-anchor="middle" class="sub" xml:space="preserve">colour attribute,</text>
+  <text x="286.0" y="314" text-anchor="middle" class="sub" xml:space="preserve">range, colour map</text>
+  <rect x="378" y="246" width="160" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="458.0" y="266" text-anchor="middle" class="bold" xml:space="preserve">ProfileController</text>
+  <text x="458.0" y="284" text-anchor="middle" class="sub" xml:space="preserve">rows, scroll,</text>
+  <text x="458.0" y="299" text-anchor="middle" class="sub" xml:space="preserve">hit testing</text>
+  <rect x="550" y="246" width="154" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="627.0" y="266" text-anchor="middle" class="bold" xml:space="preserve">KeyframeEditor</text>
+  <text x="627.0" y="284" text-anchor="middle" class="sub" xml:space="preserve">working copy of</text>
+  <text x="627.0" y="299" text-anchor="middle" class="sub" xml:space="preserve">one parameter's keys</text>
+  <rect x="20" y="366" width="700" height="100" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="34" y="386" text-anchor="start" class="bold" xml:space="preserve">Model   (editorCore)</text>
+  <rect x="34" y="394" width="670" height="62" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="369.0" y="414" text-anchor="middle" class="bold" xml:space="preserve">EditorModel</text>
+  <text x="369.0" y="432" text-anchor="middle" class="sub" xml:space="preserve">owns Network + History, file path, modified flag, selection, subnet path, clipboard,</text>
+  <text x="369.0" y="447" text-anchor="middle" class="sub" xml:space="preserve">playhead, last CookResult and the display geometry; every edit is one undo step</text>
+  <rect x="20" y="486" width="700" height="58" rx="6" fill="#f3e8fd" stroke="#8a4fbf" stroke-width="1.4"/>
+  <text x="34" y="506" text-anchor="start" class="bold" xml:space="preserve">jitnodes library</text>
+  <text x="34" y="526" text-anchor="start" class="sub" xml:space="preserve">Network (cook, fusion, threads) | History | serialize (graphs, assets, clips) | NodeRegistry | KernelCompiler</text>
+  <path d="M370,190 L370,214" class="arrow"/>
+  <path d="M370,342 L370,366" class="arrow"/>
+  <path d="M370,466 L370,486" class="arrow"/>
+  <text x="380" y="206" text-anchor="start" class="small" xml:space="preserve">events</text>
+  <text x="380" y="358" text-anchor="start" class="small" xml:space="preserve">calls</text>
+  <text x="380" y="478" text-anchor="start" class="small" xml:space="preserve">Network / History API</text>
+  <path d="M722,430 L737,430 L737,120 L724,120" class="arrow" stroke-dasharray="5 4"/>
+  <text transform="rotate(-90 731 300)" x="731" y="300" text-anchor="middle" class="small">refresh() updates the views</text>
+  <rect x="750" y="40" width="210" height="150" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="855" y="60" text-anchor="middle" class="bold" xml:space="preserve">newui</text>
+  <text x="762" y="80" text-anchor="start" class="sub" xml:space="preserve">Frame, RootView, SubView</text>
+  <text x="762" y="97" text-anchor="start" class="sub" xml:space="preserve">Button, TextField, TreeView,</text>
+  <text x="762" y="114" text-anchor="start" class="sub" xml:space="preserve">DropDownList, Toggle, Slider</text>
+  <text x="762" y="131" text-anchor="start" class="sub" xml:space="preserve">reflection + Bundle:</text>
+  <text x="762" y="148" text-anchor="start" class="sub" xml:space="preserve">loads ui/mainWindow.newui</text>
+  <text x="762" y="165" text-anchor="start" class="sub" xml:space="preserve">Automation server (pipe)</text>
+  <rect x="750" y="214" width="210" height="128" rx="6" fill="#fff8d6" stroke="#b59a1a" stroke-width="1.4"/>
+  <text x="855" y="234" text-anchor="middle" class="bold" xml:space="preserve">UI definition</text>
+  <text x="762" y="254" text-anchor="start" class="sub" xml:space="preserve">mockups/mainWindow.html</text>
+  <text x="762" y="271" text-anchor="start" class="sub" xml:space="preserve">  -&gt; html2newui.py -&gt;</text>
+  <text x="762" y="288" text-anchor="start" class="sub" xml:space="preserve">ui/mainWindow.newui</text>
+  <text x="762" y="305" text-anchor="start" class="sub" xml:space="preserve">(never hand-edited;</text>
+  <text x="762" y="322" text-anchor="start" class="sub" xml:space="preserve">validated by validateNewui)</text>
+  <rect x="750" y="366" width="210" height="178" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="855" y="386" text-anchor="middle" class="bold" xml:space="preserve">GUI tests</text>
+  <text x="762" y="406" text-anchor="start" class="sub" xml:space="preserve">tests/gui/test_editor_gui.py</text>
+  <text x="762" y="423" text-anchor="start" class="sub" xml:space="preserve">newui guitest driver:</text>
+  <text x="762" y="440" text-anchor="start" class="sub" xml:space="preserve">real SendInput + named</text>
+  <text x="762" y="457" text-anchor="start" class="sub" xml:space="preserve">pipe queries against</text>
+  <text x="762" y="474" text-anchor="start" class="sub" xml:space="preserve">--automation &lt;pipe&gt;</text>
+  <text x="762" y="491" text-anchor="start" class="sub" xml:space="preserve">(JITNODES_GUI_AUTOMATION)</text>
+  <path d="M855,214 L855,190" class="arrow"/>
+</svg>

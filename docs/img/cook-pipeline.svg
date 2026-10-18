@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600" viewBox="0 0 1000 600" role="img">
+  <title>How a cook works</title>
+  <desc>Five steps from an edit to cached results, and an example network planned into three levels.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="600" fill="#ffffff"/>
+  <text x="500" y="26" text-anchor="middle" class="title" xml:space="preserve">Cooking: from an edit to cached geometry</text>
+  <rect x="24" y="44" width="178" height="100" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="113.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">1  Edit</text>
+  <text x="113.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">setFloat / setString,</text>
+  <text x="113.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">connect, setTime</text>
+  <rect x="218" y="44" width="178" height="100" rx="6" fill="#fde7e9" stroke="#c5392f" stroke-width="1.4"/>
+  <text x="307.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">2  markDirty</text>
+  <text x="307.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">the node, everything</text>
+  <text x="307.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">downstream, and nodes</text>
+  <text x="307.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">whose expressions refer</text>
+  <text x="307.0" y="127" text-anchor="middle" class="sub" xml:space="preserve">to it drop their cache</text>
+  <path d="M202,94 L218,94" class="arrow"/>
+  <rect x="412" y="44" width="178" height="100" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="501.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">3  planCook</text>
+  <text x="501.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">walk upstream from the</text>
+  <text x="501.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">requested node; one</text>
+  <text x="501.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">CookTask per node or per</text>
+  <text x="501.0" y="127" text-anchor="middle" class="sub" xml:space="preserve">fused chain; assign levels</text>
+  <path d="M396,94 L412,94" class="arrow"/>
+  <rect x="606" y="44" width="178" height="100" rx="6" fill="#fff8d6" stroke="#b59a1a" stroke-width="1.4"/>
+  <text x="695.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">4  evaluateParams</text>
+  <text x="695.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">expressions and keyframes</text>
+  <text x="695.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">resolved serially:</text>
+  <text x="695.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">time, frame, node.param,</text>
+  <text x="695.0" y="127" text-anchor="middle" class="sub" xml:space="preserve">parent.param</text>
+  <path d="M590,94 L606,94" class="arrow"/>
+  <rect x="800" y="44" width="178" height="100" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="889.0" y="64" text-anchor="middle" class="bold" xml:space="preserve">5  run by level</text>
+  <text x="889.0" y="82" text-anchor="middle" class="sub" xml:space="preserve">parallelFor over each</text>
+  <text x="889.0" y="97" text-anchor="middle" class="sub" xml:space="preserve">level; kernels compile</text>
+  <text x="889.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">once (cache) and run</text>
+  <text x="889.0" y="127" text-anchor="middle" class="sub" xml:space="preserve">on the thread pool</text>
+  <path d="M784,94 L800,94" class="arrow"/>
+  <text x="24" y="186" text-anchor="start" class="sub" xml:space="preserve">Example: the display node is null7. Grey nodes are cached from an earlier cook, orange nodes were dirtied by an edit to wrangle3 and wrangle5.</text>
+  <text x="24" y="216" text-anchor="start" class="bold" xml:space="preserve">Network</text>
+  <rect x="40" y="232" width="84" height="30" rx="5" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="82.0" y="251" text-anchor="middle" class="mono" xml:space="preserve">line1</text>
+  <rect x="40" y="292" width="100" height="30" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="90.0" y="311" text-anchor="middle" class="mono" xml:space="preserve">transform2</text>
+  <rect x="40" y="352" width="84" height="30" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="82.0" y="371" text-anchor="middle" class="mono" xml:space="preserve">wrangle3</text>
+  <rect x="200" y="232" width="84" height="30" rx="5" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="242.0" y="251" text-anchor="middle" class="mono" xml:space="preserve">line4</text>
+  <rect x="200" y="322" width="84" height="30" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="242.0" y="341" text-anchor="middle" class="mono" xml:space="preserve">wrangle5</text>
+  <rect x="120" y="422" width="84" height="30" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="162.0" y="441" text-anchor="middle" class="mono" xml:space="preserve">merge6</text>
+  <rect x="120" y="482" width="84" height="30" rx="5" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="162.0" y="501" text-anchor="middle" class="mono" xml:space="preserve">null7</text>
+  <path d="M82,262 L82,292" class="arrow"/>
+  <path d="M82,322 L82,352" class="arrow"/>
+  <path d="M82,382 L150,422" class="arrow"/>
+  <path d="M242,262 L242,322" class="arrow"/>
+  <path d="M242,352 L190,422" class="arrow"/>
+  <path d="M162,452 L162,482" class="arrow"/>
+  <text x="40" y="540" text-anchor="start" class="small" xml:space="preserve">transform2 and wrangle3 are point-wise with one consumer each,</text>
+  <text x="40" y="555" text-anchor="start" class="small" xml:space="preserve">so planCook folds them into one fused chain.</text>
+  <path d="M300,380 L360,380" class="arrow"/>
+  <text x="330.0" y="375.0" text-anchor="middle" class="small" xml:space="preserve">plan</text>
+  <text x="374" y="216" text-anchor="start" class="bold" xml:space="preserve">Plan: three levels, tasks of one level run in parallel</text>
+  <rect x="374" y="232" width="600" height="92" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="386" y="250" text-anchor="start" class="bold" xml:space="preserve">Level 0</text>
+  <rect x="470" y="242" width="250" height="70" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="595" y="262" text-anchor="middle" class="mono" xml:space="preserve">fused chain: transform2 + wrangle3</text>
+  <text x="595" y="280" text-anchor="middle" class="sub" xml:space="preserve">one kernel, one pass over memory</text>
+  <text x="595" y="298" text-anchor="middle" class="sub" xml:space="preserve">input: line1 (cached)</text>
+  <rect x="736" y="242" width="226" height="70" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="849" y="262" text-anchor="middle" class="mono" xml:space="preserve">wrangle5</text>
+  <text x="849" y="280" text-anchor="middle" class="sub" xml:space="preserve">own kernel</text>
+  <text x="849" y="298" text-anchor="middle" class="sub" xml:space="preserve">input: line4 (cached)</text>
+  <text x="728" y="314" text-anchor="middle" class="small" fill="#c5392f" xml:space="preserve">run in parallel</text>
+  <path d="M668,324 L668,342" class="arrow"/>
+  <rect x="374" y="342" width="600" height="56" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="386" y="366" text-anchor="start" class="bold" xml:space="preserve">Level 1</text>
+  <rect x="470" y="352" width="492" height="36" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="716" y="374" text-anchor="middle" class="mono" xml:space="preserve">merge6  (the merge nodes of a tree become one N-ary concat)</text>
+  <path d="M668,398 L668,416" class="arrow"/>
+  <rect x="374" y="416" width="600" height="56" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="386" y="440" text-anchor="start" class="bold" xml:space="preserve">Level 2</text>
+  <rect x="470" y="426" width="492" height="36" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="716" y="448" text-anchor="middle" class="mono" xml:space="preserve">null7  (returns its input unchanged: no copy)</text>
+  <rect x="374" y="490" width="600" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="386" y="510" text-anchor="start" class="bold" xml:space="preserve">Afterwards</text>
+  <text x="386" y="528" text-anchor="start" class="sub" xml:space="preserve">every task result is stored in its tail node (cooked_) and the node is clean</text>
+  <text x="386" y="544" text-anchor="start" class="sub" xml:space="preserve">interior nodes of a fused chain keep no result (profile note: fused into wrangle3)</text>
+  <text x="386" y="560" text-anchor="start" class="sub" xml:space="preserve">the next cook of the same graph returns immediately; an edit repeats from step 1</text>
+</svg>

@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560" role="img">
+  <title>jitnodes layers</title>
+  <desc>Front ends use the graph layer, which uses the jit and geo layers, which sit on the core layer.</desc>
+
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #202124; font-size: 13px; }
+    .title { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; fill: #5f6368; }
+    .small { font-size: 11px; fill: #5f6368; }
+    .mono { white-space: pre; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12px; }
+    .bold { font-weight: 600; }
+    .white { fill: #ffffff; }
+    .arrow { stroke: #5f6368; stroke-width: 1.6; fill: none; marker-end: url(#head); }
+    .line { stroke: #5f6368; stroke-width: 1.4; fill: none; }
+    .dash { stroke: #80868b; stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="920" height="560" fill="#ffffff"/>
+  <text x="460" y="28" text-anchor="middle" class="title" xml:space="preserve">jitnodes: layers (each layer only uses the ones below it)</text>
+  <rect x="30" y="46" width="860" height="84" rx="6" fill="#f1f3f4" stroke="#80868b" stroke-width="1.4"/>
+  <text x="44" y="66" text-anchor="start" class="bold" xml:space="preserve">Front ends</text>
+  <rect x="44" y="74" width="270" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="179.0" y="94" text-anchor="middle" class="bold" xml:space="preserve">jitnodesEditor</text>
+  <text x="179.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">newui window (editor/)</text>
+  <rect x="330" y="74" width="270" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="465.0" y="94" text-anchor="middle" class="bold" xml:space="preserve">jitnodesCli</text>
+  <text x="465.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">load, cook, SVG, profile (tools/)</text>
+  <rect x="616" y="74" width="270" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="751.0" y="94" text-anchor="middle" class="bold" xml:space="preserve">Your C++ program</text>
+  <text x="751.0" y="112" text-anchor="middle" class="sub" xml:space="preserve">#include "jitnodes/jitnodes.h"</text>
+  <path d="M460,130 L460,150" class="arrow"/>
+  <rect x="30" y="150" width="860" height="124" rx="6" fill="#e8f0fe" stroke="#4a78c2" stroke-width="1.4"/>
+  <text x="44" y="170" text-anchor="start" class="bold" xml:space="preserve">graph/   nodes, wiring, cooking</text>
+  <rect x="44" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="112.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">Network</text>
+  <text x="112.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">dirty flags,</text>
+  <text x="112.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">cook planner,</text>
+  <text x="112.0" y="248" text-anchor="middle" class="sub" xml:space="preserve">fusion, threads</text>
+  <rect x="188" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="256.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">Node types</text>
+  <text x="256.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">line, circle, transform,</text>
+  <text x="256.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">wrangle, merge, ...</text>
+  <text x="256.0" y="248" text-anchor="middle" class="sub" xml:space="preserve">NodeRegistry</text>
+  <rect x="332" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="400.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">Subnets/assets</text>
+  <text x="400.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">child Network,</text>
+  <text x="400.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">parent.param,</text>
+  <text x="400.0" y="248" text-anchor="middle" class="sub" xml:space="preserve">asset versions</text>
+  <rect x="476" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="544.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">Animation</text>
+  <text x="544.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">keyframes,</text>
+  <text x="544.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">parameter</text>
+  <text x="544.0" y="248" text-anchor="middle" class="sub" xml:space="preserve">expressions</text>
+  <rect x="620" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="688.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">History</text>
+  <text x="688.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">undo/redo by</text>
+  <text x="688.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">snapshot diff</text>
+  <rect x="764" y="180" width="136" height="84" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="832.0" y="200" text-anchor="middle" class="bold" xml:space="preserve">serialize</text>
+  <text x="832.0" y="218" text-anchor="middle" class="sub" xml:space="preserve">JSON5 graphs,</text>
+  <text x="832.0" y="233" text-anchor="middle" class="sub" xml:space="preserve">assets, clips</text>
+  <path d="M460,274 L460,294" class="arrow"/>
+  <rect x="30" y="294" width="860" height="106" rx="6" fill="#fff3e0" stroke="#d98324" stroke-width="1.4"/>
+  <text x="44" y="314" text-anchor="start" class="bold" xml:space="preserve">jit/   per-point math compiled to SIMD</text>
+  <rect x="44" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="112.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">exprParser</text>
+  <text x="112.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">wrangle text</text>
+  <text x="112.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">to KernelSpec</text>
+  <rect x="188" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="256.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">ExprGraph</text>
+  <text x="256.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">hash-consed</text>
+  <text x="256.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">expression DAG</text>
+  <rect x="332" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="400.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">fuse</text>
+  <text x="400.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">composeKernels</text>
+  <text x="400.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">across nodes</text>
+  <rect x="476" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="544.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">KernelCompiler</text>
+  <text x="544.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">cache by</text>
+  <text x="544.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">signature + ISA</text>
+  <rect x="620" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="688.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">VecEmitter</text>
+  <text x="688.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">SSE2 / AVX2 /</text>
+  <text x="688.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">AVX-512 via asmjit</text>
+  <rect x="764" y="324" width="136" height="66" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="832.0" y="344" text-anchor="middle" class="bold" xml:space="preserve">Interpreter</text>
+  <text x="832.0" y="362" text-anchor="middle" class="sub" xml:space="preserve">scalar reference,</text>
+  <text x="832.0" y="377" text-anchor="middle" class="sub" xml:space="preserve">non-x86 fallback</text>
+  <path d="M250,400 L250,420" class="arrow"/>
+  <path d="M690,400 L690,420" class="arrow"/>
+  <rect x="30" y="420" width="560" height="82" rx="6" fill="#e6f4ea" stroke="#3d8b57" stroke-width="1.4"/>
+  <text x="44" y="440" text-anchor="start" class="bold" xml:space="preserve">geo/   the data</text>
+  <rect x="44" y="448" width="128" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="108.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">Geometry</text>
+  <text x="108.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">points, prims</text>
+  <rect x="180" y="448" width="128" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="244.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">AttribArray</text>
+  <text x="244.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">copy-on-write</text>
+  <rect x="316" y="448" width="128" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="380.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">topology</text>
+  <text x="380.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">resample, ...</text>
+  <rect x="452" y="448" width="128" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="516.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">svgExport</text>
+  <text x="516.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">debug output</text>
+  <rect x="610" y="420" width="280" height="82" rx="6" fill="#f3e8fd" stroke="#8a4fbf" stroke-width="1.4"/>
+  <text x="624" y="440" text-anchor="start" class="bold" xml:space="preserve">core/   memory and threads</text>
+  <rect x="624" y="448" width="82" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="665.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">Aligned</text>
+  <text x="665.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">Array</text>
+  <rect x="714" y="448" width="82" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="755.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">Thread</text>
+  <text x="755.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">Pool</text>
+  <rect x="804" y="448" width="82" height="46" rx="6" fill="#ffffff" stroke="#80868b" stroke-width="1.4"/>
+  <text x="845.0" y="468" text-anchor="middle" class="bold" xml:space="preserve">Arena</text>
+  <text x="845.0" y="486" text-anchor="middle" class="sub" xml:space="preserve">(scratch)</text>
+  <text x="460" y="530" text-anchor="middle" class="sub" xml:space="preserve">Third party: asmjit (machine code), json5 (graph files); the editor adds newui (window) and Blend2D (drawing).</text>
+</svg>
