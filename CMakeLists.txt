@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(JITNODES_BUILD_TESTS    "Build jitnodes unit tests"  ON)
 option(JITNODES_BUILD_EXAMPLES "Build jitnodes examples"    ON)
 option(JITNODES_BUILD_TOOLS    "Build the jitnodesCli tool"  ON)
+option(JITNODES_SANITIZE       "Build the library and tests with AddressSanitizer (and UBSan on clang/gcc)" OFF)
 option(JITNODES_BUILD_EDITOR   "Build the newui based editor (Windows, builds newui as an external project)" OFF)
 set(JITNODES_NEWUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../newui" CACHE PATH "newui source checkout used by the editor")
 
@@ -20,9 +21,19 @@ set(ASMJIT_STATIC ON CACHE BOOL "" FORCE)
 set(ASMJIT_NO_NATVIS ON CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/asmjit EXCLUDE_FROM_ALL)
 
+if(JITNODES_SANITIZE)
+  if(MSVC)
+    add_compile_options(/fsanitize=address)
+  else()
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+  endif()
+endif()
+
 add_library(jitnodes STATIC
   src/core/arena.cpp
   src/core/threadPool.cpp
+  src/core/stackGuard.cpp
   src/geo/geometry.cpp
   src/geo/topology.cpp
   src/geo/svgExport.cpp

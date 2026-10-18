@@ -314,14 +314,25 @@ std::shared_ptr<const Kernel> KernelCompiler::compile(const KernelSpec& spec) {
     std::lock_guard lock(mutex_);
     const std::string key = spec.signature() + "#" + isaName(isa_);
     auto it = cache_.find(key);
-    if (it != cache_.end()) return it->second;
+    if (it != cache_.end()) {
+        it->second.lastUse = ++useTick_;
+        return it->second.kernel;
+    }
 
     const auto compileStart = std::chrono::steady_clock::now();
     std::shared_ptr<Kernel> kernel(new Kernel(spec, backend_, isa_));
     if (jitSupported_ && jitEnabled_) kernel->compileJit();
     ++compileCount_;
     compileMillis_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
-    cache_.emplace(key, kernel);
+    if (cache_.size() >= maxCachedKernels) {
+        std::vector<uint64_t> uses;
+        uses.reserve(cache_.size());
+        for (const auto& entry : cache_) uses.push_back(entry.second.lastUse);
+        std::nth_element(uses.begin(), uses.begin() + static_cast<std::ptrdiff_t>(uses.size() / 4), uses.end());
+        const uint64_t cutoff = uses[uses.size() / 4];
+        for (auto entry = cache_.begin(); entry != cache_.end();) entry = entry->second.lastUse < cutoff ? cache_.erase(entry) : std::next(entry);
+    }
+    cache_.emplace(key, CacheEntry{kernel, ++useTick_});
     return kernel;
 }
 

@@ -7,6 +7,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -100,6 +101,9 @@ void registerSubnetNodes();
 
 class Network {
 public:
+    // Cooking, saving and undo recurse through nested subnets, so deeper nesting is refused when the subnet node is added.
+    static constexpr size_t maxSubnetDepth = 64;
+
     // threads = 0 picks a default from the hardware; see setThreadCount.
     explicit Network(size_t threads = 0);
     Network(const Network&) = delete;
@@ -133,6 +137,11 @@ public:
     NodeId inputOf(NodeId to, int inputIndex) const;
 
     void markDirty(NodeId id);
+
+    // Called by a node when the node names its expressions refer to change.
+    void referencesChanged(NodeId id, const std::set<std::string>& before, const std::set<std::string>& after);
+    // True when the reverse indexes agree with a scan of the graph (for tests).
+    bool indexesConsistent() const;
 
     GeometryHandle cook(NodeId id);
     void setDisplayNode(NodeId id) {
@@ -211,6 +220,10 @@ private:
     bool reaches(NodeId from, NodeId target) const;
     void fitInputs(Slot& s);
     size_t consumerCount(NodeId id) const;
+    void addEdge(NodeId from, NodeId to) { consumers_[from].push_back(to); }
+    void removeEdge(NodeId from, NodeId to);
+    void indexReferences(const Node& n, bool add);
+    void markAllDirty();
     struct CookTask {
         NodeId tail = invalidNodeId;
         std::vector<NodeId> chain;  // fused point-wise chain, tail first (empty for ordinary nodes)
@@ -219,6 +232,7 @@ private:
         AttribClass cls = AttribClass::point;
         int level = 0;
     };
+    CookTask buildTask(NodeId id);
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
     void appendProfileRows(std::string& out, int depth) const;
     void runTask(const CookTask& task);
@@ -228,7 +242,17 @@ private:
     float resolveSymbol(NodeId owner, const std::string& symbol);
     bool paramDependsOnTime(NodeId id, const std::string& name, std::set<std::pair<NodeId, std::string>>& visiting) const;
 
+    // Expressions are evaluated recursively; a longer chain of parameters that refer to each other is an error instead of a stack overflow.
+    static constexpr size_t maxExpressionDepth = 400;
+
     std::map<NodeId, Slot> slots_;
+    // Reverse indexes, kept in step with every change of wiring and of expression references: consumers_ holds one entry per wired
+    // input (so a node wired twice into one consumer appears twice), referrers_ the nodes whose expressions mention a node name.
+    std::unordered_map<NodeId, std::vector<NodeId>> consumers_;
+    std::unordered_map<std::string, std::set<NodeId>> referrers_;
+    std::unordered_map<std::string, NodeId> names_;
+    mutable std::unordered_map<std::string, size_t> suffixHint_;  // uniqueName: every number below the hint is taken for that stem
+    void forgetName(const std::string& name);
     NodeId nextId_ = 1;
     NodeId displayNode_ = invalidNodeId;
     KernelCompiler ownCompiler_;

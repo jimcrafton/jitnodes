@@ -1,5 +1,7 @@
 ﻿#include "jitnodes/graph/serialize.h"
 
+#include "jitnodes/core/stackGuard.h"
+
 #include <json5/json5.hpp>
 #include <json5/json5_builder.hpp>
 #include <json5/json5_input.hpp>
@@ -95,6 +97,7 @@ json5::value copyValue(json5::builder& b, const json5::value& v, const char* ski
 }
 
 void collectAssets(const Network& net, std::set<std::string>& types) {
+    requireStack("the graph");
     for (NodeId id : net.nodeIds()) {
         const Node& n = net.node(id);
         if (NodeRegistry::instance().assetText(n.typeName())) types.insert(n.typeName());
@@ -117,6 +120,7 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
 
 // Adds fps/time/display/nodes to the currently open object.
 void writeGraphFields(json5::builder& b, const Network& net, bool includeTime) {
+    requireStack("the graph");
     b["fps"] = json5::value(net.fps());
     if (includeTime) b["time"] = json5::value(net.time());
     b["display"] = json5::value(static_cast<double>(net.displayNode()));
@@ -310,6 +314,7 @@ void loadNode(Network& net, const json5::value& nv, size_t index, std::vector<st
 
 // Loads fps/time/display/nodes into net (used for both the root graph and subnet children).
 void loadGraphBody(Network& net, const json5::value& body) {
+    requireStack("the graph");
     if (!body.is_object()) fail("a graph must be an object");
     const json5::array_view nodes(body["nodes"]);
     if (!nodes.is_valid()) fail("nodes must be an array");
@@ -517,6 +522,7 @@ bool isOutdated(const Node& n, const std::string& typeName) {
 }
 
 size_t updateAssetsIn(Network& net, const std::string& typeName) {
+    requireStack("the graph");
     size_t count = 0;
     for (NodeId id : net.nodeIds()) {
         Node& n = net.node(id);
@@ -549,6 +555,7 @@ size_t updateAssetsIn(Network& net, const std::string& typeName) {
 }
 
 size_t countOutdated(const Network& net, const std::string& typeName) {
+    requireStack("the graph");
     size_t count = 0;
     for (NodeId id : net.nodeIds()) {
         const Node& n = net.node(id);

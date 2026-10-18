@@ -1,6 +1,7 @@
 #include "jitnodes/graph/network.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -9,6 +10,7 @@
 #include <set>
 #include <stdexcept>
 
+#include "jitnodes/core/stackGuard.h"
 #include "jitnodes/jit/fuse.h"
 #include "jitnodes/jit/scalarEval.h"
 
@@ -66,10 +68,16 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     n->id_ = id;
     n->network_ = this;
     n->name_ = name;
+    if (n->childNetwork()) {
+        size_t depth = 1;
+        for (const Network* p = parent_; p; p = p->parent_) ++depth;
+        if (depth > maxSubnetDepth) throw std::runtime_error("subnets cannot be nested more than " + std::to_string(maxSubnetDepth) + " levels deep");
+    }
     Slot s;
     s.inputs.assign(static_cast<size_t>(n->inputCount()), invalidNodeId);
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
+    names_[name] = id;
     nextId_ = std::max(nextId_, id + 1);
     slots_.at(id).node->onAttached(*this);
     return id;
@@ -77,6 +85,10 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 
 void Network::clear() {
     slots_.clear();
+    consumers_.clear();
+    referrers_.clear();
+    names_.clear();
+    suffixHint_.clear();
     nextId_ = 1;
     displayNode_ = invalidNodeId;
     evaluating_.clear();
@@ -99,19 +111,22 @@ void Network::fitInputs(Slot& s) {
 
 void Network::removeNode(NodeId id) {
     slot(id);
-    for (auto& [otherId, s] : slots_) {
-        bool changed = false;
-        for (size_t i = 0; i < s.inputs.size(); ++i) {
-            if (s.inputs[i] == id) {
-                s.inputs[i] = invalidNodeId;
-                changed = true;
-            }
-        }
-        if (changed) {
-            fitInputs(s);
-            markDirty(otherId);
-        }
+    std::vector<NodeId> consumers;
+    if (auto it = consumers_.find(id); it != consumers_.end()) consumers = it->second;
+    std::sort(consumers.begin(), consumers.end());
+    consumers.erase(std::unique(consumers.begin(), consumers.end()), consumers.end());
+    consumers_.erase(id);
+    for (NodeId otherId : consumers) {
+        Slot& s = slot(otherId);
+        for (size_t i = 0; i < s.inputs.size(); ++i)
+            if (s.inputs[i] == id) s.inputs[i] = invalidNodeId;
+        fitInputs(s);
+        markDirty(otherId);
     }
+    for (NodeId in : slot(id).inputs)
+        if (in != invalidNodeId) removeEdge(in, id);
+    indexReferences(*slot(id).node, false);
+    forgetName(slot(id).node->name());
     slots_.erase(id);
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
@@ -124,8 +139,13 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
             slot(in);
             if (reaches(in, id)) throw std::runtime_error("new inputs of " + s.node->name() + " would create a cycle");
         }
+        for (NodeId in : s.inputs)
+            if (in != invalidNodeId) removeEdge(in, id);
         s.inputs = *inputs;
+        for (NodeId in : s.inputs)
+            if (in != invalidNodeId) addEdge(in, id);
     }
+    indexReferences(*s.node, false);
     fresh->id_ = id;
     fresh->network_ = this;
     fresh->name_ = s.node->name_;
@@ -133,6 +153,7 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
     if (fresh->hasVariableInputs()) fresh->setInputCount(static_cast<int>(std::max<size_t>(s.inputs.size(), 2)));
     s.inputs.resize(static_cast<size_t>(fresh->inputCount()), invalidNodeId);
     s.node = std::move(fresh);
+    indexReferences(*s.node, true);
     fitInputs(s);
     s.node->onAttached(*this);
     markDirty(id);
@@ -142,9 +163,15 @@ Node& Network::node(NodeId id) { return *slot(id).node; }
 const Node& Network::node(NodeId id) const { return *slot(id).node; }
 
 NodeId Network::findNode(const std::string& name) const {
-    for (const auto& [id, s] : slots_)
-        if (s.node->name() == name) return id;
-    return invalidNodeId;
+    auto it = names_.find(name);
+    return it == names_.end() ? invalidNodeId : it->second;
+}
+
+void Network::forgetName(const std::string& name) {
+    names_.erase(name);
+    size_t letters = name.size();
+    while (letters > 0 && std::isdigit(static_cast<unsigned char>(name[letters - 1]))) --letters;
+    suffixHint_.erase(letters == 0 ? std::string("node") : name.substr(0, letters));
 }
 
 std::string Network::uniqueName(const std::string& base) const {
@@ -152,9 +179,13 @@ std::string Network::uniqueName(const std::string& base) const {
     size_t letters = base.size();
     while (letters > 0 && std::isdigit(static_cast<unsigned char>(base[letters - 1]))) --letters;
     const std::string stem = letters == 0 ? std::string("node") : base.substr(0, letters);
-    for (size_t n = 1;; ++n) {
+    size_t& hint = suffixHint_[stem];
+    for (size_t n = std::max<size_t>(hint, 1);; ++n) {
         const std::string candidate = stem + std::to_string(n);
-        if (findNode(candidate) == invalidNodeId) return candidate;
+        if (findNode(candidate) == invalidNodeId) {
+            hint = n;
+            return candidate;
+        }
     }
 }
 
@@ -205,14 +236,25 @@ void Network::renameNode(NodeId id, const std::string& newName) {
     if (findNode(newName) != invalidNodeId) throw std::runtime_error("a node named '" + newName + "' already exists");
     const std::map<std::string, std::string> renames{{target.name_, newName}};
     for (auto& entry : slots_) rewriteReferences(entry.first, renames);
+    forgetName(target.name_);
     target.name_ = newName;
-    for (auto& entry : slots_) markDirty(entry.first);
+    names_[newName] = id;
+    markAllDirty();
 }
 
+// Whether `target` lies upstream of (or is) `from`, found by walking downstream from `target` through the consumer index; that is
+// short for a node that is being wired up, which usually has no consumers yet.
 bool Network::reaches(NodeId from, NodeId target) const {
-    if (from == target) return true;
-    for (NodeId in : slot(from).inputs)
-        if (in != invalidNodeId && reaches(in, target)) return true;
+    std::vector<NodeId> pending{target};
+    std::unordered_set<NodeId> seen;
+    while (!pending.empty()) {
+        const NodeId current = pending.back();
+        pending.pop_back();
+        if (current == from) return true;
+        if (!seen.insert(current).second) continue;
+        auto it = consumers_.find(current);
+        if (it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
+    }
     return false;
 }
 
@@ -223,7 +265,10 @@ void Network::connect(NodeId from, NodeId to, int inputIndex) {
         throw std::runtime_error("input index out of range on " + dst.node->name());
     if (reaches(from, to)) throw std::runtime_error("connection would create a cycle");
     if (static_cast<size_t>(inputIndex) >= dst.inputs.size()) dst.inputs.resize(static_cast<size_t>(inputIndex) + 1, invalidNodeId);
+    const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
+    if (previous != invalidNodeId) removeEdge(previous, to);
     dst.inputs[static_cast<size_t>(inputIndex)] = from;
+    addEdge(from, to);
     fitInputs(dst);
     markDirty(to);
 }
@@ -232,6 +277,8 @@ void Network::disconnect(NodeId to, int inputIndex) {
     Slot& dst = slot(to);
     if (inputIndex < 0 || static_cast<size_t>(inputIndex) >= dst.inputs.size())
         throw std::runtime_error("input index out of range on " + dst.node->name());
+    const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
+    if (previous != invalidNodeId) removeEdge(previous, to);
     dst.inputs[static_cast<size_t>(inputIndex)] = invalidNodeId;
     fitInputs(dst);
     markDirty(to);
@@ -245,22 +292,80 @@ NodeId Network::inputOf(NodeId to, int inputIndex) const {
 
 void Network::markDirty(NodeId id) {
     slot(id);
-    std::set<NodeId> seen;
+    std::unordered_set<NodeId> seen;
     std::vector<NodeId> pending{id};
     while (!pending.empty()) {
-        NodeId current = pending.back();
+        const NodeId current = pending.back();
         pending.pop_back();
         if (!seen.insert(current).second) continue;
         Node& n = *slot(current).node;
         n.dirty_ = true;
         n.cooked_.reset();
-        const std::string& currentName = n.name();
-        for (const auto& [otherId, other] : slots_) {
-            const bool wired = std::find(other.inputs.begin(), other.inputs.end(), current) != other.inputs.end();
-            if (wired || other.node->referencedNodes_.count(currentName)) pending.push_back(otherId);
-        }
+        if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
+        if (auto it = referrers_.find(n.name()); it != referrers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
     }
     notifyOwner();
+}
+
+void Network::markAllDirty() {
+    for (auto& entry : slots_) {
+        entry.second.node->dirty_ = true;
+        entry.second.node->cooked_.reset();
+    }
+    notifyOwner();
+}
+
+void Network::removeEdge(NodeId from, NodeId to) {
+    auto it = consumers_.find(from);
+    if (it == consumers_.end()) return;
+    auto& list = it->second;
+    auto pos = std::find(list.begin(), list.end(), to);
+    if (pos != list.end()) {
+        *pos = list.back();
+        list.pop_back();
+    }
+    if (list.empty()) consumers_.erase(it);
+}
+
+void Network::indexReferences(const Node& n, bool add) {
+    for (const std::string& name : n.referencedNodes_) {
+        if (add) {
+            referrers_[name].insert(n.id_);
+        } else if (auto it = referrers_.find(name); it != referrers_.end()) {
+            it->second.erase(n.id_);
+            if (it->second.empty()) referrers_.erase(it);
+        }
+    }
+}
+
+void Network::referencesChanged(NodeId id, const std::set<std::string>& before, const std::set<std::string>& after) {
+    for (const std::string& name : before) {
+        if (after.count(name)) continue;
+        if (auto it = referrers_.find(name); it != referrers_.end()) {
+            it->second.erase(id);
+            if (it->second.empty()) referrers_.erase(it);
+        }
+    }
+    for (const std::string& name : after)
+        if (!before.count(name)) referrers_[name].insert(id);
+}
+
+bool Network::indexesConsistent() const {
+    std::map<NodeId, std::vector<NodeId>> wantConsumers;
+    std::map<std::string, std::set<NodeId>> wantReferrers;
+    for (const auto& [id, s] : slots_) {
+        for (NodeId in : s.inputs)
+            if (in != invalidNodeId) wantConsumers[in].push_back(id);
+        for (const std::string& name : s.node->referencedNodes_) wantReferrers[name].insert(id);
+    }
+    std::map<NodeId, std::vector<NodeId>> haveConsumers;
+    for (const auto& [id, list] : consumers_) haveConsumers[id] = list;
+    for (auto* m : {&wantConsumers, &haveConsumers})
+        for (auto& entry : *m) std::sort(entry.second.begin(), entry.second.end());
+    std::map<std::string, std::set<NodeId>> haveReferrers(referrers_.begin(), referrers_.end());
+    std::unordered_map<std::string, NodeId> wantNames;
+    for (const auto& [id, s] : slots_) wantNames[s.node->name()] = id;
+    return wantConsumers == haveConsumers && wantReferrers == haveReferrers && wantNames == names_;
 }
 
 void Network::setTime(double t) {
@@ -295,7 +400,9 @@ float Network::paramValue(NodeId id, const std::string& name) {
     Node::FloatParam& p = n.floatParam(name);
     if (!p.animated()) return p.value;
 
+    requireStack("parameter expressions");
     const auto key = std::make_pair(id, name);
+    if (evaluating_.size() >= maxExpressionDepth) throw std::runtime_error("parameter expressions refer to each other more than " + std::to_string(maxExpressionDepth) + " levels deep at " + n.name() + "." + name);
     if (!evaluating_.insert(key).second) throw std::runtime_error("parameter expression cycle at " + n.name() + "." + name);
     struct Guard {
         std::set<std::pair<NodeId, std::string>>& set;
@@ -318,6 +425,7 @@ bool Network::paramDependsOnTime(NodeId id, const std::string& name, std::set<st
     const Node::FloatParam& p = n.floatParam(name);
     if (!p.keys.empty()) return true;
     if (p.expression.empty() || !visiting.insert({id, name}).second) return false;
+    if (visiting.size() > maxExpressionDepth || stackHeadroom() < minimumStackHeadroom) return true;  // too deep to follow; treat as animated, which only costs recooks
     for (const std::string& symbol : p.expressionSpec.channels) {
         if (symbol == "time" || symbol == "frame") return true;
         if (symbol == "pi") continue;
@@ -371,39 +479,45 @@ GeometryHandle Network::externalInput(int index) const {
 }
 
 void Network::invalidateReferencesTo(const std::string& nodeName) {
-    std::vector<NodeId> affected;
-    for (const auto& [id, s] : slots_)
-        if (s.node->referencedNodes_.count(nodeName)) affected.push_back(id);
+    auto it = referrers_.find(nodeName);
+    if (it == referrers_.end()) return;
+    const std::vector<NodeId> affected(it->second.begin(), it->second.end());
     for (NodeId id : affected) markDirty(id);
 }
 
 size_t Network::consumerCount(NodeId id) const {
-    size_t count = 0;
-    for (const auto& entry : slots_)
-        count += static_cast<size_t>(std::count(entry.second.inputs.begin(), entry.second.inputs.end(), id));
-    return count;
+    auto it = consumers_.find(id);
+    return it == consumers_.end() ? 0 : it->second.size();
 }
 
 void Network::collectMergeInputs(NodeId id, CookTask& task) {
-    const Slot& s = slot(id);
-    for (size_t i = 0; i < s.inputs.size(); ++i) {
-        const NodeId up = s.inputs[i];
+    struct Frame {
+        NodeId id;
+        size_t next;
+    };
+    std::vector<Frame> stack{{id, 0}};
+    while (!stack.empty()) {
+        Frame& top = stack.back();
+        const Slot& s = slot(top.id);
+        if (top.next >= s.inputs.size()) {
+            stack.pop_back();
+            continue;
+        }
+        const NodeId up = s.inputs[top.next++];
         if (up == invalidNodeId) continue;
         const Node& upNode = node(up);
         const bool absorbable = upNode.isMerge() && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
         if (absorbable) {
             task.absorbed.push_back(up);
-            collectMergeInputs(up, task);
+            stack.push_back({up, 0});
         } else {
             task.inputs.push_back(up);
         }
     }
 }
 
-void Network::planCook(NodeId id, std::map<NodeId, CookTask>& tasks) {
+Network::CookTask Network::buildTask(NodeId id) {
     Node& n = node(id);
-    if ((!n.dirty_ && n.cooked_) || tasks.count(id)) return;
-
     CookTask task;
     task.tail = id;
     if (fusionEnabled() && n.isPointwise()) {
@@ -436,12 +550,39 @@ void Network::planCook(NodeId id, std::map<NodeId, CookTask>& tasks) {
         if (task.inputs.empty() && n.hasVariableInputs()) throw std::runtime_error(n.name() + ": no input is connected");
     }
 
-    for (NodeId in : task.inputs) {
-        planCook(in, tasks);
-        auto it = tasks.find(in);
-        if (it != tasks.end()) task.level = std::max(task.level, it->second.level + 1);
+    return task;
+}
+
+// Depth first over the inputs without recursion, so a chain of any length plans without growing the stack. A task is added once
+// all of its inputs have been planned, so its level is known then.
+void Network::planCook(NodeId root, std::map<NodeId, CookTask>& tasks) {
+    struct Frame {
+        CookTask task;
+        size_t next = 0;
+    };
+    auto needsPlan = [&](NodeId id) {
+        const Node& n = node(id);
+        return (n.dirty_ || !n.cooked_) && !tasks.count(id);
+    };
+    if (!needsPlan(root)) return;
+    std::vector<Frame> stack;
+    stack.push_back({buildTask(root), 0});
+    while (!stack.empty()) {
+        Frame& top = stack.back();
+        if (top.next < top.task.inputs.size()) {
+            const NodeId in = top.task.inputs[top.next++];
+            if (needsPlan(in)) stack.push_back({buildTask(in), 0});
+            continue;
+        }
+        CookTask task = std::move(top.task);
+        stack.pop_back();
+        for (NodeId in : task.inputs) {
+            auto it = tasks.find(in);
+            if (it != tasks.end()) task.level = std::max(task.level, it->second.level + 1);
+        }
+        const NodeId tail = task.tail;
+        tasks.emplace(tail, std::move(task));
     }
-    tasks.emplace(id, std::move(task));
 }
 
 void Network::runTask(const CookTask& task) {
@@ -512,6 +653,7 @@ void Network::runTask(const CookTask& task) {
 GeometryHandle Network::cook(NodeId id) {
     Node& n = node(id);
     if (!n.dirty_ && n.cooked_) return n.cooked_;
+    requireStack("the graph");
 
     struct CookScope {
         Network& net;
@@ -586,13 +728,23 @@ std::string Network::profileReport() const {
 std::vector<NodeId> Network::executionOrder(NodeId id) const {
     std::vector<NodeId> order;
     std::set<NodeId> seen;
-    std::function<void(NodeId)> visit = [&](NodeId n) {
-        if (!seen.insert(n).second) return;
-        for (NodeId in : slot(n).inputs)
-            if (in != invalidNodeId) visit(in);
-        order.push_back(n);
+    struct Frame {
+        NodeId id;
+        size_t next;
     };
-    visit(id);
+    std::vector<Frame> stack;
+    if (seen.insert(id).second) stack.push_back({id, 0});
+    while (!stack.empty()) {
+        Frame& top = stack.back();
+        const auto& inputs = slot(top.id).inputs;
+        if (top.next >= inputs.size()) {
+            order.push_back(top.id);
+            stack.pop_back();
+            continue;
+        }
+        const NodeId in = inputs[top.next++];
+        if (in != invalidNodeId && seen.insert(in).second) stack.push_back({in, 0});
+    }
     return order;
 }
 

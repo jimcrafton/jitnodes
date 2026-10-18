@@ -5,6 +5,8 @@
 #include <map>
 #include <stdexcept>
 
+#include "jitnodes/core/stackGuard.h"
+
 namespace jitnodes {
 
 namespace {
@@ -91,7 +93,10 @@ private:
         return src_[pos_] == '.' && pos_ + 1 < src_.size() && std::isalpha(static_cast<unsigned char>(src_[pos_ + 1]));
     }
 
-    int expr() { return ternary(); }
+    int expr() {
+        DepthGuard guard(*this);
+        return ternary();
+    }
 
     // Conditions must be real masks (all ones / all zeros) so every instruction set can blend with them;
     // any other value is truthy when it is not zero (NaN counts as true), as in C.
@@ -160,6 +165,7 @@ private:
     }
 
     int unaryExpr() {
+        DepthGuard guard(*this);
         if (accept("-")) return spec_.graph.unary(Op::neg, unaryExpr());
         if (acceptOp("!", "=")) return spec_.graph.unary(Op::logicalNot, asMask(unaryExpr()));
         return primary();
@@ -222,8 +228,19 @@ private:
         fail("unknown function '" + fn + "'");
     }
 
+    // Recursive descent: a program nested thousands of levels deep would overflow the stack.
+    static constexpr int maxNesting = 256;
+    struct DepthGuard {
+        explicit DepthGuard(Parser& p) : parser(p) {
+            if (++parser.depth_ > maxNesting || stackHeadroom() < minimumStackHeadroom) parser.fail("expression is nested too deeply");
+        }
+        ~DepthGuard() { --parser.depth_; }
+        Parser& parser;
+    };
+
     const std::string& src_;
     const std::vector<std::string>& paramNames_;
+    int depth_ = 0;
     size_t pos_ = 0;
     KernelSpec spec_;
     std::map<int, int> current_;  // channel -> latest expression assigned this program

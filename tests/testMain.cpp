@@ -2289,6 +2289,131 @@ TEST(networkRejectsCyclesAndMissingInputs) {
     CHECK(threw);
 }
 
+TEST(deeplyNestedProgramsAreRejectedInsteadOfOverflowingTheStack) {
+    const std::string parens = "x = " + std::string(20000, '(') + "x" + std::string(20000, ')') + ";";
+    bool threw = false;
+    try { parseWrangle(parens, {}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    threw = false;
+    try { parseWrangle("x = " + std::string(20000, '-') + "x;", {}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    CHECK(parseWrangle("x = ((((x))));", {}).stores.size() == 1);
+}
+
+TEST(cycleDetectionDoesNotWalkEveryPath) {
+    Network net;
+    std::vector<NodeId> rungs = {net.addNode("null"), net.addNode("null")};
+    for (int i = 2; i < 300; ++i) {
+        NodeId m = net.addNode("merge");
+        net.connect(rungs[static_cast<size_t>(i) - 1], m, 0);
+        net.connect(rungs[static_cast<size_t>(i) - 2], m, 1);
+        rungs.push_back(m);
+    }
+    bool threw = false;
+    try { net.connect(rungs.back(), rungs.front(), 0); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    CHECK(net.indexesConsistent());
+}
+
+TEST(longChainsPlanAndCookWithoutRecursionLimits) {
+    for (bool fusion : {true, false}) {
+        Network net(1);
+        net.setFusionEnabled(fusion);
+        NodeId prev = net.addNode("line");
+        net.node(prev).setFloat("count", 8.0f);
+        for (int i = 0; i < 20000; ++i) {
+            NodeId w = net.addNode("wrangle");
+            net.node(w).setString("code", "x = x + 1;");
+            net.connect(prev, w);
+            prev = w;
+        }
+        net.setDisplayNode(prev);
+        CHECK_NEAR(net.cookDisplay()->x()[0], 20000.0f);
+    }
+}
+
+TEST(subnetsAndParameterReferencesHaveDepthLimits) {
+    Network net;
+    Network* level = &net;
+    bool refused = false;
+    try {
+        for (size_t i = 0; i < Network::maxSubnetDepth + 5; ++i) {
+            NodeId sub = level->addNode("subnet");
+            level = &static_cast<SubnetNode&>(level->node(sub)).network();
+        }
+    } catch (const std::runtime_error&) { refused = true; }
+    CHECK(refused);
+
+    Network chain(1);
+    NodeId prev = chain.addNode("line");
+    std::vector<NodeId> nodes;
+    for (int i = 0; i < 2000; ++i) {
+        NodeId w = chain.addNode("wrangle");
+        chain.node(w).setString("code", "x = x + a;");
+        chain.connect(prev, w);
+        nodes.push_back(w);
+        prev = w;
+    }
+    for (size_t i = 1; i < nodes.size(); ++i) chain.node(nodes[i]).setExpression("a", chain.node(nodes[i - 1]).name() + ".a + 1");
+    chain.setDisplayNode(prev);
+    bool threw = false;
+    try { chain.cookDisplay(); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+TEST(reverseIndexesFollowEditsRenamesAndRemovals) {
+    Network net;
+    NodeId a = net.addNode("line");
+    NodeId b = net.addNode("wrangle");
+    NodeId c = net.addNode("wrangle");
+    NodeId m = net.addNode("merge");
+    net.connect(a, b);
+    net.connect(a, c);
+    net.connect(b, m, 0);
+    net.connect(c, m, 1);
+    net.node(c).setExpression("a", net.node(b).name() + ".a + 1");
+    CHECK(net.indexesConsistent());
+    net.renameNode(b, "first");
+    CHECK(net.indexesConsistent());
+    net.node(c).setExpression("a", "");
+    CHECK(net.indexesConsistent());
+    net.connect(a, m, 0);
+    CHECK(net.indexesConsistent());
+    net.removeNode(c);
+    CHECK(net.indexesConsistent());
+    net.setDisplayNode(m);
+    net.cookDisplay();
+    net.node(a).setFloat("count", 5.0f);
+    CHECK(net.node(m).dirty());
+}
+
+TEST(theKernelCacheIsCapped) {
+    KernelCompiler compiler;
+    for (size_t i = 0; i < KernelCompiler::maxCachedKernels + 100; ++i) compiler.compile(parseWrangle("x = x + " + std::to_string(i) + ".5;", {}));
+    CHECK(compiler.cacheSize() <= KernelCompiler::maxCachedKernels);
+    CHECK(compiler.cacheSize() > KernelCompiler::maxCachedKernels / 2);
+}
+
+TEST(pastingAThousandsOfNodesDoesNotScanTheGraphPerName) {
+    Network net(1);
+    std::vector<NodeClip> clips;
+    NodeId prev = net.addNode("line");
+    for (int i = 0; i < 3000; ++i) {
+        NodeId w = net.addNode("wrangle");
+        net.connect(prev, w);
+        prev = w;
+    }
+    for (NodeId id : net.nodeIds()) clips.push_back(copyNode(net, id));
+    const std::vector<NodeId> pasted = pasteNodes(net, clips);
+    CHECK(pasted.size() == 3001);
+    CHECK(net.nodeIds().size() == 6002);
+    CHECK(net.indexesConsistent());
+    net.removeNode(pasted[5]);
+    const std::string reused = net.uniqueName(net.node(pasted[6]).name());
+    CHECK(net.findNode(reused) == invalidNodeId);
+    CHECK(net.indexesConsistent());
+}
+
 TEST(networkMergeAndWrangle) {
     Network net;
     NodeId l1 = net.addNode("line");

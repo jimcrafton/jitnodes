@@ -101,6 +101,7 @@ void Node::clearAnimation(const std::string& name) {
 bool Node::isAnimated(const std::string& name) const { return floatParam(name).animated(); }
 
 void Node::rebuildReferences() {
+    const std::set<std::string> before = std::move(referencedNodes_);
     referencedNodes_.clear();
     for (const auto& [paramName, p] : floats_) {
         for (const std::string& symbol : p.expressionSpec.channels) {
@@ -108,6 +109,7 @@ void Node::rebuildReferences() {
             if (dot != std::string::npos) referencedNodes_.insert(symbol.substr(0, dot));
         }
     }
+    if (network_) network_->referencesChanged(id_, before, referencedNodes_);
 }
 
 void Node::setString(const std::string& name, const std::string& value) {

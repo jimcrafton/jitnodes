@@ -20,6 +20,11 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "x64-asan",
+      "inherits": "x64-debug",
+      "cacheVariables": { "JITNODES_SANITIZE": "ON", "JITNODES_BUILD_EXAMPLES": "OFF" }
+    },
+    {
       "name": "x64-debug-editor",
       "inherits": "x64-debug",
       "cacheVariables": { "JITNODES_BUILD_EDITOR": "ON" }
@@ -33,12 +38,14 @@
   "buildPresets": [
     { "name": "x64-debug", "configurePreset": "x64-debug" },
     { "name": "x64-release", "configurePreset": "x64-release" },
+    { "name": "x64-asan", "configurePreset": "x64-asan" },
     { "name": "x64-debug-editor", "configurePreset": "x64-debug-editor" },
     { "name": "x64-release-editor", "configurePreset": "x64-release-editor" }
   ],
   "testPresets": [
     { "name": "x64-debug", "configurePreset": "x64-debug", "output": { "outputOnFailure": true } },
     { "name": "x64-release", "configurePreset": "x64-release", "output": { "outputOnFailure": true } },
+    { "name": "x64-asan", "configurePreset": "x64-asan", "output": { "outputOnFailure": true } },
     { "name": "x64-debug-editor", "configurePreset": "x64-debug-editor", "output": { "outputOnFailure": true } },
     { "name": "x64-release-editor", "configurePreset": "x64-release-editor", "output": { "outputOnFailure": true } }
   ]

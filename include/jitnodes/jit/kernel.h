@@ -81,11 +81,19 @@ public:
     size_t compileCount() const { return compileCount_; }  // actual compilations (cache misses)
     double compileMillis() const { return compileMillis_; }  // total time spent compiling
     size_t cacheSize() const;
+    // Kernels are cached by structure; beyond this many the least recently used quarter is dropped (kernels still in use by a cook
+    // stay alive through their shared_ptr). Typing code into a wrangle makes a new program per keystroke.
+    static constexpr size_t maxCachedKernels = 4096;
 
 private:
     std::shared_ptr<JitBackend> backend_;
     mutable std::mutex mutex_;
-    std::map<std::string, std::shared_ptr<const Kernel>> cache_;
+    struct CacheEntry {
+        std::shared_ptr<const Kernel> kernel;
+        uint64_t lastUse = 0;
+    };
+    std::map<std::string, CacheEntry> cache_;
+    uint64_t useTick_ = 0;
     bool jitSupported_ = false;
     Isa isa_ = Isa::sse2;
     bool jitEnabled_ = true;

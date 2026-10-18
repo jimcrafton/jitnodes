@@ -11,7 +11,7 @@ How the engine works is described in [architecture.md](architecture.md).
 ```
 cmake --preset x64-release
 cmake --build --preset x64-release --target jitnodesStress
-out\build\x64-release\jitnodesStress.exe             # full run, about 75 seconds, about 3000 nodes per scenario
+out\build\x64-release\jitnodesStress.exe             # full run, about 80 seconds, about 3000 nodes per scenario
 out\build\x64-release\jitnodesStress.exe --quick     # a few seconds; this is what `ctest` runs (jitnodesStressQuick)
 ```
 
@@ -21,7 +21,7 @@ Exit code 0 means every check passed. Output is unbuffered, so progress is visib
 |---|---|
 | `--quick` | small sizes (16 branches x 12 nodes, 3,000 points, 400-node DAGs) |
 | `--seed N` | seed of every random graph (default 1); a failure is reproduced by the same seed and options |
-| `--scenario a,b,...` | run only these: `chains`, `dag`, `dagmath`, `edits`, `subnets`, `time`, `cancel`, `wide`, `scaling` |
+| `--scenario a,b,...` | run only these: `chains`, `dag`, `dagmath`, `edits`, `subnets`, `time`, `cancel`, `wide`, `scaling`, `fuzz`, `concurrent`, `soak`, `shapes`, `langfuzz`, `pathological`, `faults` |
 | `--branches N --depth N --points N` | size of the chain graphs (defaults 64 x 40 x 10,000) |
 | `--dag-nodes N` | nodes of the random DAGs (default 3,000, plus sources and reducers) |
 | `--edits N` | length of the edit storms (default 150) |
@@ -55,10 +55,33 @@ There are three kinds of oracle, so that a bug has to fool all of them to go unn
 | 8 | `wide` | 100,000 points x 200 attributes, then a fused chain of 400 wranglers writing 20 of them | copy-on-write: the 180 untouched attributes still share storage with the input, the 20 written ones were cloned once each, a replay of the writes matches; one kernel for the whole chain |
 | 9 | `scaling` | the chain graph | full and single-edit recooks for 1/2/4/8 threads, fusion on and off (a table, not a pass/fail measurement) |
 
+### More scenarios
+
+These look for a different kind of problem than size: odd inputs, concurrency, long runs, hostile graphs and failures.
+
+| # | Scenario | What is exercised |
+|---|---|---|
+| 10 | `fuzz` | Many small random graphs (40-200 nodes, seeds derived from `--seed` and the iteration number), each compared across ISAs, fusion, thread counts and sometimes the interpreter, with leaf digests, save/load identity and the consumer-index check. `--duration SECONDS` runs for a time instead of a count (nightly use); a failure prints the iteration, reproduce with `--fuzz-first N --fuzz-iterations 1`. |
+| 11 | `concurrent` | Independent networks loaded and cooked on 8 threads at once; one kernel cache hit by 8 threads (each distinct kernel is compiled exactly once and runs correctly from all of them); one thread pool shared by 8 threads with nested `parallelFor` and throwing tasks; `cancel()` hammered from a second thread while another keeps editing and cooking. |
+| 12 | `soak` | Thousands of edit / commit / undo / redo / cook cycles (4,000 in the full run) watching history size, kernel-cache size, working set and the reverse indexes, then the result against a fresh rebuild; then 6,000 unique programs on one node to exercise the kernel-cache cap. |
+| 13 | `shapes` | Point counts 0, 1, 2, 3 ... around every lane width, the 32,768 chunk size and 100,001 (each against the reference on 4-5 configurations); 12 million points through a fused chain; 4,000 sources of 1-3 points merged. |
+| 14 | `langfuzz` | Random programs on NaN, infinity, denormal, +-0 and int-extreme data (all ISAs agree, the exact subset also matches the interpreter); mutated program text (parse or a clean error, never a crash); programs nested or chained up to 50,000 deep. |
+| 15 | `pathological` | A merge of 10,000 inputs; a ladder of merges with exponentially many paths (cycle detection); one node feeding 10,000 consumers; chains of 30,000 nodes fused and unfused; a left-leaning chain of 5,000 merges; chained parameter references; subnets nested to the limit; save/load of those. Every case must succeed or fail with a message. |
+| 16 | `faults` | Parallel cooks where up to 8 branches throw `runtime_error`, `bad_alloc` or a non-`std` exception (or sleep); cancel while branches sleep; a `bad_alloc` injected into the *n*-th allocation of a cook, of JIT compilation and of undo/redo, for a sweep of *n* (the test replaces `operator new`). The next cook must always be correct. A watchdog aborts the process if anything hangs. |
+
+Options for these: `--fuzz-iterations N`, `--fuzz-first N`, `--duration SECONDS`, `--soak-cycles N`, and `--write-graph FILE` (saves the chain graph with node positions and exits; the editor GUI load test uses it).
+
+## Other tools
+
+- **AddressSanitizer.** `cmake --preset x64-asan && cmake --build --preset x64-asan --target jitnodesTests jitnodesStress`, then run both. All of the above pass (a few minutes for the quick sizes). The JIT-generated code itself is not instrumented, and ASan frames are several times larger than release frames, which is how it found the stack-depth problems listed below. On Linux the same option adds UBSan.
+- **ThreadSanitizer** is not available for MSVC or clang-cl on Windows. On Linux, configure with `-DCMAKE_CXX_FLAGS=-fsanitize=thread` and run `jitnodesStress --scenario concurrent,cancel,fuzz`.
+- **Editor GUI load test.** `editor/tests/gui/test_editor_gui_load.py` opens the 2,646-node graph in the real editor and drives select all, nudge, copy/paste, cut and undo with real input (it takes over mouse and keyboard, so run it on an idle desktop):
+  `python editor\tests\gui\test_editor_gui_load.py --exe out\build\x64-release-editor\editor\jitnodesEditor.exe`.
+
 ## Results
 
 Full run on an AMD Ryzen 9 7900X (12 cores / 24 threads), Windows 11, MSVC Release, 2026-10-17, seed 1:
-**1,472 checks, 0 failed, 74.6 s**. Peak working set about 1.6 GB (the engine caches every node's result, and the interpreter and unfused configurations hold thousands of geometries at once).
+**the original nine scenarios: 1,472 checks, 0 failed, 74.6 s; with the seven added ones, all 16 scenarios: 32,794 checks, 0 failed, 79 s**. Peak working set about 1.6 GB (the engine caches every node's result, and the interpreter and unfused configurations hold thousands of geometries at once).
 
 | Measurement | Result |
 |---|---|
@@ -83,16 +106,16 @@ Thread scaling of a full recook of the 2,646-node graph (10,000 points per sourc
 | 4 | 39.9 ms | 43.9 ms |
 | 8 | 37.4 ms | 39.9 ms |
 
-and of recooking after editing one node: 2.4-2.5 ms fused, 1.2-1.4 ms unfused. With only 10,000 points per source the kernels
+and of recooking after editing one node: about 2.0 ms fused, 1.3 ms unfused. With only 10,000 points per source the kernels
 are tiny, so what is measured is the engine's own overhead (planning, composing kernels, cache lookups, task scheduling), and
-unfused is as fast or faster. Fusion pays when there are many points per node (see the 1M-point numbers in
-[architecture.md](architecture.md#performance)). The remaining cost of fusing is `composeKernels`, which re-copies the
-accumulated graph for every member of a chain, so composing a chain of *k* nodes is O(k^2) work on every recook of that chain; caching the
-composed kernel of a chain, or composing incrementally, would remove it.
+unfused is as fast or faster once several threads are available. Fusion pays when there are many points per node (see the 1M-point numbers in
+[architecture.md](architecture.md#performance)). A chain is composed with `appendKernel`, which adds each member to the
+accumulated graph in place, so composing a chain of *k* nodes is O(k) (it was O(k^2) with the copying `composeKernels`; the
+1-thread fused full recook went from 70 ms to 46 ms).
 
 ## What the stress test found
 
-The first runs of this test found five problems in the engine. All are fixed, and each has a regression test in
+The first runs of this test found five problems in the engine, and the scenarios added later found eight more. All are fixed, and each has a regression test in
 `tests/testMain.cpp` or is covered by the stress test itself.
 
 1. **Programs that differ only in attribute names shared one kernel (wrong results).** `KernelSpec::signature()`, the kernel
@@ -118,6 +141,20 @@ The first runs of this test found five problems in the engine. All are fixed, an
 5. **Differences in the sign of zero between instruction sets.** SSE2 `floor`/`ceil` (an int32 round trip) return `+0` for
    `-0.0` where AVX2 and AVX-512 return `-0.0`. Not fixed, since the values compare equal; the stress test treats
    `+0` and `-0` as equal and the behaviour is documented in [architecture.md](architecture.md#the-jit-from-wrangle-text-to-machine-code).
+
+Found by the later scenarios (all fixed, each with a regression test in `tests/testMain.cpp`):
+
+6. **A parser stack overflow.** `parseWrangle` is recursive descent; `(((...(x)...)))` or `-----...x` a few thousand levels deep crashed the process. Nesting is now limited to 256 levels and to the stack that is left, with a normal parse error.
+7. **Cycle detection was exponential.** `Network::reaches` walked every *path* upstream, so a ladder of merges that each join the two before them (a few dozen rungs) made `connect` effectively hang. It now walks each node once, and downstream from the node being wired, which is also much shorter.
+8. **Planning recursed once per node.** A chain of a few thousand nodes that does not fuse (fusion off, or fan-out between every node) overflowed the stack in `planCook`; so did a left-leaning chain of merges (`collectMergeInputs`) and `executionOrder`. All three are iterative now; a 30,000-node chain cooks in 0.14 s unfused.
+9. **Everything that asked "who uses this node" scanned the whole graph.** `markDirty` visited each downstream node and scanned all nodes for each, `consumerCount` scanned for each fusion candidate, and `connect` of a 30,000-node chain took minutes. The network now keeps reverse indexes (consumers per node, nodes that mention a node name in an expression) in step with every edit; building the 30,000-chain went from about 150 s to under a second, a merge of 10,000 inputs from 1.4 s to 40 ms, and the edit-storm scenario got 25% faster. `Network::indexesConsistent()` checks the indexes against a scan and the soak, fuzz and edit scenarios call it.
+10. **Parameter expressions that refer to each other recursed without limit.** A chain of 2,000 nodes each referring to the previous node's parameter crashed. Evaluation now stops with an error when the stack headroom (`stackHeadroom()`, new in `core/stackGuard.h`) or 400 levels run out; cook, save and load check the headroom too, and subnets cannot be nested more than 64 levels (`Network::maxSubnetDepth`), because cooking, saving, loading and undo all recurse through them. Counting levels alone is not enough: AddressSanitizer and debug builds use several times more stack per level than release.
+11. **The kernel cache never shrank.** Every distinct program ever cooked stayed compiled, about 3-4 KB each; typing code into a wrangle creates one per keystroke. The cache is now capped at 4,096 kernels (`KernelCompiler::maxCachedKernels`), dropping the least recently used quarter when full; kernels in use stay alive through their `shared_ptr`.
+12. **Recomposing a fused chain was quadratic** (the item the first version of this page listed as open): `appendKernel` adds each member to the accumulated graph in place, so composing *k* nodes is O(k), and the 1-thread fused recook of the 2,646-node graph went from 70 ms to 46 ms.
+
+13. **Pasting a large selection hung the editor** (found by the GUI load test, not the headless scenarios). `uniqueName` scanned every node for each candidate name, so pasting 2,646 nodes onto themselves was cubic and did not finish in 30 s. Node names are now indexed (`findNode` is a hash lookup) and `uniqueName` remembers the smallest free number per stem; the same paste takes 0.23 s in the editor.
+
+What the later scenarios checked and found *no* problem with: JIT results on NaN, infinity, denormals, signed zeros and int extremes across SSE2 / AVX2 / AVX-512 and the interpreter; point counts around every lane width and chunk boundary; 12 million points; concurrent cooking of independent networks; one kernel cache and one pool used from many threads (including exceptions thrown inside nested `parallelFor`); `cancel()` called thousands of times while cooking; and allocation failures injected into cooks, JIT compilation and undo (every one fails with `bad_alloc` or is absorbed, and the next cook is correct).
 
 A sixth finding was a test bug rather than an engine bug, but worth knowing: **`History` does not restore the playhead**
 (documented), and `History::commit` does nothing when the graph did not change, so an edit that sets a parameter to its

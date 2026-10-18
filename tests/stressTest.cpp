@@ -14,13 +14,18 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <set>
 #include <sstream>
 #include <string>
@@ -29,6 +34,13 @@
 
 #include "jitnodes/jitnodes.h"
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 using namespace jitnodes;
 
 namespace {
@@ -36,6 +48,13 @@ namespace {
 // ------------------------------------------------------------------------------------------------ utilities
 
 using Clock = std::chrono::steady_clock;
+
+// Fault injection: while the countdown is >= 0 every operator new decrements it, and the allocation that finds it at 0 throws
+// std::bad_alloc (once; it then reads -1 and the injection is off).
+std::atomic<long>& failAllocationCountdown() {
+    static std::atomic<long> countdown{-1};
+    return countdown;
+}
 
 double msSince(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
 
@@ -70,6 +89,11 @@ struct Options {
     size_t threads = 0;       // 0 = hardware default
     bool interpreter = true;  // include the (slow) interpreter comparisons
     bool verbose = false;
+    size_t fuzzIterations = 0;  // fuzz: random graphs (0 = scenario default)
+    size_t fuzzFirst = 0;       // fuzz: first iteration number, to reproduce a failure
+    double duration = 0.0;      // fuzz: run for this many seconds instead of a fixed count
+    size_t soakCycles = 0;      // soak: edit cycles (0 = scenario default)
+    std::string writeGraph;     // when set: save the chain graph (with node positions) to this file and exit, for the editor GUI load test
     std::set<std::string> scenarios;
 
     bool wants(const std::string& name) const { return scenarios.empty() || scenarios.count(name) != 0; }
@@ -934,6 +958,7 @@ void scenarioEdits(const Options& opt, Report& rep) {
     net.setTime(times.back());
     rep.check(sameGeometry(*net.cookDisplay(), *results.back(), why), "redoing everything reproduces the final result: " + why);
     std::printf("  undo/redo of %zu states verified in %.0f ms\n", snapshots.size() - 1, t.lap());
+    rep.check(net.indexesConsistent(), "after the edit storm and every undo/redo the consumer and reference indexes agree with the graph");
 }
 
 // ------------------------------------------------------------------------------------------------ scenario 4: subnets and assets
@@ -1336,7 +1361,1082 @@ void scenarioScaling(const Options& opt, Report& rep) {
     (void)fullByThreads;
 }
 
+// ------------------------------------------------------------------------------------------------ extra: helpers
+
+std::map<std::string, GeometryHandle>& stressSources() {
+    static std::map<std::string, GeometryHandle> sources;
+    return sources;
+}
+
+// Hands out a prepared geometry (special values, odd sizes) by tag.
+class StressSourceNode : public Node {
+public:
+    StressSourceNode() : Node("stressSource", 0) { declareString("tag", ""); }
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return stressSources().at(getString("tag")); }
+};
+
+// mode 0: pass through, 1: std::runtime_error, 2: sleep `ms`, 3: std::bad_alloc, 4: an exception that is not a std::exception.
+class StressFaultNode : public Node {
+public:
+    StressFaultNode() : Node("stressFault", 1) {
+        declareFloat("mode", 0.0f);
+        declareFloat("ms", 0.0f);
+    }
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        switch (static_cast<int>(getFloat("mode"))) {
+            case 1: throw std::runtime_error("injected fault in " + name());
+            case 2: std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(getFloat("ms")))); break;
+            case 3: throw std::bad_alloc();
+            case 4: throw 42;
+            default: break;
+        }
+        return in[0];
+    }
+};
+
+void registerStressNodes() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        NodeRegistry::instance().registerType("stressSource", [] { return std::make_unique<StressSourceNode>(); });
+        NodeRegistry::instance().registerType("stressFault", [] { return std::make_unique<StressFaultNode>(); });
+    });
+}
+
+// Aborts the process if a scenario hangs (a deadlock in the pool is a failure that must not hang the test run).
+class Watchdog {
+public:
+    Watchdog(double seconds, std::string what) : what_(std::move(what)) {
+        thread_ = std::thread([this, seconds] {
+            std::unique_lock lock(mutex_);
+            if (!cv_.wait_for(lock, std::chrono::duration<double>(seconds), [this] { return done_; })) {
+                std::printf("\n    WATCHDOG: '%s' did not finish in %.0f s, aborting\n", what_.c_str(), seconds);
+                std::abort();
+            }
+        });
+    }
+    ~Watchdog() {
+        {
+            std::lock_guard lock(mutex_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        thread_.join();
+    }
+
+private:
+    std::string what_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool done_ = false;
+    std::thread thread_;
+};
+
+size_t workingSetBytes() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return pmc.WorkingSetSize;
+#endif
+    return 0;
+}
+
+double megabytes(size_t bytes) { return static_cast<double>(bytes) / 1048576.0; }
+
+// Cooks and reports a failure as text instead of an exception; false when the cook threw.
+bool tryCook(Network& net, NodeId id, GeometryHandle& out, std::string& error) {
+    try {
+        out = net.cook(id);
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        if (error.empty()) error = "(empty message)";
+    } catch (...) {
+        error = "(non-std exception)";
+    }
+    return false;
+}
+
+std::vector<Config> comparisonConfigs(const Network& net, bool includeInterpreter, size_t threads) {
+    std::vector<Config> configs;
+    configs.push_back({true, Isa::avx2, false, 1});
+    configs.push_back({true, Isa::sse2, true, threads});
+    if (net.compiler().isaSupported(Isa::avx512)) configs.push_back({true, Isa::avx512, true, threads});
+    if (includeInterpreter) configs.push_back({false, Isa::sse2, true, threads});
+    return configs;
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: fuzz
+
+void scenarioFuzz(const Options& opt, Report& rep) {
+    registerStressNodes();
+    const size_t iterations = opt.fuzzIterations ? opt.fuzzIterations : opt.quick ? 12 : 120;
+    const Clock::time_point start = Clock::now();
+    size_t done = 0, totalNodes = 0, interpreterRuns = 0;
+    for (size_t it = opt.fuzzFirst;; ++it) {
+        if (opt.duration > 0 ? msSince(start) > opt.duration * 1000.0 : it >= opt.fuzzFirst + iterations) break;
+        Rng rng(opt.seed * 1000003ull + it);
+        Options o = opt;
+        o.dagNodes = 40 + rng.index(160);
+        o.points = 1100 + rng.index(1500);
+        o.threads = 1 + rng.index(4);
+        const bool transcendental = rng.chance(0.4);
+        DagGraph g = buildDag(o, rng, transcendental);
+        Network& net = *g.net;
+        totalNodes += net.nodeIds().size();
+        const std::string tag = "iteration " + std::to_string(it) + (transcendental ? " (all functions)" : " (exact)") + ", seed " + std::to_string(opt.seed);
+        GeometryHandle base;
+        std::string error, why;
+        if (!tryCook(net, net.displayNode(), base, error)) {
+            rep.check(false, tag + ": cook failed: " + error);
+            continue;
+        }
+        const std::vector<uint64_t> baseDigests = leafDigests(net, g.leaves);
+        const std::string text = saveNetwork(net, true);
+        rep.check(net.indexesConsistent(), tag + ": the reverse indexes agree with the graph");
+        const bool interpreter = !transcendental && rng.chance(0.5);
+        interpreterRuns += interpreter ? 1 : 0;
+        for (const Config& c : comparisonConfigs(net, interpreter, o.threads)) {
+            auto other = cloneWith(net, c);
+            rep.check(saveNetwork(*other, true) == text, tag + ": save/load is not byte-identical");
+            GeometryHandle geo;
+            if (!tryCook(*other, other->displayNode(), geo, error)) {
+                rep.check(false, tag + ", " + c.name() + ": cook failed: " + error);
+                continue;
+            }
+            bool ok = sameGeometry(*geo, *base, why);
+            const std::string leafDiff = firstLeafDifference(*other, g.leaves, baseDigests, leafDigests(*other, g.leaves));
+            if (!leafDiff.empty()) ok = false, why += (why.empty() ? "" : "; ") + leafDiff + " differs";
+            rep.check(ok, tag + ", " + c.name() + ": " + why);
+        }
+        ++done;
+    }
+    std::printf("  %zu random graphs (%zu nodes in all, %zu also against the interpreter) agreed across ISAs, fusion and thread counts in %.1f s\n", done,
+                totalNodes, interpreterRuns, msSince(start) / 1000.0);
+    std::printf("  to reproduce a failure: --scenario fuzz --seed %llu --fuzz-first <iteration> --fuzz-iterations 1\n", static_cast<unsigned long long>(opt.seed));
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: concurrent
+
+void scenarioConcurrent(const Options& opt, Report& rep) {
+    registerStressNodes();
+    const size_t hw = std::max<size_t>(2, std::min<size_t>(std::thread::hardware_concurrency(), 8));
+    std::mutex failMutex;
+    std::vector<std::string> failures;
+    auto fail = [&](const std::string& msg) {
+        std::lock_guard lock(failMutex);
+        failures.push_back(msg);
+    };
+    auto flush = [&](const std::string& what) {
+        rep.check(failures.empty(), what + (failures.empty() ? std::string() : ": " + failures.front() + " (" + std::to_string(failures.size()) + " failures)"));
+        failures.clear();
+    };
+
+    // 1. Independent networks on many threads at once: loading, JIT compilation and cooking share only process-wide state.
+    {
+        Rng rng(opt.seed * 13 + 1);
+        Options o = opt;
+        o.dagNodes = opt.quick ? 150 : 400;
+        o.points = 1500;
+        DagGraph g = buildDag(o, rng, false);
+        const std::string text = saveNetwork(*g.net, true);
+        const uint64_t want = digest(*g.net->cookDisplay());
+        const int rounds = opt.quick ? 2 : 8;
+        Watchdog dog(120, "independent networks on many threads");
+        Stopwatch t;
+        std::vector<std::thread> threads;
+        for (size_t ti = 0; ti < hw; ++ti) {
+            threads.emplace_back([&, ti] {
+                Rng r(opt.seed * 31 + ti);
+                for (int round = 0; round < rounds; ++round) {
+                    try {
+                        Config c;
+                        c.jit = r.chance(0.8);
+                        c.isa = r.chance(0.5) ? Isa::sse2 : Isa::avx2;
+                        c.fusion = r.chance(0.7);
+                        c.threads = 1 + r.index(3);
+                        auto net = cloneWith(*g.net, c);
+                        const uint64_t got = digest(*net->cookDisplay());
+                        if (got != want) fail("thread " + std::to_string(ti) + " round " + std::to_string(round) + " with " + c.name() + " got a different result");
+                    } catch (const std::exception& e) {
+                        fail(std::string("thread ") + std::to_string(ti) + ": " + e.what());
+                    }
+                }
+            });
+        }
+        for (auto& th : threads) th.join();
+        std::printf("  %zu threads x %d rounds, each loading and cooking its own %zu-node network: %.0f ms\n", hw, rounds, g.net->nodeIds().size(), t.lap());
+        flush("independent networks cook concurrently with identical results");
+    }
+
+    // 2. One kernel cache, many threads compiling the same and different specs, then running the shared kernels.
+    {
+        Network net(4);
+        auto geo = std::make_shared<Geometry>();
+        const size_t n = 50000;
+        geo->resizePoints(n);
+        for (size_t i = 0; i < n; ++i) geo->x()[i] = static_cast<float>(i) * 0.001f, geo->y()[i] = 1.0f;
+        const size_t kinds = 24;
+        const Geometry& constGeo = *geo;  // the non-const x() may detach shared storage, which is not thread safe
+        std::vector<KernelSpec> specs;
+        for (size_t k = 0; k < kinds; ++k) specs.push_back(parseWrangle("x = x * a + " + std::to_string(k) + "; y = y * b + c * " + std::to_string(k + 1) + ";", {"a", "b", "c", "d"}));
+        const size_t before = net.compiler().compileCount();
+        Watchdog dog(120, "shared kernel cache");
+        std::vector<std::thread> threads;
+        for (size_t ti = 0; ti < hw; ++ti) {
+            threads.emplace_back([&, ti] {
+                Rng r(opt.seed * 77 + ti);
+                try {
+                    for (int round = 0; round < (opt.quick ? 30 : 150); ++round) {
+                        const size_t k = r.index(kinds);
+                        auto kernel = net.compiler().compileFor(specs[k], *geo, AttribClass::point);
+                        auto work = std::make_shared<Geometry>(*geo);
+                        const float a = r.round2(0.5f, 1.5f), b = r.round2(0.5f, 1.5f), c = r.round2(-1, 1);
+                        kernel->run(*work, {a, b, c, 0.0f}, AttribClass::point, net.pool());
+                        for (size_t i = 0; i < n; i += 997) {
+                            const float wantX = constGeo.x()[i] * a + static_cast<float>(k);
+                            const float wantY = 1.0f * b + c * static_cast<float>(k + 1);
+                            if (!sameBits(static_cast<const Geometry&>(*work).x()[i], wantX) || !sameBits(static_cast<const Geometry&>(*work).y()[i], wantY)) {
+                                fail("kernel " + std::to_string(k) + " point " + std::to_string(i) + " gives a wrong value on thread " + std::to_string(ti));
+                                break;
+                            }
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    fail(std::string("thread ") + std::to_string(ti) + ": " + e.what());
+                }
+            });
+        }
+        for (auto& th : threads) th.join();
+        const size_t compiled = net.compiler().compileCount() - before;
+        std::printf("  %zu threads sharing one kernel cache: %zu specs compiled %zu times, cache holds %zu\n", hw, kinds, compiled, net.compiler().cacheSize());
+        flush("shared kernels run correctly from many threads");
+        rep.check(compiled == kinds, "each distinct kernel is compiled exactly once even when requested concurrently (" + std::to_string(compiled) + ")");
+    }
+
+    // 3. One thread pool used by many threads at the same time, with nested parallelFor and throwing tasks.
+    {
+        ThreadPool pool(4);
+        std::atomic<long long> total{0};
+        Watchdog dog(120, "shared thread pool");
+        std::vector<std::thread> threads;
+        const int rounds = opt.quick ? 40 : 300;
+        std::atomic<int> thrown{0};
+        for (size_t ti = 0; ti < hw; ++ti) {
+            threads.emplace_back([&, ti] {
+                for (int round = 0; round < rounds; ++round) {
+                    try {
+                        const bool throwing = (round + static_cast<int>(ti)) % 7 == 0;
+                        pool.parallelFor(32, [&](size_t i) {
+                            pool.parallelFor(16, [&](size_t j) {
+                                if (throwing && i == 5 && j == 3) throw std::runtime_error("task failure");
+                                total += static_cast<long long>(i * 16 + j);
+                            });
+                        });
+                        if (throwing) fail("an exception from a nested task was lost");
+                    } catch (const std::runtime_error&) {
+                        ++thrown;
+                    }
+                }
+            });
+        }
+        for (auto& th : threads) th.join();
+        std::printf("  %zu threads x %d nested parallelFor rounds on one pool of %zu: %d tasks threw, all rethrown\n", hw, rounds, pool.concurrency(), thrown.load());
+        flush("a shared pool survives concurrent nested parallelFor and exceptions");
+        rep.check(total.load() > 0, "the pool did the work");
+    }
+
+    // 4. cancel() hammered from another thread while one thread keeps cooking and editing.
+    {
+        Rng rng(opt.seed * 17 + 3);
+        Options o = opt;
+        o.branches = opt.quick ? 12 : 32;
+        o.depth = 16;
+        o.points = opt.quick ? 3000 : 10000;
+        ChainGraph g = buildChains(o, rng, 4);
+        Network& net = *g.net;
+        net.cookDisplay();
+        std::atomic<bool> stop{false};
+        std::atomic<size_t> cancels{0};
+        std::thread canceller([&] {
+            Rng r(opt.seed + 5);
+            while (!stop) {
+                net.cancel();
+                ++cancels;
+                for (size_t spin = r.index(20000); spin > 0; --spin) std::this_thread::yield();
+            }
+        });
+        size_t cancelled = 0, completed = 0;
+        const int cycles = opt.quick ? 40 : 300;
+        Watchdog dog(180, "cancel hammering");
+        for (int c = 0; c < cycles; ++c) {
+            for (Branch& b : g.branches)
+                if (rng.chance(0.4)) net.markDirty(b.chain.front());
+            try {
+                GeometryHandle geo = net.cookDisplay();
+                ++completed;
+                std::string why;
+                if (!matchesReference(g, *geo, why)) fail("a completed cook has a wrong result: " + why);
+            } catch (const CookCancelled&) {
+                ++cancelled;
+            }
+        }
+        stop = true;
+        canceller.join();
+        std::string why;
+        net.markDirty(g.out);
+        GeometryHandle last = net.cookDisplay();
+        rep.check(matchesReference(g, *last, why), "after the hammering the next cook is complete and correct: " + why);
+        std::printf("  %zu cancel() calls from a second thread during %d cooks: %zu cancelled, %zu completed (all correct)\n", cancels.load(), cycles, cancelled, completed);
+        flush("every cook that completes under cancel() hammering is correct");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: soak
+
+void scenarioSoak(const Options& opt, Report& rep) {
+    Rng rng(opt.seed * 19 + 5);
+    Options o = opt;
+    o.branches = 16;
+    o.depth = 12;
+    o.points = 3000;
+    ChainGraph g = buildChains(o, rng, opt.threads);
+    Network& net = *g.net;
+    History history(net, 100);
+    history.commit("start");
+    net.cookDisplay();
+
+    static const char* variants[] = {"x = x * a + b; y = y * c + d;", "y = y + x * a; x = x + y * b;", "t = x * a; x = y * b + c; y = t + d;",
+                                     "x = x > a ? x - b : x + c; y = clamp(y, 0 - 1000, 1000) * 0.5 + d;", "x = min(x, a) + max(y, b) * 0.25; y = abs(y - c) + d * 0.5;",
+                                     "x = x + a; y = y + b;", "x = x * 0.5 + a; y = y * 0.5 + b;", "u = x * a; v = y * b; x = u + v * 0.25;"};
+    const size_t cycles = opt.soakCycles ? opt.soakCycles : opt.quick ? 400 : 4000;
+    std::vector<NodeId> wranglers;
+    for (NodeId id : net.nodeIds())
+        if (net.node(id).typeName() == "wrangle") wranglers.push_back(id);
+    std::vector<NodeId> extras;
+    std::vector<size_t> samples;
+    size_t undone = 0, redone = 0, committed = 0, maxHistory = 0;
+    Stopwatch total;
+    for (size_t c = 0; c < cycles; ++c) {
+        const double r = rng.uniform();
+        if (r < 0.55) {
+            NodeId id = wranglers[rng.index(wranglers.size())];
+            net.node(id).setFloat(std::string(1, "abcd"[rng.index(4)]), rng.round2(-1, 1));
+        } else if (r < 0.70) {
+            net.node(wranglers[rng.index(wranglers.size())]).setString("code", variants[rng.index(std::size(variants))]);
+        } else if (r < 0.80) {
+            NodeId n = net.addNode("null");
+            net.connect(wranglers[rng.index(wranglers.size())], n);
+            extras.push_back(n);
+        } else if (r < 0.90 && !extras.empty()) {
+            const size_t k = rng.index(extras.size());
+            net.removeNode(extras[k]);
+            extras.erase(extras.begin() + static_cast<long>(k));
+        }
+        if (history.commit("edit")) ++committed;
+        if (rng.chance(0.15)) {
+            const int steps = 1 + static_cast<int>(rng.index(5));
+            for (int s = 0; s < steps; ++s) {
+                if (rng.chance(0.6) ? history.undo() : history.redo()) rng.chance(0.5) ? ++undone : ++redone;
+            }
+            const std::vector<NodeId> present = net.nodeIds();
+            std::vector<NodeId> still;
+            for (NodeId e : extras)
+                if (std::find(present.begin(), present.end(), e) != present.end()) still.push_back(e);
+            extras = still;
+        }
+        net.cookDisplay();
+        maxHistory = std::max(maxHistory, history.size());
+        if (c % std::max<size_t>(cycles / 8, 1) == 0) samples.push_back(workingSetBytes());
+    }
+    samples.push_back(workingSetBytes());
+    const double ms = total.lap();
+    std::printf("  %zu edit/commit/undo/redo/cook cycles in %.1f s (%.2f ms each): %zu commits, %zu undos, %zu redos\n", cycles, ms / 1000.0, ms / static_cast<double>(cycles),
+                committed, undone, redone);
+    std::printf("  history holds %zu states (%.1f MB of node text), kernel cache %zu entries, working set %.0f MB -> %.0f MB\n", history.size(),
+                megabytes(history.storedBytes()), net.compiler().cacheSize(), megabytes(samples[1]), megabytes(samples.back()));
+    rep.check(net.indexesConsistent(), "after the soak the consumer and reference indexes agree with the graph");
+    rep.check(maxHistory <= 100, "the history never exceeds its limit");
+    rep.check(net.compiler().cacheSize() <= KernelCompiler::maxCachedKernels, "the kernel cache stays within its cap (" + std::to_string(net.compiler().cacheSize()) + ")");
+    if (samples.size() > 2 && samples[1] && !opt.quick)
+        rep.check(megabytes(samples.back()) - megabytes(samples[samples.size() / 2]) < 100.0, "the working set stops growing (second half of the run)");
+
+    // The graph after thousands of edits must equal a rebuild from its saved text.
+    std::string why;
+    auto fresh = cloneWith(net, {true, Isa::avx2, false, 1});
+    rep.check(sameGeometry(*net.cookDisplay(), *fresh->cookDisplay(), why), "after the soak the incremental result equals a fresh cook: " + why);
+
+    // Unique programs: every keystroke of a code editor may produce a program nobody compiled before.
+    const size_t unique = opt.quick ? 300 : 6000;
+    NodeId probe = wranglers.front();
+    const size_t cacheBefore = net.compiler().cacheSize();
+    const size_t memBefore = workingSetBytes();
+    Stopwatch t;
+    for (size_t i = 0; i < unique; ++i) {
+        net.node(probe).setString("code", "x = x * a + " + std::to_string(i) + "." + std::to_string(i % 97) + "; y = y + b;");
+        net.cookDisplay();
+    }
+    const double perProgram = t.lap() / static_cast<double>(unique);
+    const size_t cacheAfter = net.compiler().cacheSize();
+    std::printf("  %zu unique programs on one node: %.2f ms each, kernel cache %zu -> %zu entries, working set +%.1f MB (%.1f KB per kernel)\n", unique, perProgram,
+                cacheBefore, cacheAfter, megabytes(workingSetBytes()) - megabytes(memBefore),
+                (static_cast<double>(workingSetBytes()) - static_cast<double>(memBefore)) / 1024.0 / static_cast<double>(unique));
+    rep.check(cacheAfter <= KernelCompiler::maxCachedKernels, "the kernel cache is capped (" + std::to_string(cacheAfter) + " entries)");
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: shapes
+
+GeometryHandle makeCountedLine(size_t count) {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(count);
+    const float step = count > 1 ? 10.0f / static_cast<float>(count - 1) : 0.0f;
+    for (size_t i = 0; i < count; ++i) geo->x()[i] = static_cast<float>(i) * step, geo->y()[i] = 1.0f;
+    if (count) geo->addPrimitive({0, static_cast<uint32_t>(count), false});
+    return geo;
+}
+
+void scenarioShapes(const Options& opt, Report& rep) {
+    registerStressNodes();
+    const std::vector<size_t> counts = {0,   1,    2,    3,    4,    5,    7,    8,     9,     15,    16,    17,    31,     32,     33,
+                                        63,  64,   65,   100,  127,  128,  129,  1023,  1024,  1025,  4095,  4097,  32767,  32768,  32769,
+                                        65535, 65536, 65537, 100001};
+    const std::array<std::array<float, 4>, 3> params = {{{1.1f, 0.9f, 0.5f, -0.25f}, {0.97f, 0.5f, 1.05f, 0.125f}, {3.0f, -1.0f, 0.5f, 0.75f}}};
+    const int templates[3] = {0, 1, 5};
+    size_t checked = 0;
+    for (size_t count : counts) {
+        Network net(opt.threads);
+        auto geo = makeCountedLine(count);
+        stressSources()["shape"] = geo;
+        NodeId src = net.addNode("stressSource");
+        net.node(src).setString("tag", "shape");
+        NodeId prev = src;
+        for (int k = 0; k < 3; ++k) {
+            NodeId id;
+            if (templates[k] == 0) {
+                id = net.addNode("transform");
+                for (int s = 0; s < 4; ++s) net.node(id).setFloat(paramName(0, s), params[static_cast<size_t>(k)][static_cast<size_t>(s)]);
+            } else {
+                id = addWrangle(net, templateCode(templates[k]), params[static_cast<size_t>(k)]);
+            }
+            net.connect(prev, id);
+            prev = id;
+        }
+        net.setDisplayNode(prev);
+        std::vector<float> wantX(count), wantY(count);
+        for (size_t i = 0; i < count; ++i) {
+            float x = geo->x()[i], y = geo->y()[i];
+            for (int k = 0; k < 3; ++k) referenceStep(templates[k], params[static_cast<size_t>(k)], x, y);
+            wantX[i] = x;
+            wantY[i] = y;
+        }
+        std::vector<Config> configs = {{true, Isa::avx2, true, 1}, {true, Isa::avx2, false, 0}, {true, Isa::sse2, true, 0}, {false, Isa::sse2, true, 0}};
+        if (net.compiler().isaSupported(Isa::avx512)) configs.push_back({true, Isa::avx512, true, 0});
+        for (const Config& c : configs) {
+            auto other = cloneWith(net, c);
+            GeometryHandle out;
+            std::string error;
+            if (!tryCook(*other, other->displayNode(), out, error)) {
+                rep.check(false, std::to_string(count) + " points, " + c.name() + ": " + error);
+                continue;
+            }
+            bool ok = out->pointCount() == count;
+            for (size_t i = 0; ok && i < count; ++i) ok = sameBits(out->x()[i], wantX[i]) && sameBits(out->y()[i], wantY[i]);
+            rep.check(ok, std::to_string(count) + " points, " + c.name() + " does not match the reference");
+            ++checked;
+        }
+    }
+    std::printf("  %zu point counts around lane widths, chunk size (32768) and 100001 points x 4-5 configurations: %zu cooks match the reference\n", counts.size(), checked);
+
+    // One huge cook.
+    {
+        const size_t big = opt.quick ? 1000000 : 12000000;
+        Network net(opt.threads);
+        NodeId line = addLine(net, big, 10.0f, 1.0f);
+        std::vector<int> tmpl = {1, 3, 4, 5, 2, 1};
+        std::vector<std::array<float, 4>> ps;
+        NodeId prev = line;
+        Rng rng(opt.seed + 41);
+        for (int t : tmpl) {
+            ps.push_back(randomParams(t, rng));
+            NodeId id = addWrangle(net, templateCode(t), ps.back());
+            net.connect(prev, id);
+            prev = id;
+        }
+        net.setDisplayNode(prev);
+        Stopwatch sw;
+        GeometryHandle out = net.cookDisplay();
+        const double ms = sw.lap();
+        const float step = 10.0f / static_cast<float>(big - 1);
+        bool ok = out->pointCount() == big;
+        for (size_t i = 0; ok && i < big; i += (i < 200 || i + 200 > big) ? 1 : 997) {
+            float x = static_cast<float>(i) * step, y = 1.0f;
+            for (size_t k = 0; k < tmpl.size(); ++k) referenceStep(tmpl[k], ps[k], x, y);
+            ok = sameBits(out->x()[i], x) && sameBits(out->y()[i], y);
+        }
+        rep.check(ok, std::to_string(big) + " points match the reference at sampled points and both ends");
+        auto unfused = cloneWith(net, {true, Isa::sse2, false, 1});
+        sw.lap();
+        const uint64_t d = digest(*unfused->cookDisplay());
+        const double unfusedMs = sw.lap();
+        rep.check(d == digest(*out), "the same graph unfused, SSE2 and single threaded gives an identical result for " + std::to_string(big) + " points");
+        std::printf("  %zu points through 6 fused wranglers: %.0f ms (%.1f Mpoints/s through the whole chain); unfused/SSE2/1 thread %.0f ms\n", big, ms,
+                    static_cast<double>(big) / ms / 1000.0, unfusedMs);
+    }
+
+    // Thousands of tiny geometries.
+    {
+        Rng rng(opt.seed + 99);
+        const size_t sources = opt.quick ? 600 : 4000;
+        Network net(opt.threads);
+        std::vector<NodeId> ends;
+        for (size_t i = 0; i < sources; ++i) {
+            NodeId line = addLine(net, 1 + rng.index(3), 5.0f, static_cast<float>(i % 7));
+            NodeId w = addWrangle(net, templateCode(1 + static_cast<int>(rng.index(5))), randomParams(1, rng));
+            net.connect(line, w);
+            ends.push_back(w);
+        }
+        net.setDisplayNode(mergeTree(net, ends, 16));
+        Stopwatch sw;
+        GeometryHandle out = net.cookDisplay();
+        const double ms = sw.lap();
+        bool ok = true;
+        std::string why;
+        for (const Config& c : comparisonConfigs(net, true, opt.threads)) {
+            auto other = cloneWith(net, c);
+            ok = ok && sameGeometry(*other->cookDisplay(), *out, why);
+        }
+        rep.check(ok, "thousands of 1-3 point geometries merge identically in every configuration: " + why);
+        std::printf("  %zu tiny sources (%zu points in all), %zu nodes: %.1f ms\n", sources, out->pointCount(), net.nodeIds().size(), ms);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: langfuzz
+
+const float specialFloats[] = {0.0f, -0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 2.0f, 1e-40f, -1e-40f, 1.17549435e-38f, 3.4e38f, -3.4e38f, 16777217.0f, 2147483648.0f,
+                               -2147483904.0f, 4294967296.0f, 1e20f, -1e20f, std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                               std::numeric_limits<float>::quiet_NaN(), 0.1f, 123456.789f, -7.5f, 3.0f, 0.99999994f, 1.00000012f, 8388608.5f};
+const int32_t specialInts[] = {0, 1, -1, 2147483647, static_cast<int32_t>(0x80000000), 16777217, -16777217, 255, 65536, -3};
+
+GeometryHandle makeSpecialGeometry(Rng& rng, size_t count) {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(count);
+    auto& i1 = geo->attrib(AttribClass::point, "i1", AttribType::int32);
+    auto& u = geo->attrib(AttribClass::point, "u");
+    for (size_t i = 0; i < count; ++i) {
+        geo->x()[i] = specialFloats[rng.index(std::size(specialFloats))];
+        geo->y()[i] = rng.chance(0.5) ? specialFloats[rng.index(std::size(specialFloats))] : rng.range(-10, 10);
+        i1.ints()[i] = specialInts[rng.index(std::size(specialInts))];
+        u.floats()[i] = rng.chance(0.3) ? specialFloats[rng.index(std::size(specialFloats))] : 0.0f;
+    }
+    if (count) geo->addPrimitive({0, static_cast<uint32_t>(count), false});
+    return geo;
+}
+
+std::string mutateProgram(Rng& rng, std::string text) {
+    static const char* snippets[] = {"(", ")", ";", " + ", "*", "/", "?", ":", "min(", "pow(", ",", "1e", ".", "&&", "!", "==", "x", "0 -", "{", "}", "=", "99999999999999999999", "abs", "  "};
+    const size_t edits = 1 + rng.index(4);
+    for (size_t e = 0; e < edits && !text.empty(); ++e) {
+        const size_t pos = rng.index(text.size());
+        switch (rng.index(4)) {
+            case 0: text.erase(pos, 1 + rng.index(3)); break;
+            case 1: text.insert(pos, snippets[rng.index(std::size(snippets))]); break;
+            case 2: text[pos] = static_cast<char>(32 + rng.index(95)); break;
+            default: text.insert(pos, std::string(1, static_cast<char>(rng.index(256)))); break;
+        }
+    }
+    return text;
+}
+
+void scenarioLangFuzz(const Options& opt, Report& rep) {
+    registerStressNodes();
+    const size_t programs = opt.quick ? 400 : 4000;
+    static const std::vector<std::string> vars = {"x", "y", "a", "b", "c", "d", "u", "v", "i1"};
+    static const std::vector<std::string> targets = {"x", "y", "u", "v", "i1"};
+
+    // 1. Programs on special values (NaN, infinities, denormals, int extremes): every JIT tier agrees with the others, and the exact
+    // subset agrees with the interpreter.
+    size_t compared = 0, withInterpreter = 0;
+    for (size_t p = 0; p < programs; ++p) {
+        Rng rng(opt.seed * 4001 + p);
+        const bool transcendental = rng.chance(0.4);
+        std::string code;
+        for (size_t s = 0, n = 1 + rng.index(3); s < n; ++s) code += targets[rng.index(targets.size())] + " = " + randomExpr(rng, 4, transcendental, vars) + "; ";
+        stressSources()["special"] = makeSpecialGeometry(rng, 5 + rng.index(120));
+        Network net(1);
+        NodeId src = net.addNode("stressSource");
+        net.node(src).setString("tag", "special");
+        NodeId w = addWrangle(net, code, {rng.round2(-2, 2), rng.round2(-2, 2), rng.round2(-2, 2), rng.round2(-2, 2)});
+        net.connect(src, w);
+        net.setDisplayNode(w);
+        std::string error, why;
+        GeometryHandle base;
+        if (!tryCook(net, w, base, error)) {
+            rep.check(false, "program '" + code + "' failed to cook: " + error);
+            continue;
+        }
+        for (const Config& c : comparisonConfigs(net, !transcendental, 1)) {
+            auto other = cloneWith(net, c);
+            GeometryHandle geo;
+            if (!tryCook(*other, other->displayNode(), geo, error)) {
+                rep.check(false, "program '" + code + "' with " + c.name() + " failed: " + error);
+                continue;
+            }
+            rep.check(sameGeometry(*geo, *base, why), "program '" + code + "' differs for " + c.name() + ": " + why);
+            ++compared;
+            if (!c.jit) ++withInterpreter;
+        }
+    }
+    std::printf("  %zu random programs on NaN/inf/denormal/int-extreme data: %zu comparisons across ISAs (%zu against the interpreter)\n", programs, compared, withInterpreter);
+
+    // 2. Malformed text: parse or a clean error, never a crash; programs that still parse must cook the same everywhere.
+    size_t parsed = 0, rejected = 0;
+    for (size_t p = 0; p < programs * 4; ++p) {
+        Rng rng(opt.seed * 7001 + p);
+        std::string code = randomProgram(rng, true);
+        code = mutateProgram(rng, code);
+        try {
+            KernelSpec spec = parseWrangle(code, {"a", "b", "c", "d"});
+            ++parsed;
+            if (p % 8 == 0) {
+                stressSources()["special"] = makeSpecialGeometry(rng, 40);
+                Network net(1);
+                NodeId src = net.addNode("stressSource");
+                net.node(src).setString("tag", "special");
+                NodeId w = addWrangle(net, code, {0.5f, 1.5f, -2.0f, 0.25f});
+                net.connect(src, w);
+                net.setDisplayNode(w);
+                GeometryHandle a = net.cookDisplay();
+                auto other = cloneWith(net, {true, Isa::sse2, true, 1});
+                std::string why;
+                rep.check(sameGeometry(*a, *other->cookDisplay(), why), "mutated program '" + code + "' differs between ISAs: " + why);
+            }
+        } catch (const std::runtime_error& e) {
+            ++rejected;
+            rep.check(std::string(e.what()).size() > 0, "a rejected program has an error message");
+        }
+    }
+    std::printf("  %zu mutated programs: %zu still parse (and cook the same on SSE2 and AVX2), %zu rejected with a message\n", parsed + rejected, parsed, rejected);
+
+    // 3. Pathological nesting and length. A clean error is acceptable at some depth; a crash is not.
+    for (size_t depth : {50u, 500u, 5000u, 50000u}) {
+        std::string deepParens = "x = " + std::string(depth, '(') + "x" + std::string(depth, ')') + ";";
+        std::string deepSum = "x = x";
+        for (size_t i = 0; i < depth; ++i) deepSum += " + 1";
+        deepSum += ";";
+        std::string deepTernary = "x = ";
+        for (size_t i = 0; i < depth; ++i) deepTernary += "(x > 0 ? 1 : ";
+        deepTernary += "0" + std::string(depth, ')') + ";";
+        std::string deepUnary = "x = " + std::string(depth, '-') + "x;";
+        std::string deepCalls = "x = ";
+        for (size_t i = 0; i < depth; ++i) deepCalls += "abs(";
+        deepCalls += "x" + std::string(depth, ')') + ";";
+        std::string longProgram;
+        for (size_t i = 0; i < depth; ++i) longProgram += "x = x + 1; ";
+        int ok = 0, clean = 0;
+        for (const std::string* text : {&deepParens, &deepSum, &deepTernary, &deepUnary, &deepCalls, &longProgram}) {
+            try {
+                parseWrangle(*text, {"a", "b", "c", "d"});
+                ++ok;
+            } catch (const std::runtime_error&) {
+                ++clean;
+            }
+        }
+        // The shapes that parse must also compile and run: a sum of `depth` terms is a graph `depth` levels deep.
+        for (const std::string* text : {&deepSum, &longProgram}) {
+            if (depth > 5000 && opt.quick) continue;
+            for (bool jit : {true, false}) {
+                Network net(1);
+                net.compiler().setJitEnabled(jit);
+                NodeId line = addLine(net, 33, 1.0f, 0.0f);
+                NodeId w = addWrangle(net, *text);
+                net.connect(line, w);
+                net.setDisplayNode(w);
+                GeometryHandle out;
+                std::string error;
+                const bool cooked = tryCook(net, w, out, error);
+                rep.check(cooked ? std::fabs(out->x()[0] - static_cast<float>(depth)) < 0.5f : !error.empty(),
+                          std::string(jit ? "JIT" : "interpreter") + " runs a program of size " + std::to_string(depth) + " correctly or rejects it: " + error);
+            }
+        }
+        std::printf("  nesting/length %zu: %d of 6 shapes parse, %d rejected cleanly\n", static_cast<size_t>(depth), ok, clean);
+        rep.check(ok + clean == 6, "pathological programs of size " + std::to_string(depth) + " are parsed or rejected");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: pathological
+
+void scenarioPathological(const Options& opt, Report& rep) {
+    registerStressNodes();
+    Watchdog dog(600, "pathological graphs");
+    std::string error;
+
+    // 1. A merge with thousands of inputs.
+    {
+        const size_t inputs = opt.quick ? 2000 : 10000;
+        Network net(opt.threads);
+        NodeId merge = net.addNode("merge");
+        Stopwatch sw;
+        for (size_t i = 0; i < inputs; ++i) net.connect(addLine(net, 3, 1.0f, static_cast<float>(i)), merge, static_cast<int>(i));
+        const double build = sw.lap();
+        net.setDisplayNode(merge);
+        GeometryHandle out;
+        const bool ok = tryCook(net, merge, out, error);
+        const double cook = sw.lap();
+        rep.check(ok && out->pointCount() == inputs * 3, "a merge of " + std::to_string(inputs) + " inputs cooks: " + error);
+        std::printf("  merge with %zu inputs: built in %.0f ms, cooked in %.0f ms\n", inputs, build, cook);
+        rep.check(build < 20000.0, "connecting thousands of merge inputs is not quadratic-slow (" + std::to_string(build) + " ms)");
+    }
+
+    // 1b. A ladder of merges where every rung joins the two before it: the number of paths from the top to the source is exponential,
+    // so cycle detection must not walk paths.
+    {
+        const size_t rungs = opt.quick ? 120 : 400;
+        Network net(opt.threads);
+        std::vector<NodeId> ladder = {addLine(net, 2, 1.0f, 0.0f), addLine(net, 2, 1.0f, 1.0f)};
+        Stopwatch sw;
+        for (size_t i = 2; i < rungs; ++i) {
+            NodeId m = net.addNode("merge");
+            net.connect(ladder[i - 1], m, 0);
+            net.connect(ladder[i - 2], m, 1);
+            ladder.push_back(m);
+        }
+        bool refused = false;
+        try {
+            net.connect(ladder.back(), ladder.front(), 0);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        const double ms = sw.lap();
+        std::printf("  ladder of %zu merges (exponentially many paths): built and cycle-checked in %.0f ms\n", rungs, ms);
+        rep.check(refused, "closing a cycle through the ladder is refused");
+        rep.check(ms < 10000.0, "cycle detection does not walk every path of a layered graph (" + std::to_string(ms) + " ms)");
+    }
+
+    // 2. One node feeding thousands of consumers.
+    {
+        const size_t fan = opt.quick ? 2000 : 10000;
+        Network net(opt.threads);
+        NodeId src = addLine(net, 100, 10.0f, 0.0f);
+        std::vector<NodeId> ends;
+        for (size_t i = 0; i < fan; ++i) {
+            NodeId w = addWrangle(net, "x = x + a; y = y * b;", {static_cast<float>(i % 17), 1.0f + static_cast<float>(i % 5), 0, 0});
+            net.connect(src, w);
+            ends.push_back(w);
+        }
+        net.setDisplayNode(mergeTree(net, ends, 64));
+        Stopwatch sw;
+        GeometryHandle out = net.cookDisplay();
+        const double ms = sw.lap();
+        auto serial = cloneWith(net, {true, Isa::avx2, false, 1});
+        std::string why;
+        rep.check(sameGeometry(*serial->cookDisplay(), *out, why), "fan-out of " + std::to_string(fan) + " gives the same result with 1 thread: " + why);
+        std::printf("  fan-out of one node to %zu consumers (%zu nodes, %zu kernels): %.0f ms\n", fan, net.nodeIds().size(), net.compiler().compileCount(), ms);
+    }
+
+    // 3. Long chains, fused and unfused: x = x + 1 repeated N times must give N.
+    for (bool fusion : {true, false}) {
+        for (size_t depth : {opt.quick ? 1000u : 3000u, opt.quick ? 3000u : 10000u, opt.quick ? 6000u : 30000u}) {
+            Network net(opt.threads);
+            net.setFusionEnabled(fusion);
+            NodeId prev = addLine(net, 64, 10.0f, 0.0f);
+            for (size_t i = 0; i < depth; ++i) {
+                NodeId w = addWrangle(net, "x = x + a;", {1.0f, 0, 0, 0});
+                net.connect(prev, w);
+                prev = w;
+            }
+            net.setDisplayNode(prev);
+            Stopwatch sw;
+            GeometryHandle out;
+            const bool ok = tryCook(net, prev, out, error);
+            const double ms = sw.lap();
+            const bool correct = ok && std::fabs(out->x()[0] - static_cast<float>(depth)) < 0.5f;
+            std::printf("  chain of %zu wranglers, fusion %s: %s in %.0f ms\n", depth, fusion ? "on " : "off", ok ? (correct ? "ok" : "WRONG RESULT") : ("error: " + error).c_str(), ms);
+            rep.check(!ok || correct, "a chain of " + std::to_string(depth) + " nodes either cooks correctly or fails cleanly");
+            if (!ok) rep.check(!error.empty(), "the failure has a message");
+        }
+    }
+
+    // 4. A long chain of merges (a degenerate, left-leaning tree) and a long chain of nulls.
+    {
+        const size_t depth = opt.quick ? 1500 : 5000;
+        Network net(opt.threads);
+        NodeId acc = addLine(net, 2, 1.0f, 0.0f);
+        for (size_t i = 0; i < depth; ++i) {
+            NodeId m = net.addNode("merge");
+            net.connect(acc, m, 0);
+            net.connect(addLine(net, 2, 1.0f, static_cast<float>(i)), m, 1);
+            acc = m;
+        }
+        net.setDisplayNode(acc);
+        GeometryHandle out;
+        Stopwatch sw;
+        const bool ok = tryCook(net, acc, out, error);
+        std::printf("  left-leaning chain of %zu merges: %s in %.0f ms\n", depth, ok ? "ok" : ("error: " + error).c_str(), sw.lap());
+        rep.check(ok ? out->pointCount() == 2 * (depth + 1) : !error.empty(), "a degenerate merge tree flattens or fails cleanly");
+    }
+
+    // 5. Parameter expressions referencing each other in a long line.
+    {
+        const size_t depth = opt.quick ? 400 : 2000;
+        Network net(opt.threads);
+        NodeId src = addLine(net, 10, 1.0f, 0.0f);
+        std::vector<NodeId> nodes;
+        NodeId prev = src;
+        for (size_t i = 0; i < depth; ++i) {
+            NodeId w = addWrangle(net, "x = x + a;", {0, 0, 0, 0});
+            net.connect(prev, w);
+            nodes.push_back(w);
+            prev = w;
+        }
+        for (size_t i = 1; i < depth; ++i) net.node(nodes[i]).setExpression("a", net.node(nodes[i - 1]).name() + ".a + 1");
+        net.node(nodes[0]).setFloat("a", 1.0f);
+        net.setDisplayNode(prev);
+        GeometryHandle out;
+        Stopwatch sw;
+        const bool ok = tryCook(net, prev, out, error);
+        const double want = static_cast<double>(depth) * static_cast<double>(depth + 1) / 2.0;
+        std::printf("  %zu nodes whose parameter references the previous node's: %s in %.0f ms\n", depth, ok ? "ok" : ("error: " + error).c_str(), sw.lap());
+        rep.check(ok ? std::fabs(static_cast<double>(out->x()[0]) - want) < want * 1e-5 : !error.empty(), "chained parameter references evaluate or fail cleanly");
+        const NodeId mid = nodes[depth / 2];
+        net.node(nodes[0]).setFloat("a", 2.0f);
+        sw.lap();
+        const bool ok2 = tryCook(net, prev, out, error);
+        std::printf("  editing the head of that chain, recook: %s in %.0f ms\n", ok2 ? "ok" : ("error: " + error).c_str(), sw.lap());
+        (void)mid;
+    }
+
+    // 6. Deeply nested subnets, with save/load and history.
+    for (size_t depth : {10u, 40u, 64u, 100u, 1500u}) {
+        Network net(opt.threads);
+        NodeId src = addLine(net, 20, 1.0f, 0.0f);
+        std::function<NodeId(Network&, size_t)> build = [&](Network& n, size_t level) -> NodeId {
+            NodeId in = n.addNode("subnetInput");
+            NodeId inner;
+            if (level == 0) {
+                inner = addWrangle(n, "x = x + 1;", {0, 0, 0, 0});
+            } else {
+                inner = n.addNode("subnet");
+                NodeId deeper = build(static_cast<SubnetNode&>(n.node(inner)).network(), level - 1);
+                (void)deeper;
+            }
+            n.connect(in, inner);
+            n.setDisplayNode(inner);
+            return inner;
+        };
+        bool refused = false;
+        NodeId sub = invalidNodeId;
+        try {
+            sub = net.addNode("subnet");
+            build(static_cast<SubnetNode&>(net.node(sub)).network(), depth);
+            net.connect(src, sub);
+            net.setDisplayNode(sub);
+        } catch (const std::runtime_error& e) {
+            refused = std::string(e.what()).find("nested") != std::string::npos;
+            rep.check(refused, "a nesting that is too deep is refused with a clear message: " + std::string(e.what()));
+            std::printf("  subnets nested %zu deep: refused (%s)\n", depth, e.what());
+            continue;
+        }
+        GeometryHandle out;
+        Stopwatch sw;
+        const bool ok = tryCook(net, sub, out, error);
+        const double cookMs = sw.lap();
+        std::string text;
+        bool saved = true;
+        try {
+            text = saveNetwork(net, true);
+            Network loaded(1);
+            loadNetwork(loaded, text);
+            saved = saveNetwork(loaded, true) == text;
+        } catch (const std::exception& e) {
+            error = e.what();
+            saved = !error.empty();
+        }
+        std::printf("  subnets nested %zu deep: cook %s in %.0f ms; save/load %s (%zu KB)\n", depth, ok ? "ok" : ("error: " + error).c_str(), cookMs,
+                    saved ? "ok" : "MISMATCH", text.size() / 1024);
+        rep.check(ok ? std::fabs(out->x()[19] - (1.0f + 1.0f)) < 1e-3f || std::fabs(out->x()[0] - 1.0f) < 1e-3f : !error.empty(), "nested subnets cook correctly or fail cleanly");
+        rep.check(saved, "nested subnets round-trip through save/load or fail cleanly");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ scenario: faults
+
+void scenarioFaults(const Options& opt, Report& rep) {
+    registerStressNodes();
+    Watchdog dog(300, "fault injection");
+    Rng rng(opt.seed * 23 + 9);
+
+    // A graph with many branches, each passing through a node that can be told to fail, sleep or throw odd things.
+    const size_t branches = opt.quick ? 24 : 96;
+    Network net(opt.threads);
+    std::vector<NodeId> faults;
+    std::vector<NodeId> ends;
+    for (size_t b = 0; b < branches; ++b) {
+        NodeId line = addLine(net, 2000, 10.0f, static_cast<float>(b));
+        NodeId w1 = addWrangle(net, "x = x * a + b;", {1.01f, 0.5f, 0, 0});
+        NodeId f = net.addNode("stressFault");
+        NodeId w2 = addWrangle(net, "y = y + x * a;", {0.01f, 0, 0, 0});
+        net.connect(line, w1);
+        net.connect(w1, f);
+        net.connect(f, w2);
+        faults.push_back(f);
+        ends.push_back(w2);
+    }
+    net.setDisplayNode(mergeTree(net, ends, 8));
+    const uint64_t want = digest(*net.cookDisplay());
+
+    auto markAllDirty = [&] {
+        for (NodeId id : net.nodeIds()) net.markDirty(id);
+    };
+    auto resetFaults = [&] {
+        for (NodeId f : faults) net.node(f).setFloat("mode", 0.0f);
+    };
+
+    size_t cleanErrors = 0, escaped = 0, total = 0;
+    const int rounds = opt.quick ? 40 : 300;
+    for (int round = 0; round < rounds; ++round) {
+        resetFaults();
+        std::vector<int> modes;
+        const size_t failing = 1 + rng.index(8);
+        for (size_t k = 0; k < failing; ++k) {
+            const int mode = static_cast<int>(1 + rng.index(4));
+            NodeId f = faults[rng.index(faults.size())];
+            net.node(f).setFloat("mode", static_cast<float>(mode));
+            net.node(f).setFloat("ms", static_cast<float>(rng.index(20)));
+        }
+        markAllDirty();
+        ++total;
+        try {
+            net.cookDisplay();
+            // sleeps alone are not failures
+            bool onlySleeps = true;
+            for (NodeId f : faults) {
+                const int m = static_cast<int>(net.node(f).getFloat("mode"));
+                onlySleeps = onlySleeps && (m == 0 || m == 2);
+            }
+            rep.check(onlySleeps, "round " + std::to_string(round) + ": a cook with an injected failure did not report it");
+        } catch (const CookCancelled&) {
+            rep.check(false, "a fault was reported as a cancellation");
+        } catch (const std::bad_alloc&) {
+            ++cleanErrors;
+        } catch (const std::exception& e) {
+            ++cleanErrors;
+            rep.check(std::string(e.what()).size() > 0, "an injected failure has a message");
+        } catch (...) {
+            ++escaped;
+        }
+        resetFaults();
+        markAllDirty();
+        GeometryHandle geo;
+        std::string error;
+        if (!tryCook(net, net.displayNode(), geo, error)) {
+            rep.check(false, "round " + std::to_string(round) + ": the next cook after a failure fails too: " + error);
+            break;
+        }
+        rep.check(digest(*geo) == want, "round " + std::to_string(round) + ": the cook after a failure matches the baseline");
+    }
+    std::printf("  %zu rounds of 1-8 simultaneous failures (runtime_error, bad_alloc, non-std exceptions, sleeps) in a %zu-branch parallel cook: %zu std errors, %zu non-std\n",
+                total, branches, cleanErrors, escaped);
+
+    // Cancel while branches are sleeping.
+    for (NodeId f : faults) {
+        net.node(f).setFloat("mode", 2.0f);
+        net.node(f).setFloat("ms", 30.0f);
+    }
+    markAllDirty();
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        net.cancel();
+    });
+    bool cancelled = false;
+    try {
+        net.cookDisplay();
+    } catch (const CookCancelled&) {
+        cancelled = true;
+    }
+    canceller.join();
+    rep.check(cancelled, "a cook whose branches are sleeping is cancelled in time");
+    resetFaults();
+    markAllDirty();
+    rep.check(digest(*net.cookDisplay()) == want, "after the cancelled cook the graph cooks correctly");
+
+    // Allocation failures: make the n-th allocation of a cook throw std::bad_alloc, for a sweep of n.
+    size_t swept = 0, failedCooks = 0, unaffected = 0;
+    const long limit = opt.quick ? 2000 : 12000;
+    const long stride = opt.quick ? 97 : 53;
+    for (long n = 0; n < limit; n += stride) {
+        markAllDirty();
+        failAllocationCountdown().store(n);
+        bool threw = false;
+        try {
+            net.cookDisplay();
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        failAllocationCountdown().store(-1);
+        ++swept;
+        (threw ? failedCooks : unaffected)++;
+        markAllDirty();
+        GeometryHandle geo;
+        std::string error;
+        const bool ok = tryCook(net, net.displayNode(), geo, error);
+        rep.check(ok && digest(*geo) == want, "after an allocation failure at #" + std::to_string(n) + " the next cook is correct: " + error);
+        if (!ok) break;
+    }
+    std::printf("  allocation failure injected at %zu different points of a cook: %zu cooks failed cleanly, %zu finished anyway, every later cook matched\n", swept,
+                failedCooks, unaffected);
+
+    // The same while a kernel compiles and while the history restores.
+    {
+        Network small(1);
+        NodeId line = addLine(small, 500, 10.0f, 0.0f);
+        NodeId w = addWrangle(small, "x = x * a + b; y = sqrt(abs(x)) * c;", {1.5f, 0.5f, 2.0f, 0});
+        small.connect(line, w);
+        small.setDisplayNode(w);
+        History history(small, 20);
+        history.commit("start");
+        const uint64_t base = digest(*small.cookDisplay());
+        small.node(w).setFloat("a", 1.25f);
+        history.commit("edit");
+        for (long n = 0; n < 400; n += 3) {
+            small.compiler().setJitEnabled(true);  // empties the kernel cache, so the compile is part of the cook
+            small.markDirty(w);
+            failAllocationCountdown().store(n);
+            try {
+                small.cookDisplay();
+            } catch (const std::exception&) {
+            }
+            failAllocationCountdown().store(-1);
+            failAllocationCountdown().store(n);
+            try {
+                history.undo();
+                history.redo();
+            } catch (const std::exception&) {
+            }
+            failAllocationCountdown().store(-1);
+        }
+        history.commit();
+        small.markDirty(w);
+        GeometryHandle geo;
+        std::string error;
+        const bool ok = tryCook(small, w, geo, error);
+        rep.check(ok, "the network still cooks after allocation failures during compile and undo: " + error);
+        (void)base;
+        std::printf("  allocation failures during JIT compilation and undo/redo: the network cooks afterwards\n");
+    }
+}
+
 }  // namespace
+
+void* operator new(size_t size) {
+    if (failAllocationCountdown().load(std::memory_order_relaxed) >= 0 && failAllocationCountdown().fetch_sub(1) == 0) throw std::bad_alloc();
+    if (void* p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](size_t size) { return operator new(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // keep the progress visible if a scenario crashes the process
@@ -1363,12 +2463,18 @@ int main(int argc, char** argv) {
         else if (arg == "--threads") opt.threads = std::strtoull(value().c_str(), nullptr, 10);
         else if (arg == "--no-interpreter") opt.interpreter = false;
         else if (arg == "--verbose") opt.verbose = true;
+        else if (arg == "--fuzz-iterations") opt.fuzzIterations = std::strtoull(value().c_str(), nullptr, 10);
+        else if (arg == "--fuzz-first") opt.fuzzFirst = std::strtoull(value().c_str(), nullptr, 10);
+        else if (arg == "--duration") opt.duration = std::strtod(value().c_str(), nullptr);
+        else if (arg == "--write-graph") opt.writeGraph = value();
+        else if (arg == "--soak-cycles") opt.soakCycles = std::strtoull(value().c_str(), nullptr, 10);
         else if (arg == "--scenario") {
             std::stringstream ss(value());
             std::string name;
             while (std::getline(ss, name, ',')) opt.scenarios.insert(name);
         } else {
-            std::printf("usage: jitnodesStress [--quick] [--seed N] [--scenario chains,dag,dagmath,edits,subnets,time,cancel,wide,scaling]\n"
+            std::printf("usage: jitnodesStress [--quick] [--seed N] [--scenario chains,dag,dagmath,edits,subnets,time,cancel,wide,scaling,fuzz,concurrent,soak,shapes,langfuzz,pathological,faults]\n"
+                        "                      [--fuzz-iterations N] [--fuzz-first N] [--duration SECONDS] [--soak-cycles N] [--write-graph FILE]\n"
                         "                      [--branches N] [--depth N] [--points N] [--dag-nodes N] [--edits N] [--threads N] [--no-interpreter] [--verbose]\n");
             return arg == "--help" ? 0 : 2;
         }
@@ -1379,6 +2485,29 @@ int main(int argc, char** argv) {
         opt.points = std::min<size_t>(opt.points, 3000);
         opt.dagNodes = std::min<size_t>(opt.dagNodes, 400);
         opt.edits = std::min<size_t>(opt.edits, 30);
+    }
+
+    if (!opt.writeGraph.empty()) {
+        Rng rng(opt.seed);
+        ChainGraph g = buildChains(opt, rng, opt.threads);
+        size_t extra = 0;
+        for (NodeId id : g.net->nodeIds()) {
+            Node& n = g.net->node(id);
+            if (!n.hasPosition()) n.setPosition(static_cast<float>(extra % 32) * 150.0f, static_cast<float>(opt.depth + 3) * 70.0f + static_cast<float>(extra / 32) * 70.0f), ++extra;
+        }
+        for (size_t b = 0; b < g.branches.size(); ++b) {
+            g.net->node(g.branches[b].line).setPosition(static_cast<float>(b) * 150.0f, 0.0f);
+            for (size_t k = 0; k < g.branches[b].chain.size(); ++k) g.net->node(g.branches[b].chain[k]).setPosition(static_cast<float>(b) * 150.0f, static_cast<float>(k + 1) * 70.0f);
+        }
+        const std::string text = saveNetwork(*g.net, true);
+        std::ofstream out(opt.writeGraph, std::ios::binary);
+        if (!out) {
+            std::fprintf(stderr, "cannot write %s\n", opt.writeGraph.c_str());
+            return 2;
+        }
+        out << text;
+        std::printf("wrote %zu nodes (%zu KB) to %s\n", g.net->nodeIds().size(), text.size() / 1024, opt.writeGraph.c_str());
+        return 0;
     }
 
     NodeRegistry& registry = NodeRegistry::instance();
@@ -1405,6 +2534,13 @@ int main(int argc, char** argv) {
         {"cancel", "7  cancellation and error recovery inside a large parallel cook", scenarioCancelAndErrors},
         {"wide", "8  wide geometry (copy-on-write) and one very long fused chain", scenarioWide},
         {"scaling", "9  thread scaling and fusion, full and single-edit recooks", scenarioScaling},
+        {"fuzz", "10  many small random graphs, every configuration compared", scenarioFuzz},
+        {"concurrent", "11  concurrency: parallel networks, shared kernel cache and pool, cancel() hammering", scenarioConcurrent},
+        {"soak", "12  soak: thousands of edit/undo/cook cycles, memory and kernel cache growth", scenarioSoak},
+        {"shapes", "13  odd point counts, 12 million points, thousands of tiny geometries", scenarioShapes},
+        {"langfuzz", "14  language fuzzing: special values, mutated and pathological programs", scenarioLangFuzz},
+        {"pathological", "15  pathological graphs: huge merges, fan-out, very long chains, deep nesting", scenarioPathological},
+        {"faults", "16  fault injection: failing nodes, odd exceptions, allocation failures", scenarioFaults},
     };
 
     Report rep;
