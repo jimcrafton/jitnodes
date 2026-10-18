@@ -163,7 +163,7 @@ Consequences worth knowing:
 - Only the chain's last node caches a result; interior nodes report `fused into <tail>` in the profile and keep
   `cookCount() == 0`. Editing the tail re-runs the whole fused kernel instead of reusing a cached prefix (cheap, but
   worth knowing when reading profiles).
-- `setFusionEnabled(false)` cooks node by node; tests compare both paths for identical results.
+- `setFusionEnabled(false)` cooks node by node; tests compare both paths for identical results. That includes int attributes: a value one fused node writes into an int attribute is truncated (toward zero, `INT_MIN` for NaN or out of range) before the next fused node reads it, exactly as if the nodes had run separately and the geometry had been stored in between.
 - Fusion pays off together with the JIT. With the scalar interpreter it is about 15% *slower* (see [Performance](#performance)).
 - `merge` trees: a merge that is dirty, has one consumer and is not the display node is *absorbed* into the merge
   above it, so a balanced or left-deep tree of merges costs one `Geometry::concat` (one allocation per attribute,
@@ -196,7 +196,7 @@ Consequences worth knowing:
 ...). Structurally identical subexpressions are one node, which gives common-subexpression elimination for free, and
 operands always precede their users. A `KernelSpec` is the DAG plus the channel names it reads and writes, their
 types, the `(channel, expression)` stores and the number of runtime parameters. `KernelSpec::signature()` is its
-canonical text and the cache key.
+canonical text (structure, constants, channel types **and channel names**) and the cache key. Names are part of the key because a compiled `Kernel` binds its channels by the names of the spec it was built from: two programs that differ only in the attributes they touch (`x = x * 2;` and `y = y * 2;`) therefore compile separately, while programs that differ only in the values of parameters share one kernel. The graph interns nodes through a hash index, so building even a graph of thousands of nodes (a long fused chain) is linear in its size.
 
 **Masks.** A comparison produces a per-lane *mask* (all one bits or all zero bits), never 0.0 or 1.0. `select(mask, a, b)`
 blends by mask, so `?:` compiles without branches. The parser converts non-comparison conditions into `value != 0`,
@@ -206,7 +206,7 @@ and converts a comparison that is *assigned* into 1.0 / 0.0. See [wrangle.md](wr
 creates a `Kernel`, and `compileJit` emits code through `asmjit::x86::Compiler`:
 
 - only expression nodes that reach a store are emitted (dead-code elimination);
-- constants and runtime parameters are broadcast once before the loop;
+- constants and runtime parameters are broadcast once before the loop while there are at most 32 of them; a kernel fused from thousands of nodes has thousands of parameters, so beyond the limit each is broadcast from the parameter block where it is used (one load, no spill) instead of filling a stack frame of tens of kilobytes;
 - the loop loads each used channel once, evaluates the DAG with every intermediate in a register, stores each written
   channel once, and advances by the lane count; arrays are padded, so there is no remainder loop;
 - `VecEmitter` hides the instruction sets: SSE2 (4 lanes, always available on x86-64, uses legacy two-operand
@@ -216,7 +216,8 @@ creates a `Kernel`, and `compileJit` emits code through `asmjit::x86::Compiler`:
   Channel pointers come from the geometry, `params` is the runtime parameter block;
 - AVX code must set `func->frame().set_avx_enabled()`, otherwise asmjit spills ymm registers with legacy `movaps`
   and silently loses the upper 128 bits (this was a nondeterministic bug before it was fixed).
-  `JITNODES_JIT_LOG=1` dumps the generated assembly to stderr.
+  `JITNODES_JIT_LOG=1` dumps the generated assembly to stderr;
+- generated code does not probe the stack, and on Windows the stack only grows through its guard page, so a frame larger than a page can crash a thread whose stack has not grown yet. `Kernel` therefore commits 256 KB of the stack of every thread once, before the first generated function runs there.
 
 **Interpreter.** The same `ExprGraph` evaluated one element at a time with `evalOp()` (`jit/opEval.h`), which also
 backs parameter expressions. It is the reference the tests compare the JIT against, and the path taken on non-x86-64
@@ -226,7 +227,7 @@ hosts or with `setJitEnabled(false)`.
 same on all instruction sets). About 5e-6 absolute for `sin`/`cos` with |x| up to a few hundred, 1e-5 relative for
 `exp`/`log`; `exp` saturates at about 2.4e38 instead of overflowing; `log(0)` is `-inf` and `log` of a negative is NaN;
 `pow(a, b)` is `exp(b * log(a))` and therefore only meaningful for `a > 0`. The interpreter and parameter expressions use
-the C library, so a kernel can differ from the "JIT off" result in the last digits for these functions.
+the C library, so a kernel can differ from the "JIT off" result in the last digits for these functions. `floor` and `ceil` on SSE2 go through an int32 round trip and return `+0` for an input of `-0.0`, where AVX2 and AVX-512 return `-0.0`; the values compare equal, but a later `1 / x` would tell them apart.
 
 ## Subnets and assets
 
@@ -423,12 +424,13 @@ sanitizer run were not measured. The method and the numbers of the earlier run a
 
 ## Tests and tools
 
-- `jitnodesTests` (84 tests in `tests/testMain.cpp`, run by `ctest`): the JIT against the interpreter on every supported
+- `jitnodesTests` (86 tests in `tests/testMain.cpp`, run by `ctest`): the JIT against the interpreter on every supported
   instruction set (including vector math accuracy and edge cases), fusion on and off, parallel against serial cooking,
   expressions, keyframes and time dependence, subnets and assets (versions, migration, unlock), serialization round
   trips, undo/redo, clips, merge trees, cancellation, topology algorithms.
 - `jitnodesCli graph.json [--time T] [--node NAME] [--threads N] [--isa sse2|avx2|avx512] [--svg out.svg [--points]]
   [--save out.json] [--profile] [--asset file]...` and `jitnodesCli --types`.
+- `jitnodesStress`: thousands of nodes and tens of thousands of points per node, checked against an independent reference and across every configuration; see [stress-test.md](stress-test.md). `ctest` runs its quick size.
 - `editorModelTests` and the newui GUI tests are described in [editor.md](editor.md#testing).
 
 ```

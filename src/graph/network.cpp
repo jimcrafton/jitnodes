@@ -457,13 +457,18 @@ void Network::runTask(const CookTask& task) {
     if (!task.chain.empty()) {
         GeometryHandle base = node(task.inputs[0]).cooked_;
         PointKernel fused;
+        const AttribClass chainClass = task.cls;
+        auto channelType = [&](const std::string& name) {
+            const AttribArray* a = base->findAttrib(chainClass, name);
+            return a ? a->type() : AttribType::float32;
+        };
         for (size_t i = task.chain.size(); i-- > 0;) {
             PointKernel k;
             node(task.chain[i]).pointKernel(k);
             if (i + 1 == task.chain.size()) {
                 fused = std::move(k);
             } else {
-                fused.spec = composeKernels(fused.spec, k.spec);
+                appendKernel(fused.spec, k.spec, channelType);
                 fused.params.insert(fused.params.end(), k.params.begin(), k.params.end());
             }
         }

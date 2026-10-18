@@ -61,6 +61,14 @@ if(JITNODES_BUILD_TESTS)
   target_link_libraries(jitnodesTests PRIVATE jitnodes::jitnodes)
   target_compile_definitions(jitnodesTests PRIVATE JITNODES_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME jitnodesTests COMMAND jitnodesTests)
+
+  # Thousands of nodes and tens of thousands of points; ctest runs the quick size, run jitnodesStress itself for the full one.
+  add_executable(jitnodesStress tests/stressTest.cpp)
+  target_link_libraries(jitnodesStress PRIVATE jitnodes::jitnodes)
+  if(MSVC)
+    target_compile_options(jitnodesStress PRIVATE /W4 /permissive- /utf-8)
+  endif()
+  add_test(NAME jitnodesStressQuick COMMAND jitnodesStress --quick)
 endif()
 
 if(JITNODES_BUILD_EXAMPLES)

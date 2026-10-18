@@ -38,36 +38,59 @@ std::vector<int> copyGraph(ExprGraph& dst, const KernelSpec& src, const std::vec
     return map;
 }
 
+// What storing `value` into an int32 attribute and loading it back gives: truncation toward zero, and INT_MIN for NaN and for
+// values outside the int range (the semantics of cvttps2dq and of the interpreter's toInt32).
+int storedAsInt(ExprGraph& g, int value) {
+    const int zero = g.constant(0.0f);
+    const int low = g.constant(-2147483648.0f);
+    const int high = g.constant(2147483648.0f);
+    const int truncated = g.select(g.binary(Op::ge, value, zero), g.unary(Op::floor, value), g.unary(Op::ceil, value));
+    const int inRange = g.binary(Op::logicalAnd, g.binary(Op::gt, value, low), g.binary(Op::lt, value, high));
+    return g.select(inRange, truncated, low);
+}
+
 }  // namespace
 
-KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second) {
-    KernelSpec out;
-    out.paramCount = first.paramCount + second.paramCount;
+void appendKernel(KernelSpec& acc, const KernelSpec& next, const std::function<AttribType(const std::string&)>& channelType) {
+    const int paramOffset = acc.paramCount;
+    acc.paramCount += next.paramCount;
 
-    std::vector<int> firstChannels, secondChannels;
-    auto addChannels = [&](const KernelSpec& spec, std::vector<int>& map) {
-        for (size_t i = 0; i < spec.channels.size(); ++i) {
-            int c = out.channelIndex(spec.channels[i]);
-            if (spec.channelTypes[i] != AttribType::float32) out.channelTypes[static_cast<size_t>(c)] = spec.channelTypes[i];
-            map.push_back(c);
-        }
-    };
-    addChannels(first, firstChannels);
-    addChannels(second, secondChannels);
-
-    std::vector<int> firstMap = copyGraph(out.graph, first, firstChannels, 0, {});
-    std::map<int, int> produced;  // output channel -> latest expression
-    for (const auto& [channel, expr] : first.stores) produced[firstChannels[static_cast<size_t>(channel)]] = firstMap[static_cast<size_t>(expr)];
-
-    std::map<int, int> override;  // second's channel index -> expression produced by first
-    for (size_t c = 0; c < second.channels.size(); ++c) {
-        auto it = produced.find(secondChannels[c]);
-        if (it != produced.end()) override[static_cast<int>(c)] = it->second;
+    std::vector<int> nextChannels;
+    for (size_t i = 0; i < next.channels.size(); ++i) {
+        int c = acc.channelIndex(next.channels[i]);
+        if (next.channelTypes[i] != AttribType::float32) acc.channelTypes[static_cast<size_t>(c)] = next.channelTypes[i];
+        nextChannels.push_back(c);
     }
-    std::vector<int> secondMap = copyGraph(out.graph, second, secondChannels, first.paramCount, override);
-    for (const auto& [channel, expr] : second.stores) produced[secondChannels[static_cast<size_t>(channel)]] = secondMap[static_cast<size_t>(expr)];
 
-    for (const auto& [channel, expr] : produced) out.stores.emplace_back(channel, expr);
+    std::map<int, int> produced(acc.stores.begin(), acc.stores.end());  // output channel -> latest expression
+
+    std::map<int, int> override;  // next's channel index -> expression produced earlier
+    for (size_t c = 0; c < next.channels.size(); ++c) {
+        auto it = produced.find(nextChannels[c]);
+        if (it == produced.end()) continue;
+        const bool isInt = channelType ? channelType(next.channels[c]) == AttribType::int32 : next.channelTypes[c] == AttribType::int32;
+        override[static_cast<int>(c)] = isInt ? storedAsInt(acc.graph, it->second) : it->second;
+    }
+    std::vector<int> nextMap = copyGraph(acc.graph, next, nextChannels, paramOffset, override);
+    for (const auto& [channel, expr] : next.stores) produced[nextChannels[static_cast<size_t>(channel)]] = nextMap[static_cast<size_t>(expr)];
+
+    acc.stores.assign(produced.begin(), produced.end());
+}
+
+KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second, const std::function<AttribType(const std::string&)>& channelType) {
+    KernelSpec out;
+    out.paramCount = first.paramCount;
+    std::vector<int> firstChannels;
+    for (size_t i = 0; i < first.channels.size(); ++i) {
+        int c = out.channelIndex(first.channels[i]);
+        if (first.channelTypes[i] != AttribType::float32) out.channelTypes[static_cast<size_t>(c)] = first.channelTypes[i];
+        firstChannels.push_back(c);
+    }
+    std::vector<int> firstMap = copyGraph(out.graph, first, firstChannels, 0, {});
+    for (const auto& [channel, expr] : first.stores) out.stores.emplace_back(firstChannels[static_cast<size_t>(channel)], firstMap[static_cast<size_t>(expr)]);
+    std::map<int, int> sorted(out.stores.begin(), out.stores.end());
+    out.stores.assign(sorted.begin(), sorted.end());
+    appendKernel(out, second, channelType);
     return out;
 }
 

@@ -291,6 +291,11 @@ Behaviour to know about:
 - `Network::setFusionEnabled(false)` restores node-by-node cooking; tests compare both paths.
 - Fixed along the way: `markDirty` no longer stops at nodes that are already dirty-but-uncached, which would have
   skipped downstream invalidation.
+- Int attributes: a value an earlier node of the chain writes into an int attribute is run through the store's truncation
+  (`composeKernels` gets the channel types of the chain's input geometry) before a later node reads it, so fused and
+  unfused cooking agree (found by `jitnodesStress`).
+- The kernel cache key (`KernelSpec::signature`) includes the channel names: a compiled `Kernel` binds channels by the names of
+  the spec it was built from, so programs that differ only in attribute names must not share one (also found by `jitnodesStress`).
 
 ## 2D and 3D
 Dimension is not baked into the framework: points are a set of named float channels and kernels operate on

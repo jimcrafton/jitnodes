@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -68,7 +69,26 @@ public:
 private:
     int intern(const ExprNode& n);
 
+    // Identity of a node for hash-consing: every field, with the constant compared by its bits.
+    struct Key {
+        Op op;
+        int a, b, c, index;
+        uint32_t valueBits;
+        bool operator==(const Key& o) const { return op == o.op && a == o.a && b == o.b && c == o.c && index == o.index && valueBits == o.valueBits; }
+    };
+    struct KeyHash {
+        size_t operator()(const Key& k) const {
+            uint64_t h = static_cast<uint64_t>(k.op);
+            for (uint64_t v : {static_cast<uint64_t>(static_cast<uint32_t>(k.a)), static_cast<uint64_t>(static_cast<uint32_t>(k.b)),
+                               static_cast<uint64_t>(static_cast<uint32_t>(k.c)), static_cast<uint64_t>(static_cast<uint32_t>(k.index)),
+                               static_cast<uint64_t>(k.valueBits)})
+                h = (h ^ v) * 1099511628211ull + 0x9E3779B97F4A7C15ull;
+            return static_cast<size_t>(h ^ (h >> 29));
+        }
+    };
+
     std::vector<ExprNode> nodes_;
+    std::unordered_map<Key, int, KeyHash> index_;  // Key -> position in nodes_, so interning is O(1) instead of a scan
 };
 
 // A compilable unit: an expression graph plus which channels it reads and which it overwrites.
@@ -81,7 +101,7 @@ struct KernelSpec {
 
     int channelIndex(const std::string& name);  // adds the channel when new
 
-    // Canonical text of the spec; used as the kernel cache key.
+    // Canonical text of the spec (structure, constants, channel types and names); used as the kernel cache key.
     std::string signature() const;
 };
 

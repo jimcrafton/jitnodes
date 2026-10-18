@@ -9,6 +9,10 @@
 #include <cstdlib>
 #include <stdexcept>
 
+#ifdef _MSC_VER
+#include <malloc.h>
+#endif
+
 #include "jitnodes/core/threadPool.h"
 #include "jitnodes/jit/opEval.h"
 #include "vecEmitter.h"
@@ -49,6 +53,32 @@ std::vector<bool> liveNodes(const KernelSpec& spec) {
             if (operand >= 0) live[static_cast<size_t>(operand)] = true;
     }
     return live;
+}
+
+}  // namespace
+
+namespace {
+
+// Generated code allocates its spill area with a single stack adjustment and, unlike compiler output, does not probe the stack
+// page by page. On Windows the stack grows only by touching its guard page, so a frame larger than a page (a kernel with
+// thousands of live parameters spills tens of kilobytes) can skip the guard page on a thread whose stack has not grown yet and
+// crash. Committing a generous part of the stack once per thread, before the first generated function runs there, avoids that.
+constexpr size_t jitStackReserve = 256 * 1024;
+
+#ifdef _MSC_VER
+__declspec(noinline) void commitStack(size_t bytes) {
+    volatile char* p = static_cast<volatile char*>(_alloca(bytes));
+    for (size_t i = 0; i < bytes; i += 4096) p[i] = 0;
+}
+#endif
+
+void ensureStackForGeneratedCode() {
+#ifdef _MSC_VER
+    thread_local bool committed = false;
+    if (committed) return;
+    committed = true;
+    commitStack(jitStackReserve);
+#endif
 }
 
 }  // namespace
@@ -111,12 +141,19 @@ void Kernel::compileJit() {
     cc.jz(done);
 
     std::vector<x86::Vec> value(nodes.size());
-    // Loop invariants (constants, runtime parameters) are broadcast once, before the loop.
-    for (size_t i = 0; i < nodes.size(); ++i) {
+    // Loop invariants (constants, runtime parameters) are broadcast once, before the loop, while there are few enough to stay in
+    // registers. A long fused chain has thousands of parameters; hoisting those would spill every one of them to a stack frame
+    // of tens of kilobytes, so beyond the limit each is broadcast from memory where it is used (one load, no spill).
+    constexpr size_t hoistLimit = 32;
+    size_t invariants = 0;
+    for (size_t i = 0; i < nodes.size(); ++i)
+        if (live[i] && (nodes[i].op == Op::constant || nodes[i].op == Op::param)) ++invariants;
+    const bool hoist = invariants <= hoistLimit;
+    auto emitInvariant = [&](const ExprNode& n) { return n.op == Op::constant ? em.konst(n.value) : em.broadcast(x86::dword_ptr(paramBlock, n.index * 4)); };
+    for (size_t i = 0; hoist && i < nodes.size(); ++i) {
         if (!live[i]) continue;
         const ExprNode& n = nodes[i];
-        if (n.op == Op::constant) value[i] = em.konst(n.value);
-        else if (n.op == Op::param) value[i] = em.broadcast(x86::dword_ptr(paramBlock, n.index * 4));
+        if (n.op == Op::constant || n.op == Op::param) value[i] = emitInvariant(n);
     }
 
     x86::Gp index = cc.new_gp_ptr("i");
@@ -126,7 +163,10 @@ void Kernel::compileJit() {
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (!live[i]) continue;
         const ExprNode& n = nodes[i];
-        if (n.op == Op::constant || n.op == Op::param) continue;
+        if (n.op == Op::constant || n.op == Op::param) {
+            if (!hoist) value[i] = emitInvariant(n);
+            continue;
+        }
         if (n.op == Op::load) {
             x86::Vec d = em.newVec("ld");
             const x86::Mem mem = x86::ptr(channelPtr[static_cast<size_t>(n.index)], index, 2);
@@ -187,8 +227,12 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
 }
 
 void Kernel::runSerial(void* const* channels, const float* params, size_t paddedCount) const {
-    if (fn_) fn_(channels, params, constants_.data(), paddedCount);
-    else interpret(channels, params, paddedCount);
+    if (fn_) {
+        ensureStackForGeneratedCode();
+        fn_(channels, params, constants_.data(), paddedCount);
+    } else {
+        interpret(channels, params, paddedCount);
+    }
 }
 
 void Kernel::run(void* const* channels, const float* params, size_t paddedCount, ThreadPool* pool) const {

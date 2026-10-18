@@ -1737,6 +1737,81 @@ TEST(clipsRoundTripThroughTextAndOtherTextIsIgnored) {
     CHECK(clipsFromText(clipsToText({})).empty());
 }
 
+TEST(fusionTruncatesIntegerAttributesBetweenNodesLikeUnfusedCooking) {
+    // A value written into an int attribute is truncated at the store; a later node must see the truncated value whether or
+    // not the two nodes were fused into one kernel.
+    auto cook = [](bool fusion, bool jit, const std::string& second) {
+        Network net(1);
+        net.setFusionEnabled(fusion);
+        net.compiler().setJitEnabled(jit);
+        NodeId line = net.addNode("line");
+        net.node(line).setFloat("count", 6.0f);
+        net.node(line).setFloat("length", 5.0f);
+        NodeId ac = net.addNode("attribCreate");
+        net.node(ac).setString("name", "i");
+        net.node(ac).setString("type", "int");
+        NodeId w1 = net.addNode("wrangle");
+        net.node(w1).setString("code", "i = x * 0.7 - 1.5;");
+        NodeId w2 = net.addNode("wrangle");
+        net.node(w2).setString("code", second);
+        net.connect(line, ac);
+        net.connect(ac, w1);
+        net.connect(w1, w2);
+        net.setDisplayNode(w2);
+        GeometryHandle geo = net.cookDisplay();
+        std::vector<float> out(geo->y(), geo->y() + geo->pointCount());
+        return std::make_pair(out, net.fusedChainCount());
+    };
+    for (bool jit : {true, false}) {
+        const auto fused = cook(true, jit, "y = i;");
+        const auto unfused = cook(false, jit, "y = i;");
+        CHECK(fused.second == 1 && unfused.second == 0);
+        CHECK(fused.first == unfused.first);
+        // x = 0..5 gives 0.7 * x - 1.5 = -1.5 -0.8 -0.1 0.6 1.3 2.0, truncated toward zero: -1 0 0 0 1 2
+        CHECK(fused.first == std::vector<float>({-1, 0, 0, 0, 1, 2}));
+        const auto sum = cook(true, jit, "y = i * 2 + i;");
+        CHECK(sum.first == cook(false, jit, "y = i * 2 + i;").first);
+    }
+}
+
+TEST(programsThatDifferOnlyInAttributeNamesDoNotShareAKernel) {
+    // `x = x * 2;` and `y = y * 2;` have the same structure; a cached kernel binds channels by name, so they must not collide.
+    for (bool fusion : {true, false}) {
+        Network net(1);
+        net.setFusionEnabled(fusion);
+        NodeId line = net.addNode("line");
+        net.node(line).setFloat("count", 4.0f);
+        net.node(line).setFloat("length", 3.0f);
+        net.node(line).setFloat("y", 10.0f);
+        NodeId a = net.addNode("wrangle");
+        net.node(a).setString("code", "x = x * 2;");
+        NodeId b = net.addNode("wrangle");
+        net.node(b).setString("code", "y = y * 2;");
+        NodeId c = net.addNode("wrangle");
+        net.node(c).setString("code", "u = x * 2;");
+        net.connect(line, a);
+        net.connect(line, b);
+        net.connect(line, c);
+        NodeId m = net.addNode("merge");
+        net.connect(a, m, 0);
+        net.connect(b, m, 1);
+        net.connect(c, m, 2);
+        net.setDisplayNode(m);
+        GeometryHandle geo = net.cookDisplay();
+        CHECK(geo->pointCount() == 12);
+        const float* x = geo->x();
+        const float* y = geo->y();
+        const AttribArray* u = geo->findAttrib(AttribClass::point, "u");
+        CHECK(u != nullptr);
+        for (size_t i = 0; i < 4; ++i) {
+            CHECK(x[i] == 2.0f * static_cast<float>(i) && y[i] == 10.0f);       // first branch doubled x
+            CHECK(x[4 + i] == static_cast<float>(i) && y[4 + i] == 20.0f);       // second branch doubled y
+            CHECK(x[8 + i] == static_cast<float>(i) && u && u->at(8 + i) == 2.0f * static_cast<float>(i));  // third branch wrote u
+        }
+        CHECK(net.compiler().compileCount() == 3);
+    }
+}
+
 TEST(mergeTakesAnyNumberOfInputsAndKeepsOneSpare) {
     Network net(2);
     NodeId merge = net.addNode("merge");

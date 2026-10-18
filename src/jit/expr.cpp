@@ -5,14 +5,14 @@
 namespace jitnodes {
 
 int ExprGraph::intern(const ExprNode& n) {
-    for (size_t i = 0; i < nodes_.size(); ++i) {
-        const ExprNode& o = nodes_[i];
-        if (o.op == n.op && o.a == n.a && o.b == n.b && o.c == n.c && o.index == n.index &&
-            std::memcmp(&o.value, &n.value, sizeof(float)) == 0)
-            return static_cast<int>(i);
-    }
+    Key key{n.op, n.a, n.b, n.c, n.index, 0};
+    std::memcpy(&key.valueBits, &n.value, sizeof(float));
+    const auto found = index_.find(key);
+    if (found != index_.end()) return found->second;
     nodes_.push_back(n);
-    return static_cast<int>(nodes_.size() - 1);
+    const int position = static_cast<int>(nodes_.size() - 1);
+    index_.emplace(key, position);
+    return position;
 }
 
 int ExprGraph::constant(float v) {
@@ -84,7 +84,10 @@ std::string KernelSpec::signature() const {
     s += '|';
     for (const auto& [channel, expr] : stores) s += std::to_string(channel) + ':' + std::to_string(expr) + ',';
     for (AttribType t : channelTypes) s += static_cast<char>('0' + static_cast<int>(t));
-    s += '|' + std::to_string(channels.size()) + '|' + std::to_string(paramCount);
+    s += '|' + std::to_string(channels.size()) + '|' + std::to_string(paramCount) + '|';
+    // A compiled Kernel binds its channels by the names of the spec it was built from, so programs that differ only in the
+    // attribute names they use must not share one.
+    for (const std::string& name : channels) s += name + ',';
     return s;
 }
 

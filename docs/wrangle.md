@@ -106,7 +106,8 @@ Attribute *storage* types matter at the edges of a program:
 
 Because arithmetic is in float, integers are exact up to 2^24 = 16,777,216. Inside one program an assigned value keeps
 its full float precision and is only truncated when it is stored: after `n = n * 3.9; m = n;` with an int `n` of 7,
-`m` is 27.3 while `n` is stored as 27.
+`m` is 27.3 while `n` is stored as 27. Between *nodes* the truncation always happens, also when the nodes are fused into
+one kernel: a second wrangle reading `n` sees 27.
 
 There are no strings, no integer arithmetic (`/` is always float division), no arrays, no vectors-as-values, no
 user-defined variables. Temporary values are ordinary attributes: assign them, read them, and they remain in the
@@ -418,8 +419,9 @@ angle = x * 0.3;
 ```
 Each instance of the copied geometry is scaled and rotated by its target point's attributes.
 
-**16. Reusing one program for many nodes.** Kernels are cached by structure, constants and attribute types (not by
-names or parameter values), so a graph with a hundred wranglers that differ only in `a`-`d` compiles one kernel.
+**16. Reusing one program for many nodes.** Kernels are cached by structure, constants, attribute names and types, but
+not by parameter values, so a graph with a hundred wranglers that run the same code and differ only in `a`-`d`
+compiles one kernel. (Programs that touch different attributes, such as `x = x * 2;` and `y = y * 2;`, compile separately.)
 
 ## Parameter expressions
 
@@ -459,8 +461,8 @@ A wrangle costs almost nothing to set up and very little to run, because the lan
 tight loop:
 
 - **Compile cost:** about 0.08-0.17 ms per distinct kernel (measured: 0.08 ms for arithmetic, 0.13 ms for `sin + cos`,
-  0.17 ms for `exp + log + pow`), once. The kernel cache key is the program's structure, its constants and its
-  attribute types, **not** attribute names or the values of `a`-`d`; editing `a`-`d` never recompiles, editing a number
+  0.17 ms for `exp + log + pow`), once. The kernel cache key is the program's structure, its constants, and the names and types of the
+  attributes it touches, **not** the values of `a`-`d`; editing `a`-`d` never recompiles, editing a number or a name
   inside `code` does.
 - **Run cost** over 4,194,304 points on one thread with AVX2 (Ryzen 9 7900X, `kernelBench`, 2026-10-17):
 
