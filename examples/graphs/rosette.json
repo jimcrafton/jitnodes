@@ -1,0 +1,14 @@
+// A small ring copied onto the points of a larger one, with an attribute to colour by:
+//   jitnodesEditor examples/graphs/rosette.json --attribute "prim: copyIndex"
+{
+  format: "jitnodes",
+  version: 1,
+  display: 5,
+  nodes: [
+    { id: 1, type: "circle", name: "petal", floats: { count: 24, radius: 1.2 }, inputs: [] },
+    { id: 2, type: "circle", name: "centers", floats: { count: 8, radius: 3.5 }, inputs: [] },
+    { id: 3, type: "copyToPoints", name: "copy", floats: { scale: 1, angle: 0.4 }, inputs: [1, 2] },
+    { id: 4, type: "wrangle", name: "ripple", strings: { code: "x = x + sin(y * 3) * 0.08; y = y + cos(x * 3) * 0.08;" }, inputs: [3] },
+    { id: 5, type: "null", name: "out", inputs: [4] }
+  ]
+}

@@ -1,0 +1,24 @@
+// Overlapping soft discs on two rings; their alpha blends where they cross:
+//   jitnodesEditor examples/graphs/bokeh.json
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 5,
+  nodes: [
+    { id: 1, type: "circle", name: "outer", floats: { count: 36, radius: 3 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "outerGlow",
+      strings: { code: "radius = 0.6 + 0.3 * sin(x * 5 + y * 3 + a); alpha = 0.35; softness = 0.7; Cd.x = 0.5 + 0.5 * sin(x + a); Cd.y = 0.5 + 0.5 * sin(y + 2); Cd.z = 0.5 + 0.5 * cos(x + y);" },
+      expressions: { a: "time * 2" },
+      inputs: [1]
+    },
+    { id: 3, type: "circle", name: "inner", floats: { count: 18, radius: 1.6 }, inputs: [] },
+    {
+      id: 4, type: "wrangle", name: "innerGlow",
+      strings: { code: "radius = 0.8; alpha = 0.4; softness = 1; Cd.x = 1; Cd.y = 0.6 + 0.4 * sin(x * 2); Cd.z = 0.3;" },
+      inputs: [3]
+    },
+    { id: 5, type: "merge", name: "all", inputs: [2, 4] }
+  ]
+}

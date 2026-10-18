@@ -1,0 +1,55 @@
+// A sky with a sun, three drifting clouds and hills, drawn with viewport sprites (points with a radius):
+//   jitnodesEditor examples/graphs/clouds.json
+// Press play (or move the playhead) and the clouds drift.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 14,
+  nodes: [
+    { id: 1, type: "line", name: "skyPoints", floats: { count: 64, length: 1 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "sky",
+      strings: { code: "y = x * 10 - 1; radius = 0.13; aspect = 70; shape = 1; alpha = 1; Cd.x = lerp(0.8, 0.22, x); Cd.y = lerp(0.92, 0.48, x); Cd.z = lerp(1, 0.92, x); x = 6;" },
+      inputs: [1]
+    },
+    { id: 3, type: "line", name: "sunPoints", floats: { count: 2, length: 1 }, inputs: [] },
+    {
+      id: 4, type: "wrangle", name: "sun",
+      strings: { code: "radius = lerp(2.8, 0.7, x); alpha = lerp(0.4, 1, x); softness = lerp(1, 0.35, x); Cd.x = 1; Cd.y = 0.93; Cd.z = 0.65; x = 9.5; y = 6.4;" },
+      inputs: [3]
+    },
+    { id: 5, type: "line", name: "puffsA", floats: { count: 48, length: 1 }, inputs: [] },
+    {
+      id: 6, type: "wrangle", name: "cloudA",
+      strings: { code: "y = b + d * (0.35 + 0.5 * sin(x * 3.14159)) * (0.6 + 0.4 * sin(x * 37.7)); radius = d * (0.35 + 0.4 * sin(x * 3.14159)) * (0.75 + 0.25 * cos(x * 23.1)); alpha = 0.16; softness = 1; Cd.x = lerp(0.7, 1, clamp((y - b) / d, 0, 1)); Cd.y = lerp(0.76, 1, clamp((y - b) / d, 0, 1)); Cd.z = lerp(0.88, 1, clamp((y - b) / d, 0, 1)); x = a + (x - 0.5) * c;" },
+      floats: { b: 5.0, c: 5.5, d: 1.5 },
+      expressions: { a: "3 + time * 0.3" },
+      inputs: [5]
+    },
+    { id: 7, type: "line", name: "puffsB", floats: { count: 48, length: 1 }, inputs: [] },
+    {
+      id: 8, type: "wrangle", name: "cloudB",
+      strings: { code: "y = b + d * (0.35 + 0.5 * sin(x * 3.14159)) * (0.6 + 0.4 * sin(x * 29.3 + 1)); radius = d * (0.35 + 0.4 * sin(x * 3.14159)) * (0.75 + 0.25 * cos(x * 17.9)); alpha = 0.15; softness = 1; Cd.x = lerp(0.68, 1, clamp((y - b) / d, 0, 1)); Cd.y = lerp(0.74, 1, clamp((y - b) / d, 0, 1)); Cd.z = lerp(0.86, 1, clamp((y - b) / d, 0, 1)); x = a + (x - 0.5) * c;" },
+      floats: { b: 3.4, c: 4, d: 1.1 },
+      expressions: { a: "8.5 + time * 0.2" },
+      inputs: [7]
+    },
+    { id: 9, type: "line", name: "puffsC", floats: { count: 48, length: 1 }, inputs: [] },
+    {
+      id: 10, type: "wrangle", name: "cloudC",
+      strings: { code: "y = b + d * (0.35 + 0.5 * sin(x * 3.14159)) * (0.6 + 0.4 * sin(x * 41.1 + 2)); radius = d * (0.35 + 0.4 * sin(x * 3.14159)) * (0.75 + 0.25 * cos(x * 31.7)); alpha = 0.1; softness = 1; Cd.x = lerp(0.85, 1, clamp((y - b) / d, 0, 1)); Cd.y = lerp(0.88, 1, clamp((y - b) / d, 0, 1)); Cd.z = 1; x = a + (x - 0.5) * c;" },
+      floats: { b: 2.0, c: 6, d: 0.9 },
+      expressions: { a: "5.5 + time * 0.1" },
+      inputs: [9]
+    },
+    { id: 11, type: "line", name: "hillPoints", floats: { count: 56, length: 14 }, inputs: [] },
+    {
+      id: 12, type: "wrangle", name: "hills",
+      strings: { code: "y = 1.0 + 0.5 * sin(x * 0.7) + 0.25 * sin(x * 1.9); radius = 1.2; alpha = 1; softness = 0.1; Cd.x = 0.14; Cd.y = lerp(0.38, 0.62, clamp(y, 0, 1)); Cd.z = 0.2; x = x - 1;" },
+      inputs: [11]
+    },
+    { id: 13, type: "merge", name: "scene", inputs: [2, 4, 6, 8, 10, 12, 0] },
+    { id: 14, type: "null", name: "out", inputs: [13] }
+  ]
+}
