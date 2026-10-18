@@ -223,6 +223,16 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
   the display node, fusion enabled) into one task over the leaf inputs, so a balanced or left-deep tree costs one
   concat. The folded merge nodes are not cooked or cached (like interior nodes of a fused chain; profile note
   `fused into <tail>`). Leaf order equals the tree's left-to-right order, so results are identical.
+- `Network::renameNode` validates the name (identifier, unique) and rewrites `old.param` references in expressions of
+  the same network; `uniqueName` picks the smallest free `<letters><n>`. `copyNode`/`pasteNode` (serialize.h) carry a node
+  as its JSON text plus the names of its inputs, so a paste reconnects by name and works across graphs. `pasteNodes`
+  pastes a set: wires and `old.param` expression references between the copied nodes follow their new names
+  (`Network::rewriteReferences` applies all renames at once), and a failure removes the nodes already created.
+- The editor selection is a set (`EditorModel::selection`); `selected()` is the node only when exactly one is selected.
+  `GraphController` drags the whole selection, shift/ctrl-click toggles, and an empty-space drag draws a selection box.
+- `merge` takes any number of inputs (`Node::hasVariableInputs`): the network keeps exactly one unconnected input after
+  the last connected one (at least two), `connect` may name any index, unconnected inputs are skipped when cooking, and a
+  merge with nothing connected is an error. Files list every slot, with `0` for an empty one; undo restores by slot.
 - Cancellation: `Network::cancel()` (any thread) makes the cook in progress throw `CookCancelled` before it starts its
   next task; finished nodes keep their results and unfinished ones stay dirty. Subnets check the root network's flag.
   A cancel while no cook is running is ignored. Granularity is one node: a running kernel or node is not interrupted.

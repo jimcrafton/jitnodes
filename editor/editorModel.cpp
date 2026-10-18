@@ -63,7 +63,7 @@ void EditorModel::newGraph() {
     net_.clear();
     path_.clear();
     subnetPath_.clear();
-    selected_ = invalidNodeId;
+    selection_.clear();
     resetHistory();
 }
 
@@ -72,7 +72,7 @@ void EditorModel::open(const std::string& path) {
     placeNewNodes(net_);
     path_ = path;
     subnetPath_.clear();
-    selected_ = invalidNodeId;
+    selection_.clear();
     resetHistory();
 }
 
@@ -84,9 +84,35 @@ void EditorModel::save(const std::string& path) {
 
 bool EditorModel::modified() const { return !sameGraph(snapshotNetwork(net_), saved_); }
 
-NodeId EditorModel::selected() const {
+std::vector<NodeId> EditorModel::selection() const {
+    std::vector<NodeId> out;
     const auto ids = current().nodeIds();
-    return std::find(ids.begin(), ids.end(), selected_) != ids.end() ? selected_ : invalidNodeId;
+    for (NodeId id : selection_)
+        if (std::find(ids.begin(), ids.end(), id) != ids.end()) out.push_back(id);
+    return out;
+}
+
+NodeId EditorModel::selected() const {
+    const auto ids = selection();
+    return ids.size() == 1 ? ids.front() : invalidNodeId;
+}
+
+bool EditorModel::isSelected(NodeId id) const { return selection_.count(id) != 0; }
+
+void EditorModel::select(NodeId id) {
+    selection_.clear();
+    if (id != invalidNodeId) selection_.insert(id);
+}
+
+void EditorModel::setSelection(const std::vector<NodeId>& ids) { selection_ = std::set<NodeId>(ids.begin(), ids.end()); }
+
+void EditorModel::toggleSelected(NodeId id) {
+    if (!selection_.erase(id)) selection_.insert(id);
+}
+
+void EditorModel::selectAll() {
+    const auto ids = current().nodeIds();
+    selection_ = std::set<NodeId>(ids.begin(), ids.end());
 }
 
 NodeId EditorModel::addNode(const std::string& typeName) {
@@ -94,7 +120,7 @@ NodeId EditorModel::addNode(const std::string& typeName) {
     const NodeId id = current().addNode(typeName);
     if (previous != invalidNodeId && current().node(id).inputCount() > 0) current().connect(previous, id, 0);
     current().setDisplayNode(id);
-    selected_ = id;
+    select(id);
     placeNewNodes(current());
     history_->commit("add " + typeName);
     return id;
@@ -103,8 +129,69 @@ NodeId EditorModel::addNode(const std::string& typeName) {
 void EditorModel::removeNode(NodeId id) {
     const std::string name = current().node(id).name();
     current().removeNode(id);
-    if (selected_ == id) selected_ = invalidNodeId;
+    selection_.erase(id);
     history_->commit("delete " + name);
+}
+
+bool EditorModel::removeSelected() {
+    const std::vector<NodeId> ids = selection();
+    if (ids.empty()) return false;
+    const std::string label = ids.size() == 1 ? "delete " + current().node(ids.front()).name() : "delete " + std::to_string(ids.size()) + " nodes";
+    for (NodeId id : ids) current().removeNode(id);
+    selection_.clear();
+    history_->commit(label);
+    return true;
+}
+
+std::string EditorModel::renameNode(NodeId id, const std::string& name) {
+    const std::string old = current().node(id).name();
+    if (old == name) return {};
+    try {
+        current().renameNode(id, name);
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    history_->commit("rename " + old);
+    return {};
+}
+
+bool EditorModel::copySelected() {
+    const std::vector<NodeId> ids = selection();
+    if (ids.empty()) return false;
+    clip_.clear();
+    for (NodeId id : ids) clip_.push_back(copyNode(current(), id));
+    pasteCount_ = 0;
+    return true;
+}
+
+bool EditorModel::cutSelected() {
+    if (!copySelected()) return false;
+    const std::vector<NodeId> ids = selection();
+    const std::string label = ids.size() == 1 ? "cut " + current().node(ids.front()).name() : "cut " + std::to_string(ids.size()) + " nodes";
+    for (NodeId id : ids) current().removeNode(id);
+    selection_.clear();
+    history_->commit(label);
+    return true;
+}
+
+std::string EditorModel::paste() {
+    if (clip_.empty()) return "nothing to paste";
+    std::vector<NodeId> ids;
+    try {
+        ids = pasteNodes(current(), clip_);
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    ++pasteCount_;
+    const float shift = 30.0f * static_cast<float>(pasteCount_);
+    for (NodeId id : ids) {
+        Node& n = current().node(id);
+        if (n.hasPosition()) n.setPosition(n.posX() + shift, n.posY() + shift);
+    }
+    setSelection(ids);
+    placeNewNodes(current());
+    history_->commit(ids.size() == 1 ? "paste " + current().node(ids.front()).name() : "paste " + std::to_string(ids.size()) + " nodes");
+    return {};
 }
 
 void EditorModel::setDisplay(NodeId id) {
@@ -290,7 +377,7 @@ void EditorModel::validatePath() {
     }
     if (keep != subnetPath_.size()) {
         subnetPath_.resize(keep);
-        selected_ = invalidNodeId;
+        selection_.clear();
     }
 }
 
@@ -308,7 +395,7 @@ std::string EditorModel::enter(NodeId id) {
     if (!n.childNetwork()) return n.name() + " is not a subnet";
     if (n.isAssetInstance()) return n.name() + " is an asset instance; its contents come from the asset definition";
     subnetPath_.push_back(id);
-    selected_ = invalidNodeId;
+    selection_.clear();
     return {};
 }
 
@@ -316,7 +403,7 @@ bool EditorModel::up() {
     if (subnetPath_.empty()) return false;
     const NodeId left = subnetPath_.back();
     subnetPath_.pop_back();
-    selected_ = left;
+    select(left);
     return true;
 }
 

@@ -73,6 +73,22 @@ struct RestoreStats {
     size_t rewired = 0;
 };
 
+// A node copied out of a network (parameters, expressions, keyframes, spare parameters and a subnet's contents) for
+// pasting into the same or another network. The inputs are kept as the names of the nodes they came from.
+struct NodeClip {
+    std::string type;
+    std::string name;
+    std::shared_ptr<const std::string> text;
+    std::vector<std::string> inputNames;  // empty string for an unconnected input
+};
+
+NodeClip copyNode(const Network& net, NodeId id);
+// Adds copies with fresh ids and unique names (a clip's name when free). Inputs coming from another clip of the same call
+// connect to its copy (and expressions that refer to it follow its new name); other inputs connect to the node of that
+// name in net when there is one. Throws std::runtime_error for an unknown type or corrupt clip, leaving net unchanged.
+std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips);
+inline NodeId pasteNode(Network& net, const NodeClip& clip) { return pasteNodes(net, {clip}).front(); }
+
 GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous = nullptr);
 bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b);
 // Makes net match target, starting from `current` (a snapshot of net's present state; taken when null).

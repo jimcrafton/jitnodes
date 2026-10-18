@@ -1,6 +1,7 @@
 #include "jitnodes/graph/network.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -87,14 +88,28 @@ std::vector<NodeId> Network::nodeIds() const {
     return ids;
 }
 
+void Network::fitInputs(Slot& s) {
+    if (!s.node->hasVariableInputs()) return;
+    size_t wanted = 2;
+    for (size_t i = 0; i < s.inputs.size(); ++i)
+        if (s.inputs[i] != invalidNodeId) wanted = std::max(wanted, i + 2);
+    s.inputs.resize(wanted, invalidNodeId);
+    s.node->setInputCount(static_cast<int>(wanted));
+}
+
 void Network::removeNode(NodeId id) {
     slot(id);
     for (auto& [otherId, s] : slots_) {
+        bool changed = false;
         for (size_t i = 0; i < s.inputs.size(); ++i) {
             if (s.inputs[i] == id) {
                 s.inputs[i] = invalidNodeId;
-                markDirty(otherId);
+                changed = true;
             }
+        }
+        if (changed) {
+            fitInputs(s);
+            markDirty(otherId);
         }
     }
     slots_.erase(id);
@@ -115,8 +130,10 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
     fresh->network_ = this;
     fresh->name_ = s.node->name_;
     if (s.node->hasPosition() && !fresh->hasPosition()) fresh->setPosition(s.node->posX(), s.node->posY());
+    if (fresh->hasVariableInputs()) fresh->setInputCount(static_cast<int>(std::max<size_t>(s.inputs.size(), 2)));
     s.inputs.resize(static_cast<size_t>(fresh->inputCount()), invalidNodeId);
     s.node = std::move(fresh);
+    fitInputs(s);
     s.node->onAttached(*this);
     markDirty(id);
 }
@@ -130,6 +147,68 @@ NodeId Network::findNode(const std::string& name) const {
     return invalidNodeId;
 }
 
+std::string Network::uniqueName(const std::string& base) const {
+    if (!base.empty() && findNode(base) == invalidNodeId) return base;
+    size_t letters = base.size();
+    while (letters > 0 && std::isdigit(static_cast<unsigned char>(base[letters - 1]))) --letters;
+    const std::string stem = letters == 0 ? std::string("node") : base.substr(0, letters);
+    for (size_t n = 1;; ++n) {
+        const std::string candidate = stem + std::to_string(n);
+        if (findNode(candidate) == invalidNodeId) return candidate;
+    }
+}
+
+namespace {
+
+bool identifierChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+// Replaces the node part of `oldName.param` symbols; other identifiers and numbers are left alone.
+std::string renameReferences(const std::string& text, const std::map<std::string, std::string>& renames) {
+    std::string out;
+    size_t i = 0;
+    while (i < text.size()) {
+        const char c = text[i];
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
+            while (i < text.size() && (identifierChar(text[i]) || text[i] == '.')) out += text[i++];
+        } else if (identifierChar(c)) {
+            size_t end = i;
+            while (end < text.size() && identifierChar(text[end])) ++end;
+            const std::string word = text.substr(i, end - i);
+            const auto it = renames.find(word);
+            out += it != renames.end() && end < text.size() && text[end] == '.' ? it->second : word;
+            i = end;
+        } else {
+            out += text[i++];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+void Network::rewriteReferences(NodeId id, const std::map<std::string, std::string>& renames) {
+    Node& n = *slot(id).node;
+    for (const std::string& param : n.floatNames()) {
+        const std::string& expression = n.expression(param);
+        if (expression.empty()) continue;
+        const std::string rewritten = renameReferences(expression, renames);
+        if (rewritten != expression) n.setExpression(param, rewritten);
+    }
+}
+
+void Network::renameNode(NodeId id, const std::string& newName) {
+    Node& target = *slot(id).node;
+    if (newName == target.name_) return;
+    const bool valid = !newName.empty() && !std::isdigit(static_cast<unsigned char>(newName[0])) &&
+                       std::all_of(newName.begin(), newName.end(), identifierChar);
+    if (!valid) throw std::runtime_error("a node name uses letters, digits and underscores and does not start with a digit");
+    if (findNode(newName) != invalidNodeId) throw std::runtime_error("a node named '" + newName + "' already exists");
+    const std::map<std::string, std::string> renames{{target.name_, newName}};
+    for (auto& entry : slots_) rewriteReferences(entry.first, renames);
+    target.name_ = newName;
+    for (auto& entry : slots_) markDirty(entry.first);
+}
+
 bool Network::reaches(NodeId from, NodeId target) const {
     if (from == target) return true;
     for (NodeId in : slot(from).inputs)
@@ -140,10 +219,12 @@ bool Network::reaches(NodeId from, NodeId target) const {
 void Network::connect(NodeId from, NodeId to, int inputIndex) {
     slot(from);
     Slot& dst = slot(to);
-    if (inputIndex < 0 || static_cast<size_t>(inputIndex) >= dst.inputs.size())
+    if (inputIndex < 0 || (static_cast<size_t>(inputIndex) >= dst.inputs.size() && !dst.node->hasVariableInputs()))
         throw std::runtime_error("input index out of range on " + dst.node->name());
     if (reaches(from, to)) throw std::runtime_error("connection would create a cycle");
+    if (static_cast<size_t>(inputIndex) >= dst.inputs.size()) dst.inputs.resize(static_cast<size_t>(inputIndex) + 1, invalidNodeId);
     dst.inputs[static_cast<size_t>(inputIndex)] = from;
+    fitInputs(dst);
     markDirty(to);
 }
 
@@ -152,11 +233,13 @@ void Network::disconnect(NodeId to, int inputIndex) {
     if (inputIndex < 0 || static_cast<size_t>(inputIndex) >= dst.inputs.size())
         throw std::runtime_error("input index out of range on " + dst.node->name());
     dst.inputs[static_cast<size_t>(inputIndex)] = invalidNodeId;
+    fitInputs(dst);
     markDirty(to);
 }
 
 NodeId Network::inputOf(NodeId to, int inputIndex) const {
     const Slot& s = slot(to);
+    if (s.node->hasVariableInputs() && inputIndex >= 0 && static_cast<size_t>(inputIndex) >= s.inputs.size()) return invalidNodeId;
     return s.inputs.at(static_cast<size_t>(inputIndex));
 }
 
@@ -305,7 +388,7 @@ void Network::collectMergeInputs(NodeId id, CookTask& task) {
     const Slot& s = slot(id);
     for (size_t i = 0; i < s.inputs.size(); ++i) {
         const NodeId up = s.inputs[i];
-        if (up == invalidNodeId) throw std::runtime_error(node(id).name() + ": input " + std::to_string(i) + " is not connected");
+        if (up == invalidNodeId) continue;
         const Node& upNode = node(up);
         const bool absorbable = upNode.isMerge() && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
         if (absorbable) {
@@ -340,13 +423,17 @@ void Network::planCook(NodeId id, std::map<NodeId, CookTask>& tasks) {
         task.inputs.push_back(baseId);
     } else if (fusionEnabled() && n.isMerge()) {
         collectMergeInputs(id, task);
+        if (task.inputs.empty()) throw std::runtime_error(n.name() + ": no input is connected");
     } else {
         const Slot& s = slot(id);
         for (size_t i = 0; i < s.inputs.size(); ++i) {
-            if (s.inputs[i] == invalidNodeId)
+            if (s.inputs[i] == invalidNodeId) {
+                if (n.hasVariableInputs()) continue;
                 throw std::runtime_error(n.name() + ": input " + std::to_string(i) + " is not connected");
+            }
             task.inputs.push_back(s.inputs[i]);
         }
+        if (task.inputs.empty() && n.hasVariableInputs()) throw std::runtime_error(n.name() + ": no input is connected");
     }
 
     for (NodeId in : task.inputs) {

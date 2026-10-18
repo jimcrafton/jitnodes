@@ -53,11 +53,12 @@ std::optional<std::pair<NodeId, int>> GraphController::inputPortAt(Vec screen) c
     return std::nullopt;
 }
 
-bool GraphController::mouseDown(Vec screen, unsigned buttons) {
+bool GraphController::mouseDown(Vec screen, unsigned buttons, unsigned modifiers) {
     message_.clear();
     last_ = screen;
     moved_ = false;
     detached_ = false;
+    collapseOnRelease_ = false;
     if (buttons & (middleButton | rightButton)) {
         mode_ = Mode::pan;
         return false;
@@ -81,19 +82,32 @@ bool GraphController::mouseDown(Vec screen, unsigned buttons) {
         return true;
     }
     if (const auto node = nodeAt(screen)) {
-        model_.select(*node);
-        const Node& n = net.node(*node);
-        const Vec w = toWorld(screen);
-        grabOffset_ = {w.x - n.posX(), w.y - n.posY()};
-        mode_ = Mode::move;
+        if (modifiers & (shiftKey | ctrlKey)) {
+            model_.toggleSelected(*node);
+        } else if (model_.isSelected(*node)) {
+            collapseOnRelease_ = true;
+        } else {
+            model_.select(*node);
+        }
+        grabbed_.clear();
+        if (model_.isSelected(*node)) {
+            for (NodeId id : model_.selection()) grabbed_[id] = {net.node(id).posX(), net.node(id).posY()};
+            grabWorld_ = toWorld(screen);
+            mode_ = Mode::move;
+        } else {
+            mode_ = Mode::idle;
+        }
         notify(false);
         return true;
     }
-    const bool hadSelection = model_.selected() != invalidNodeId;
-    model_.select(invalidNodeId);
-    mode_ = Mode::pan;
-    if (hadSelection) notify(false);
-    return hadSelection;
+    const bool additive = (modifiers & (shiftKey | ctrlKey)) != 0;
+    const bool hadSelection = !model_.selection().empty();
+    baseSelection_ = additive ? model_.selection() : std::vector<NodeId>{};
+    if (!additive) model_.select(invalidNodeId);
+    marquee_ = Box{screen, screen};
+    mode_ = Mode::marquee;
+    if (hadSelection && !additive) notify(false);
+    return true;
 }
 
 bool GraphController::mouseMove(Vec screen) {
@@ -105,11 +119,26 @@ bool GraphController::mouseMove(Vec screen) {
             pan_.y += delta.y;
             return true;
         case Mode::move: {
-            const NodeId id = model_.selected();
-            if (id == invalidNodeId) return false;
             const Vec w = toWorld(screen);
-            model_.moveNode(id, w.x - grabOffset_.x, w.y - grabOffset_.y);
+            for (const auto& [id, start] : grabbed_) model_.moveNode(id, start.x + w.x - grabWorld_.x, start.y + w.y - grabWorld_.y);
             moved_ = true;
+            return true;
+        }
+        case Mode::marquee: {
+            marquee_->to = screen;
+            const Vec a = toWorld(marquee_->from), b = toWorld(screen);
+            const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x), y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
+            std::vector<NodeId> chosen = baseSelection_;
+            const Network& net = model_.network();
+            for (NodeId id : net.nodeIds()) {
+                const Node& n = net.node(id);
+                const bool touches = n.posX() <= x1 && n.posX() + nodeWidth >= x0 && n.posY() <= y1 && n.posY() + nodeHeight >= y0;
+                if (touches && std::find(chosen.begin(), chosen.end(), id) == chosen.end()) chosen.push_back(id);
+            }
+            if (chosen != model_.selection()) {
+                model_.setSelection(chosen);
+                notify(false);
+            }
             return true;
         }
         case Mode::wire:
@@ -129,9 +158,18 @@ bool GraphController::mouseUp(Vec screen) {
     mode_ = Mode::idle;
     if (mode == Mode::move) {
         if (moved_) {
-            model_.commit("move node");
+            model_.commit(grabbed_.size() > 1 ? "move nodes" : "move node");
             notify(true);
+        } else if (collapseOnRelease_) {
+            const auto node = nodeAt(screen);
+            if (node) model_.select(*node);
+            notify(false);
         }
+        grabbed_.clear();
+        return true;
+    }
+    if (mode == Mode::marquee) {
+        marquee_.reset();
         return true;
     }
     if (mode != Mode::wire || !wire_) return mode == Mode::pan;
@@ -210,11 +248,36 @@ bool GraphController::wheel(Vec screen, float delta) {
 }
 
 bool GraphController::deleteSelected() {
-    const NodeId id = model_.selected();
-    if (id == invalidNodeId) return false;
-    model_.removeNode(id);
+    if (!model_.removeSelected()) return false;
     hovered_ = invalidNodeId;
     notify(true);
+    return true;
+}
+
+bool GraphController::selectAll() {
+    model_.selectAll();
+    notify(false);
+    return true;
+}
+
+bool GraphController::copySelected() {
+    message_.clear();
+    if (!model_.copySelected()) return false;
+    notify(false);
+    return true;
+}
+
+bool GraphController::cutSelected() {
+    message_.clear();
+    if (!model_.cutSelected()) return false;
+    hovered_ = invalidNodeId;
+    notify(true);
+    return true;
+}
+
+bool GraphController::paste() {
+    message_ = model_.paste();
+    notify(message_.empty());
     return true;
 }
 

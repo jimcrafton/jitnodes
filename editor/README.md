@@ -97,6 +97,31 @@ the geometry (the first geometry after New or Open is fitted automatically). The
 is shown in the corner; the header shows the point and primitive counts. Geometry over 40,000 points is drawn with every
 n-th point.
 
+Renaming and the clipboard: the Name field in the parameter panel (Enter or Rename) renames the selected node; names are
+identifiers, unique in the network, and expressions that refer to `oldName.param` are rewritten. Copy, Cut and Paste (the
+buttons above the graph, or Ctrl+C, Ctrl+X, Ctrl+V with the graph focused) work on the selected node: parameters,
+expressions, keyframes, spare parameters and a subnet's contents. A paste gets a unique name (`wrangle1`, `wrangle3`, ...),
+is offset 30 px further for every paste of the same copy, reconnects its inputs to nodes of the same names in the current
+network, is selected, and leaves the display node alone. The clipboard lives in the editor (not the system clipboard), so
+it survives New and Open.
+
+Selection: click selects a node, shift- or ctrl-click toggles it, and dragging on empty space draws a selection box (with
+shift or ctrl the nodes it touches are added to the current selection); Ctrl+A selects everything in the current network.
+Dragging any selected node moves the whole selection as one undo step, and Delete, Copy, Cut and Paste work on all selected
+nodes. The parameter panel, Name field, Display node and Enter (go into a subnet) work only while exactly one node is
+selected; the panel title says "N nodes selected" otherwise. Panning is now middle or right button drag (a left drag on empty
+space is the selection box). Pasting several nodes keeps the wires between them (the copies are wired to each other), points
+expressions that refer to a copied node at its copy, and reconnects wires from outside the copied set to nodes of the same
+names.
+
+Sprites: when the display geometry has a point attribute `radius` and no colour attribute is chosen, each point is drawn
+as an alpha-blended sprite in index order. Optional point attributes: `Cd.x`, `Cd.y`, `Cd.z` (colour 0 to 1, default
+white), `alpha` (default 1), `softness` (0 hard disc, 1 radial gradient from `alpha` at the centre to transparent at the
+edge; default 1), `aspect` (width over height; 0 or less means 1) and `shape` (0.5 or more draws a box and ignores
+`softness`). Missing attributes after a merge read as 0, so set what you need explicitly. `examples/graphs/clouds.json`
+(sky gradient from stacked boxes, sun glow, drifting clouds, hills) and `bokeh.json` use it; `rosette.json` is a plain
+copyToPoints example.
+
 Colour by attribute: the Color by list under the viewport title holds the point attributes of the display geometry (including
 `x` and `y`), the length of every vector attribute (`N (length)` for `N.x`, `N.y`, optionally `N.z`) and primitive
 attributes (`prim: name`). Choosing one colours the lines (each segment by the average of its end points; a primitive

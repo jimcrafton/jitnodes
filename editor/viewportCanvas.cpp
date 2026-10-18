@@ -96,7 +96,8 @@ void ViewportCanvas::drawSprites(BLContext& ctx) {
         const float soft = std::clamp(channel(softness, i, 1.0f), 0.0f, 1.0f);
         ctx.save();
         ctx.translate(s.x, s.y);
-        ctx.scale(std::max(channel(aspect, i, 1.0f), 0.01f), 1.0f);
+        const float stretch = channel(aspect, i, 1.0f);
+        ctx.scale(stretch > 0.0f ? stretch : 1.0f, 1.0f);
         if (channel(shape, i, 0.0f) >= 0.5f) {
             ctx.set_fill_style(BLRgba32(cr, cg, cb, byte(a)));
             ctx.fill_rect(BLRect(-r, -r, 2.0 * r, 2.0 * r));
@@ -108,7 +109,9 @@ void ViewportCanvas::drawSprites(BLContext& ctx) {
             BLGradient gradient(BLRadialGradientValues(0.0, 0.0, 0.0, 0.0, r));
             gradient.add_stop(0.0, BLRgba32(cr, cg, cb, byte(a)));
             if (core > 0.01f) gradient.add_stop(core, BLRgba32(cr, cg, cb, byte(a)));
-            gradient.add_stop(core + soft * 0.5f, BLRgba32(cr, cg, cb, byte(a * 0.45f)));
+            gradient.add_stop(core + soft * 0.25f, BLRgba32(cr, cg, cb, byte(a * 0.78f)));
+            gradient.add_stop(core + soft * 0.5f, BLRgba32(cr, cg, cb, byte(a * 0.4f)));
+            gradient.add_stop(core + soft * 0.75f, BLRgba32(cr, cg, cb, byte(a * 0.12f)));
             gradient.add_stop(1.0, BLRgba32(cr, cg, cb, 0));
             ctx.set_fill_style(gradient);
             ctx.fill_circle(0.0, 0.0, r);

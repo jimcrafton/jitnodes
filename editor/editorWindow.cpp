@@ -99,6 +99,15 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     for (const char* name : {"graphPath"}) view<newui::Label>(name);
     view<newui::TextField>("spareName");
     onClick("upButton", [this] { controller_->up(); });
+    onClick("copyButton", [this] { controller_->copySelected(); });
+    onClick("cutButton", [this] { controller_->cutSelected(); });
+    onClick("pasteButton", [this] { controller_->paste(); });
+    newui::TextField& nameField = view<newui::TextField>("nodeName");
+    nameField.onReturnPressed.add(std::function<newui::SyncReturn(newui::TextField&)>([this](newui::TextField&) {
+        guarded([this] { renameSelected(); });
+        return newui::SyncReturn::Handled;
+    }));
+    onClick("renameButton", [this] { renameSelected(); });
     onClick("addSpareButton", [this] {
         newui::TextField& field = view<newui::TextField>("spareName");
         const NodeId id = model_.selected();
@@ -289,12 +298,19 @@ void EditorWindow::refresh() {
         spare->setEnabled(sel != invalidNodeId && model_.canEnter(sel));
     }
     const NodeId selected = model_.selected();
-    if (selected != invalidNodeId) {
+    const size_t selectedCount = model_.selection().size();
+    if (selectedCount > 1) {
+        setText("nodeTitle", std::to_string(selectedCount) + " nodes selected");
+        setText("nodeType", "");
+    } else if (selected != invalidNodeId) {
         const Node& n = model_.network().node(selected);
         setText("nodeTitle", n.name());
+        if (auto* field = dynamic_cast<newui::TextField*>(root_.findView("nodeName")); field && !field->isFocused() && field->text() != newui::utf8ToWide(n.name()))
+            field->setText(newui::utf8ToWide(n.name()));
         setText("nodeType", n.typeName() + ", cooked " + std::to_string(n.cookCount()) + "x");
     } else {
         setText("nodeTitle", "no selection");
+        if (auto* field = dynamic_cast<newui::TextField*>(root_.findView("nodeName")); field && !field->isFocused() && !field->text().empty()) field->setText(L"");
         setText("nodeType", "");
     }
 
@@ -302,6 +318,11 @@ void EditorWindow::refresh() {
     auto* display = dynamic_cast<newui::Toggle*>(root_.findView("displayToggle"));
     display->setEnabled(selected != invalidNodeId);
     display->setChecked(selected != invalidNodeId && model_.network().displayNode() == selected);
+    if (controller_ && message_.empty()) message_ = controller_->message();
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("copyButton"))) b->setEnabled(selectedCount > 0);
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("cutButton"))) b->setEnabled(selectedCount > 0);
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("pasteButton"))) b->setEnabled(model_.canPaste());
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("renameButton"))) b->setEnabled(selected != invalidNodeId);
     setText("paramError", message_.empty() ? std::string("\u00b7") : message_);
 
     const CookResult& cook = model_.lastCook();
@@ -323,6 +344,16 @@ void EditorWindow::refresh() {
     }
     frame_.setTitle("jitnodes Editor - " + baseName(model_.path()) + (model_.modified() ? "*" : ""));
     updatingUi_ = false;
+}
+
+void EditorWindow::renameSelected() {
+    const NodeId id = model_.selected();
+    if (id == invalidNodeId) {
+        message_ = "select a node first";
+        return;
+    }
+    message_ = model_.renameNode(id, newui::wideToUtf8(view<newui::TextField>("nodeName").text()));
+    edited();
 }
 
 void EditorWindow::editKeys(const std::string& name) {

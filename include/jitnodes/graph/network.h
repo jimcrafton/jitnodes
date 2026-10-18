@@ -118,6 +118,14 @@ public:
     Node& node(NodeId id);
     const Node& node(NodeId id) const;
     NodeId findNode(const std::string& name) const;
+    // A name no node of this network has: `base` itself, or its letters followed by the smallest free number.
+    std::string uniqueName(const std::string& base) const;
+    // Renames a node. Names are identifiers (letters, digits, underscore; not starting with a digit) and unique in the
+    // network. Expressions of this network that refer to `oldName.param` are rewritten; throws std::runtime_error otherwise.
+    void renameNode(NodeId id, const std::string& newName);
+    // Rewrites the `old.param` expression references of one node according to `renames` (old name to new name, applied
+    // together so that swapping names works).
+    void rewriteReferences(NodeId id, const std::map<std::string, std::string>& renames);
 
     // Throws if the connection would create a cycle or the input index is out of range.
     void connect(NodeId from, NodeId to, int inputIndex = 0);
@@ -201,6 +209,7 @@ private:
     Slot& slot(NodeId id);
     const Slot& slot(NodeId id) const;
     bool reaches(NodeId from, NodeId target) const;
+    void fitInputs(Slot& s);
     size_t consumerCount(NodeId id) const;
     struct CookTask {
         NodeId tail = invalidNodeId;

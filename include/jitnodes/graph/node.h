@@ -108,6 +108,10 @@ public:
     // Merge nodes accept any number of inputs in cook, so the network flattens trees of them into one task.
     virtual bool isMerge() const { return false; }
 
+    // Nodes with variable inputs start with inputCount() inputs and the network keeps exactly one unconnected input after
+    // the last connected one; unconnected inputs are skipped when cooking.
+    virtual bool hasVariableInputs() const { return false; }
+
     // Container nodes (subnets, assets) own a child network.
     virtual Network* childNetwork() { return nullptr; }
     virtual const Network* childNetwork() const { return nullptr; }
@@ -121,6 +125,8 @@ protected:
 
 private:
     friend class Network;
+
+    void setInputCount(int count) { inputCount_ = count; }
 
     struct FloatParam {
         float value = 0.0f;

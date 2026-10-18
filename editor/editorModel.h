@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -81,11 +82,31 @@ public:
     // Adds a node of the given type, wires the selected node into its first input, makes it the display node
     // and selects it. Throws std::runtime_error for an unknown type (the graph is left unchanged).
     NodeId addNode(const std::string& typeName);
+    // The selection is a set of nodes of the current network. selected() is the node when exactly one is selected (what
+    // the parameter panel, rename and subnet entry work on) and invalidNodeId otherwise. Nodes that no longer exist drop out.
     NodeId selected() const;
-    void select(NodeId id) { selected_ = id; }
+    std::vector<NodeId> selection() const;
+    bool isSelected(NodeId id) const;
+    void select(NodeId id);  // only this node (invalidNodeId clears the selection)
+    void setSelection(const std::vector<NodeId>& ids);
+    void toggleSelected(NodeId id);
+    void selectAll();
     // Positions are layout hints kept on the nodes; moveNode does not commit (the caller commits when a drag ends).
     void moveNode(NodeId id, float x, float y) { current().node(id).setPosition(x, y); }
     void removeNode(NodeId id);
+    // Deletes every selected node as one undo step; false when nothing is selected.
+    bool removeSelected();
+    // Renames a node (see Network::renameNode; expressions that refer to it follow). One undo step; returns an error
+    // message and changes nothing when the name is not acceptable.
+    std::string renameNode(NodeId id, const std::string& name);
+    // Clipboard of the selected nodes. Copy and cut take them (false when nothing is selected); paste adds copies to the
+    // current network, offset a little further for every paste of the same clip, selects them and leaves the display node
+    // alone. Wires between the copied nodes are kept, other inputs are reconnected to nodes of the same names. Returns an
+    // error message.
+    bool copySelected();
+    bool cutSelected();
+    std::string paste();
+    bool canPaste() const { return !clip_.empty(); }
     void setDisplay(NodeId id);
     void ensurePositions();
 
@@ -148,7 +169,9 @@ private:
     GraphSnapshot saved_;
     std::string path_;
     std::vector<NodeId> subnetPath_;
-    NodeId selected_ = invalidNodeId;
+    std::set<NodeId> selection_;
+    std::vector<NodeClip> clip_;
+    int pasteCount_ = 0;
     CookResult lastCook_;
     GeometryHandle geometry_;
     double duration_ = 5.0;

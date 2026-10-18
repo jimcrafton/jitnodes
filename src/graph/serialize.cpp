@@ -298,7 +298,7 @@ void loadNode(Network& net, const json5::value& nv, size_t index, std::vector<st
             inputs = std::move(upgrade.inputs);
             inputs.resize(static_cast<size_t>(n.inputCount()), invalidNodeId);
         } else {
-            if (inputs.size() != static_cast<size_t>(n.inputCount())) fail(inputsWhere + " must be an array of " + std::to_string(n.inputCount()) + " ids");
+            if (!n.hasVariableInputs() && inputs.size() != static_cast<size_t>(n.inputCount())) fail(inputsWhere + " must be an array of " + std::to_string(n.inputCount()) + " ids");
             applyNodeBody(n, nv, true);
         }
         wiring.emplace_back(id, std::move(inputs));
@@ -612,6 +612,53 @@ GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous)
     return snap;
 }
 
+NodeClip copyNode(const Network& net, NodeId id) {
+    const Node& n = net.node(id);
+    NodeClip clip;
+    clip.type = n.typeName();
+    clip.name = n.name();
+    for (int i = 0; i < n.inputCount(); ++i) {
+        const NodeId in = net.inputOf(id, i);
+        clip.inputNames.push_back(in == invalidNodeId ? std::string() : net.node(in).name());
+    }
+    json5::document doc;
+    json5::builder b(doc);
+    writeNode(b, net, id, false);
+    clip.text = std::make_shared<const std::string>(dump(doc));
+    return clip;
+}
+
+std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips) {
+    std::vector<NodeId> created;
+    try {
+        std::map<std::string, size_t> indexOf;
+        std::map<std::string, std::string> renames;
+        for (size_t i = 0; i < clips.size(); ++i) {
+            json5::document doc;
+            if (json5::from_string(*clips[i].text, doc)) fail("the copied node is corrupt");
+            const NodeId id = net.addNode(clips[i].type, net.uniqueName(clips[i].name));
+            created.push_back(id);
+            applyNodeBody(net.node(id), doc, true);
+            indexOf[clips[i].name] = i;
+            if (net.node(id).name() != clips[i].name) renames[clips[i].name] = net.node(id).name();
+        }
+        for (size_t i = 0; i < clips.size(); ++i) {
+            if (!renames.empty()) net.rewriteReferences(created[i], renames);
+            for (size_t slot = 0; slot < clips[i].inputNames.size(); ++slot) {
+                const std::string& source = clips[i].inputNames[slot];
+                if (source.empty()) continue;
+                const auto inside = indexOf.find(source);
+                const NodeId from = inside != indexOf.end() ? created[inside->second] : net.findNode(source);
+                if (from != invalidNodeId && static_cast<int>(slot) < net.node(created[i]).inputCount()) net.connect(from, created[i], static_cast<int>(slot));
+            }
+        }
+    } catch (...) {
+        for (NodeId id : created) net.removeNode(id);
+        throw;
+    }
+    return created;
+}
+
 namespace {
 
 bool sameText(const NodeSnapshot& a, const NodeSnapshot& b) { return a.text == b.text || *a.text == *b.text; }
@@ -678,11 +725,13 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
 
     std::vector<std::tuple<NodeId, int, NodeId>> connects;
     for (const auto& [id, t] : target.nodes) {
-        for (size_t i = 0; i < t.inputs.size(); ++i) {
+        const size_t slots = std::max(t.inputs.size(), static_cast<size_t>(net.node(id).inputCount()));
+        for (size_t i = 0; i < slots; ++i) {
+            const NodeId wanted = i < t.inputs.size() ? t.inputs[i] : invalidNodeId;
             const NodeId live = net.inputOf(id, static_cast<int>(i));
-            if (live == t.inputs[i]) continue;
+            if (live == wanted) continue;
             if (live != invalidNodeId) net.disconnect(id, static_cast<int>(i));
-            if (t.inputs[i] != invalidNodeId) connects.emplace_back(t.inputs[i], static_cast<int>(i), id);
+            if (wanted != invalidNodeId) connects.emplace_back(wanted, static_cast<int>(i), id);
             ++stats.rewired;
         }
     }

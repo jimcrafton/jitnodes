@@ -1639,6 +1639,134 @@ TEST(concatMatchesSequentialAppend) {
     }
 }
 
+TEST(renamingANodeRewritesExpressionsThatReferToIt) {
+    Network net(2);
+    NodeId a = net.addNode("transform", "a");
+    NodeId b = net.addNode("transform", "b");
+    NodeId ab = net.addNode("transform", "ab");
+    net.node(b).setExpression("tx", "a.sx * 2 + ab.sx");
+    net.node(ab).setFloat("sx", 5.0f);
+    net.renameNode(a, "shift");
+    CHECK(net.node(a).name() == "shift" && net.findNode("a") == invalidNodeId && net.findNode("shift") == a);
+    CHECK(net.node(b).expression("tx") == "shift.sx * 2 + ab.sx");
+    CHECK(throwsRuntimeError([&] { net.renameNode(a, "b"); }));
+    CHECK(throwsRuntimeError([&] { net.renameNode(a, "2fast"); }));
+    CHECK(throwsRuntimeError([&] { net.renameNode(a, "has space"); }));
+    CHECK(throwsRuntimeError([&] { net.renameNode(a, ""); }));
+    CHECK(net.uniqueName("fresh") == "fresh" && net.uniqueName("b") == "b1" && net.uniqueName("b7") == "b7" && net.uniqueName("b1") == "b1" && net.uniqueName("") == "node1");
+    net.setDisplayNode(b);
+    net.connect(net.addNode("line"), a, 0);
+    net.connect(a, b, 0);
+    CHECK(net.cookDisplay()->pointCount() > 0);
+}
+
+TEST(copyAndPasteDuplicateANodeWithItsContents) {
+    Network net(2);
+    NodeId line = net.addNode("line", "src");
+    NodeId wr = net.addNode("wrangle", "wave");
+    net.node(wr).setString("code", "y = x * c;");
+    net.node(wr).setFloat("c", 3.0f);
+    net.node(wr).setKeyframes("b", {{0.0, 1.0f, KeyInterp::linear}, {2.0, 4.0f, KeyInterp::linear}});
+    net.connect(line, wr, 0);
+    NodeId sub = net.addNode("subnet", "box");
+    net.node(sub).addSpareFloat("size", 2.0f);
+    NodeId inner = net.node(sub).childNetwork()->addNode("null", "inside");
+
+    const NodeClip clip = copyNode(net, wr);
+    NodeId copy = pasteNode(net, clip);
+    CHECK(copy != wr && net.node(copy).name() == "wave1" && net.node(copy).getString("code") == "y = x * c;");
+    CHECK(net.node(copy).getFloat("c") == 3.0f && net.node(copy).keyframes("b").size() == 2);
+    CHECK(net.inputOf(copy, 0) == line);
+    NodeId second = pasteNode(net, clip);
+    CHECK(net.node(second).name() == "wave2");
+
+    NodeId boxCopy = pasteNode(net, copyNode(net, sub));
+    CHECK(net.node(boxCopy).name() == "box1" && net.node(boxCopy).isSpare("size") && net.node(boxCopy).childNetwork()->findNode("inside") != invalidNodeId);
+    (void)inner;
+
+    Network other(2);
+    NodeId lone = pasteNode(other, clip);
+    CHECK(other.node(lone).name() == "wave" && other.inputOf(lone, 0) == invalidNodeId);
+
+    NodeClip bad = clip;
+    bad.type = "noSuchType";
+    const size_t before = net.nodeIds().size();
+    CHECK(throwsRuntimeError([&] { pasteNode(net, bad); }) && net.nodeIds().size() == before);
+}
+
+TEST(pasteingSeveralNodesRemapsTheirNamesWiresAndExpressions) {
+    Network net(2);
+    NodeId a = net.addNode("transform", "a");
+    NodeId a1 = net.addNode("transform", "a1");
+    net.connect(a, a1, 0);
+    net.node(a1).setExpression("tx", "a.sx + a1.sy");
+    const std::vector<NodeClip> clips = {copyNode(net, a), copyNode(net, a1)};
+    const std::vector<NodeId> pasted = pasteNodes(net, clips);
+    CHECK(pasted.size() == 2 && net.node(pasted[0]).name() == "a2" && net.node(pasted[1]).name() == "a3");
+    CHECK(net.inputOf(pasted[1], 0) == pasted[0] && net.inputOf(pasted[0], 0) == invalidNodeId);
+    CHECK(net.node(pasted[1]).expression("tx") == "a2.sx + a3.sy");
+    CHECK(net.node(a1).expression("tx") == "a.sx + a1.sy" && net.inputOf(a1, 0) == a);
+
+    std::vector<NodeClip> broken = clips;
+    broken[1].type = "noSuchType";
+    CHECK(throwsRuntimeError([&] { pasteNodes(net, broken); }) && net.nodeIds().size() == 4);
+}
+
+TEST(mergeTakesAnyNumberOfInputsAndKeepsOneSpare) {
+    Network net(2);
+    NodeId merge = net.addNode("merge");
+    CHECK(net.node(merge).inputCount() == 2);
+    std::vector<NodeId> lines;
+    for (int i = 0; i < 5; ++i) {
+        NodeId line = net.addNode("line");
+        net.node(line).setFloat("count", 10.0f);
+        net.node(line).setFloat("y", static_cast<float>(i));
+        lines.push_back(line);
+        net.connect(line, merge, i);
+        CHECK(net.node(merge).inputCount() == i + 2);
+        CHECK(net.inputOf(merge, i + 1) == invalidNodeId);
+    }
+    net.setDisplayNode(merge);
+    GeometryHandle all = net.cookDisplay();
+    CHECK(all->pointCount() == 50 && all->primitiveCount() == 5);
+
+    net.disconnect(merge, 4);
+    CHECK(net.node(merge).inputCount() == 5);
+    net.disconnect(merge, 1);
+    CHECK(net.node(merge).inputCount() == 5 && net.cookDisplay()->primitiveCount() == 3);
+
+    net.removeNode(lines[3]);
+    CHECK(net.node(merge).inputCount() == 4);
+    net.setFusionEnabled(false);
+    CHECK(net.cookDisplay()->primitiveCount() == 2);
+
+    NodeId lonely = net.addNode("merge");
+    net.setDisplayNode(lonely);
+    CHECK(throwsRuntimeError([&] { net.cookDisplay(); }));
+}
+
+TEST(mergeWithManyInputsSurvivesSaveLoadAndUndo) {
+    Network net(2);
+    NodeId merge = net.addNode("merge");
+    for (int i = 0; i < 6; ++i) {
+        NodeId line = net.addNode("line");
+        net.connect(line, merge, i);
+    }
+    GraphSnapshot before = snapshotNetwork(net);
+    NodeId out = net.addNode("null");
+    net.connect(merge, out, 0);
+    net.disconnect(merge, 5);
+    net.disconnect(merge, 2);
+    CHECK(net.node(merge).inputCount() == 6);
+
+    Network loaded(2);
+    loadNetwork(loaded, saveNetwork(net));
+    CHECK(loaded.node(merge).inputCount() == 6 && loaded.inputOf(merge, 2) == invalidNodeId && loaded.inputOf(merge, 4) != invalidNodeId);
+
+    restoreSnapshot(net, before);
+    CHECK(net.node(merge).inputCount() == 7 && net.inputOf(merge, 2) != invalidNodeId && net.inputOf(merge, 5) != invalidNodeId);
+}
+
 TEST(mergeTreesFlattenIntoOneTask) {
     auto build = [](Network& net, std::vector<NodeId>& merges) {
         std::vector<NodeId> tails;

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
+#include <vector>
 
 #include "editorModel.h"
 #include "graphLayout.h"
@@ -14,12 +16,14 @@ struct Vec {
 };
 
 enum MouseButton : unsigned { leftButton = 1, middleButton = 2, rightButton = 4 };
+enum KeyModifier : unsigned { shiftKey = 1, ctrlKey = 2 };
 
 // Interaction logic of the node graph canvas, free of any UI toolkit: events arrive in screen (view) coordinates and
 // act on the EditorModel. Every event returns true when the canvas has to be repainted.
 //   left button: on an output port starts a wire; on a connected input port detaches that wire and carries it; on a node
-//   selects and drags it; on empty space deselects and pans. Middle and right button pan. The wheel zooms around the
-//   cursor. Dropping a wire on an input port connects that input, dropping it on a node uses its first free input.
+//   selects it (shift or ctrl toggles it in the selection) and drags the whole selection; on empty space deselects and
+//   draws a selection box (with shift or ctrl the nodes it touches are added to the selection). Middle and right button
+//   pan. The wheel zooms around the cursor. Dropping a wire on an input port connects that input, dropping it on a node uses its first free input.
 class GraphController {
 public:
     explicit GraphController(EditorModel& model) : model_(model) {}
@@ -43,7 +47,7 @@ public:
     std::optional<NodeId> outputPortAt(Vec screen) const;
     std::optional<std::pair<NodeId, int>> inputPortAt(Vec screen) const;
 
-    bool mouseDown(Vec screen, unsigned buttons);
+    bool mouseDown(Vec screen, unsigned buttons, unsigned modifiers = 0);
     bool mouseMove(Vec screen);
     bool mouseUp(Vec screen);
     // Double-clicking a subnet enters it; any other node becomes the display node.
@@ -52,6 +56,11 @@ public:
     bool up();
     bool wheel(Vec screen, float delta);
     bool deleteSelected();
+    bool selectAll();
+    // Clipboard of the selected node (see EditorModel); each returns true when something happened that needs a repaint.
+    bool copySelected();
+    bool cutSelected();
+    bool paste();
     void frameAll(float viewWidth, float viewHeight);
 
     struct WireDrag {
@@ -59,11 +68,17 @@ public:
         Vec to;
     };
     const std::optional<WireDrag>& wireDrag() const { return wire_; }
+    struct Box {
+        Vec from;
+        Vec to;
+    };
+    // The selection box being dragged, in screen coordinates.
+    const std::optional<Box>& marquee() const { return marquee_; }
     NodeId hovered() const { return hovered_; }
     const std::string& message() const { return message_; }
 
 private:
-    enum class Mode { idle, pan, move, wire };
+    enum class Mode { idle, pan, move, wire, marquee };
 
     void notify(bool graphChanged) {
         if (onChanged) onChanged(graphChanged);
@@ -74,7 +89,11 @@ private:
     Vec pan_{20.0f, 20.0f};
     Mode mode_ = Mode::idle;
     Vec last_;
-    Vec grabOffset_;
+    Vec grabWorld_;
+    std::map<NodeId, Vec> grabbed_;  // positions of the dragged nodes when the drag began
+    bool collapseOnRelease_ = false;
+    std::vector<NodeId> baseSelection_;
+    std::optional<Box> marquee_;
     bool moved_ = false;
     bool detached_ = false;
     std::optional<WireDrag> wire_;

@@ -60,6 +60,7 @@ private:
     void edited();
     void startPlayback();
     void editKeys(const std::string& name);
+    void renameSelected();
     void afterNavigation();
     void refreshAssets();
     void refreshAttributes();

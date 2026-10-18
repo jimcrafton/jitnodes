@@ -117,6 +117,7 @@ public:
     MergeNode() : Node("merge", 2) {}
 
     bool isMerge() const override { return true; }
+    bool hasVariableInputs() const override { return true; }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
         std::vector<const Geometry*> parts;

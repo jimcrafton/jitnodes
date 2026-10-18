@@ -19,6 +19,10 @@ unsigned buttonsOf(std::uint32_t mask) {
            ((mask & newui::mbmRightButton) ? rightButton : 0);
 }
 
+unsigned modifiersOf(std::uint32_t keys) {
+    return ((keys & newui::kmShift) ? shiftKey : 0) | ((keys & newui::kmCtrl) ? ctrlKey : 0);
+}
+
 BLRgba32 nodeColor(const Node& n) {
     if (n.childNetwork()) return BLRgba32(0xFF7B4FA8);
     if (n.isMerge()) return BLRgba32(0xFFB5762E);
@@ -40,9 +44,9 @@ GraphCanvas::GraphCanvas(GraphController& controller) : controller_(controller) 
     setAcceptsFocus(true);
 
     onMouseDown.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
-        [this](newui::View&, const newui::Point& p, std::uint32_t buttons, std::uint32_t) {
+        [this](newui::View&, const newui::Point& p, std::uint32_t buttons, std::uint32_t keys) {
             if (newui::RootView* root = rootView()) root->setFocusedSubView(this);
-            if (controller_.mouseDown(vec(p), buttonsOf(buttons))) redraw();
+            if (controller_.mouseDown(vec(p), buttonsOf(buttons), modifiersOf(keys))) redraw();
             return newui::SyncReturn::Handled;
         }));
     onMouseMove.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
@@ -66,7 +70,18 @@ GraphCanvas::GraphCanvas(GraphController& controller) : controller_(controller) 
             return newui::SyncReturn::Handled;
         }));
     onKeyDown.add(std::function<newui::SyncReturn(newui::View&, std::uint32_t, int, int, std::uint32_t)>(
-        [this](newui::View&, std::uint32_t, int, int, std::uint32_t key) {
+        [this](newui::View&, std::uint32_t mask, int, int, std::uint32_t key) {
+            if (mask & newui::kmCtrl) {
+                const bool handled = key == newui::vkLetterC ? controller_.copySelected()
+                                     : key == newui::vkLetterX ? controller_.cutSelected()
+                                     : key == newui::vkLetterV ? controller_.paste()
+                                     : key == newui::vkLetterA ? controller_.selectAll()
+                                                               : false;
+                if (handled) {
+                    redraw();
+                    return newui::SyncReturn::Handled;
+                }
+            }
             if (key == newui::vkDelete && controller_.deleteSelected()) {
                 redraw();
                 return newui::SyncReturn::Handled;
@@ -117,14 +132,13 @@ void GraphCanvas::paint(BLContext& ctx) {
     }
 
     const NodeId display = net.displayNode();
-    const NodeId selected = controller_.model().selected();
     for (NodeId id : net.nodeIds()) {
         const Node& n = net.node(id);
         const Vec p = controller_.toScreen({n.posX(), n.posY()});
         const float nw = nodeWidth * zoom, nh = nodeHeight * zoom, r = 6.0f * zoom;
         ctx.set_fill_style(nodeColor(n));
         ctx.fill_round_rect(BLRoundRect(p.x, p.y, nw, nh, r, r));
-        const bool isSelected = id == selected;
+        const bool isSelected = controller_.model().isSelected(id);
         ctx.set_stroke_width(isSelected ? 2.5f : 1.0f);
         ctx.set_stroke_style(isSelected ? BLRgba32(0xFFFFFFFF) : (id == controller_.hovered() ? BLRgba32(0xFFB8C4E0) : BLRgba32(0xFF1A1B1E)));
         ctx.stroke_round_rect(BLRoundRect(p.x, p.y, nw, nh, r, r));
@@ -143,6 +157,15 @@ void GraphCanvas::paint(BLContext& ctx) {
         }
         const Vec out = controller_.toScreen(controller_.outputPort(id));
         ctx.fill_round_rect(BLRoundRect(out.x - pr, out.y - pr, 2 * pr, 2 * pr, pr, pr));
+    }
+    if (const auto& box = controller_.marquee()) {
+        const double x = std::min(box->from.x, box->to.x), y = std::min(box->from.y, box->to.y);
+        const double bw = std::fabs(box->to.x - box->from.x), bh = std::fabs(box->to.y - box->from.y);
+        ctx.set_fill_style(BLRgba32(0x305A7CFF));
+        ctx.fill_rect(BLRect(x, y, bw, bh));
+        ctx.set_stroke_width(1.0f);
+        ctx.set_stroke_style(BLRgba32(0xFF5A7CFF));
+        ctx.stroke_rect(BLRect(x, y, bw, bh));
     }
     ctx.restore();
 }

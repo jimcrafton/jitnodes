@@ -7,6 +7,7 @@
 #include "newui/bundle.h"
 #include "keyframeDialog.h"
 #include "newui/mouse_constants.h"
+#include "newui/utils.h"
 
 extern void registerReflectionData();
 
@@ -76,6 +77,30 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
     }
     model.undo();
     window.refresh();
+
+    {
+        const NodeId node = model.selected();
+        const std::string oldName = model.network().node(node).name();
+        expect(window.textField("nodeName").text() == newui::utf8ToWide(oldName), "the name field shows the selected node");
+        window.textField("nodeName").setText(L"shifter");
+        click(window, "renameButton");
+        expect(model.network().node(node).name() == "shifter" && model.undoLabel() == "rename " + oldName, "the rename button renames the node");
+        window.textField("nodeName").setText(L"bad name");
+        click(window, "renameButton");
+        expect(model.network().node(node).name() == "shifter", "an invalid name is rejected");
+        const size_t before = model.network().nodeIds().size();
+        expect(!window.button("pasteButton").isEnabled(), "paste is disabled while the clipboard is empty");
+        click(window, "copyButton");
+        expect(window.button("pasteButton").isEnabled(), "copy fills the clipboard");
+        click(window, "pasteButton");
+        expect(model.network().nodeIds().size() == before + 1 && model.network().node(model.selected()).name() == "shifter1", "paste adds a uniquely named copy");
+        click(window, "cutButton");
+        expect(model.network().nodeIds().size() == before, "cut removes the selected node");
+        model.undo();
+        model.undo();
+        model.undo();
+        window.refresh();
+    }
 
     ViewportController& viewport = window.viewport();
     model.setDisplay(model.network().nodeIds()[1]);

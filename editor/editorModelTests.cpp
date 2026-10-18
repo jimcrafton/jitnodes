@@ -273,11 +273,11 @@ TEST(panZoomAndFitKeepTheGraphVisible) {
     g.mouseDown({700, 500}, leftButton);
     g.mouseMove({750, 530});
     g.mouseUp({750, 530});
-    CHECK(g.pan().x == 70.0f && g.pan().y == 50.0f && m.selected() == invalidNodeId);
+    CHECK(g.pan().x == 20.0f && g.pan().y == 20.0f && m.selected() == invalidNodeId);
     g.mouseDown({10, 10}, middleButton);
     g.mouseMove({20, 15});
     g.mouseUp({20, 15});
-    CHECK(g.pan().x == 80.0f && g.pan().y == 55.0f);
+    CHECK(g.pan().x == 30.0f && g.pan().y == 25.0f);
     (void)before;
 
     const Vec cursor{300, 200};
@@ -891,6 +891,188 @@ TEST(hoveringFindsTheNearestPointAndDescribesIt) {
     v.mouseDown({10, 10}, leftButton);
     CHECK(v.mouseMove({20, 15}) && !v.hover());
     v.mouseUp({20, 15});
+}
+
+TEST(renamingANodeIsOneUndoStepAndRejectsBadNames) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    m.network().node(b).setExpression("tx", "line1.length");
+    m.commit("expression");
+    CHECK(m.renameNode(a, "source").empty() && m.network().node(a).name() == "source" && m.undoLabel() == "rename line1");
+    CHECK(m.network().node(b).expression("tx") == "source.length");
+    CHECK(!m.renameNode(a, "transform2").empty() && !m.renameNode(a, "9lives").empty() && m.network().node(a).name() == "source");
+    CHECK(m.renameNode(a, "source").empty() && m.undoLabel() == "rename line1");
+    m.undo();
+    CHECK(m.network().node(a).name() == "line1" && m.network().node(b).expression("tx") == "line1.length");
+    m.redo();
+    CHECK(m.network().node(a).name() == "source" && m.cook().ok);
+}
+
+TEST(copyCutAndPasteWorkOnTheSelectedNode) {
+    EditorModel m;
+    CHECK(!m.copySelected() && !m.cutSelected() && !m.canPaste() && !m.paste().empty());
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("wrangle");
+    m.network().node(b).setString("code", "y = x * 2;");
+    m.commit("code");
+    m.moveNode(b, 100.0f, 50.0f);
+    CHECK(m.copySelected() && m.canPaste());
+
+    CHECK(m.paste().empty() && m.network().nodeIds().size() == 3);
+    const NodeId first = m.selected();
+    CHECK(first != b && m.network().node(first).name() == "wrangle1" && m.network().node(first).getString("code") == "y = x * 2;");
+    CHECK(m.network().inputOf(first, 0) == a && m.network().displayNode() == b);
+    CHECK(m.network().node(first).posX() == 130.0f && m.network().node(first).posY() == 80.0f);
+    CHECK(m.undoLabel() == "paste wrangle1");
+    CHECK(m.paste().empty() && m.network().node(m.selected()).posX() == 160.0f);
+
+    m.undo();
+    m.undo();
+    CHECK(m.network().nodeIds().size() == 2);
+
+    m.select(b);
+    CHECK(m.cutSelected() && m.network().nodeIds().size() == 1 && m.selected() == invalidNodeId && m.undoLabel() == "cut wrangle2");
+    CHECK(m.paste().empty() && m.network().node(m.selected()).name() == "wrangle2" && m.network().inputOf(m.selected(), 0) == a);
+    m.undo();
+    m.undo();
+    CHECK(m.network().nodeIds().size() == 2 && m.network().node(b).getString("code") == "y = x * 2;");
+}
+
+TEST(controllerClipboardRepaintsAndReportsErrors) {
+    EditorModel m;
+    m.addNode("line");
+    GraphController g(m);
+    int graphChanges = 0, otherChanges = 0;
+    g.onChanged = [&](bool graph) { (graph ? graphChanges : otherChanges)++; };
+    CHECK(g.paste() && !g.message().empty() && otherChanges == 1);
+    CHECK(g.copySelected() && g.message().empty());
+    CHECK(g.paste() && graphChanges == 1 && m.network().nodeIds().size() == 2);
+    CHECK(g.cutSelected() && graphChanges == 2 && m.network().nodeIds().size() == 1);
+    CHECK(!g.cutSelected() && !g.copySelected());
+}
+
+TEST(modelKeepsASetOfSelectedNodes) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const NodeId c = m.addNode("null");
+    CHECK(m.selected() == c && m.selection().size() == 1);
+    m.setSelection({a, b});
+    CHECK(m.selected() == invalidNodeId && m.selection().size() == 2 && m.isSelected(a) && !m.isSelected(c));
+    m.toggleSelected(a);
+    CHECK(m.selected() == b);
+    m.toggleSelected(c);
+    m.toggleSelected(a);
+    CHECK(m.selection().size() == 3);
+    m.selectAll();
+    CHECK(m.selection().size() == 3);
+    m.select(invalidNodeId);
+    CHECK(m.selection().empty());
+
+    m.setSelection({a, b});
+    CHECK(m.removeSelected() && m.network().nodeIds().size() == 1 && m.selection().empty() && m.undoLabel() == "delete 2 nodes");
+    CHECK(!m.removeSelected());
+    m.undo();
+    CHECK(m.network().nodeIds().size() == 3 && m.network().inputOf(c, 0) == b);
+    m.removeNode(a);
+    m.select(b);
+    CHECK(m.removeSelected() && m.undoLabel() == "delete transform2");
+}
+
+TEST(clickingWithShiftTogglesAndDraggingMovesTheWholeSelection) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const NodeId c = m.addNode("null");
+    GraphController g(m);
+    int graphChanges = 0, otherChanges = 0;
+    g.onChanged = [&](bool graph) { (graph ? graphChanges : otherChanges)++; };
+
+    g.mouseDown(center(g, a), leftButton);
+    g.mouseUp(center(g, a));
+    g.mouseDown(center(g, b), leftButton, shiftKey);
+    g.mouseUp(center(g, b));
+    CHECK(m.selection().size() == 2 && m.isSelected(a) && m.isSelected(b) && !m.isSelected(c));
+    g.mouseDown(center(g, c), leftButton, ctrlKey);
+    g.mouseUp(center(g, c));
+    CHECK(m.selection().size() == 3);
+    g.mouseDown(center(g, c), leftButton, shiftKey);
+    g.mouseUp(center(g, c));
+    CHECK(m.selection().size() == 2 && !m.isSelected(c) && m.network().node(c).hasPosition());
+
+    const float ax = m.network().node(a).posX(), bx = m.network().node(b).posX(), cx = m.network().node(c).posX();
+    const Vec start = center(g, a);
+    g.mouseDown(start, leftButton);
+    g.mouseMove({start.x + 40, start.y + 20});
+    g.mouseUp({start.x + 40, start.y + 20});
+    CHECK(m.network().node(a).posX() == ax + 40 && m.network().node(b).posX() == bx + 40 && m.network().node(c).posX() == cx);
+    CHECK(m.selection().size() == 2 && m.undoLabel() == "move nodes");
+    m.undo();
+    CHECK(m.network().node(a).posX() == ax && m.network().node(b).posX() == bx);
+
+    g.mouseDown(center(g, a), leftButton);
+    g.mouseUp(center(g, a));
+    CHECK(m.selected() == a);
+    CHECK(g.selectAll() && m.selection().size() == 3);
+    CHECK(g.deleteSelected() && m.network().nodeIds().empty());
+}
+
+TEST(draggingABoxSelectsTheNodesItTouches) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const NodeId c = m.addNode("null");
+    m.moveNode(a, 0, 0);
+    m.moveNode(b, 300, 0);
+    m.moveNode(c, 600, 300);
+    GraphController g(m);
+    g.onChanged = [](bool) {};
+
+    const Vec origin = g.toScreen({-10, -10});
+    CHECK(g.mouseDown(origin, leftButton) && g.marquee().has_value());
+    g.mouseMove(g.toScreen({20, 20}));
+    CHECK(m.selection() == std::vector<NodeId>{a});
+    g.mouseMove(g.toScreen({320, 30}));
+    CHECK(m.selection() == (std::vector<NodeId>{a, b}));
+    g.mouseMove(g.toScreen({-5, -5}));
+    CHECK(m.selection().empty());
+    g.mouseMove(g.toScreen({320, 30}));
+    g.mouseUp(g.toScreen({320, 30}));
+    CHECK(!g.marquee().has_value() && m.selection().size() == 2);
+
+    g.mouseDown(g.toScreen({590, 290}), leftButton, shiftKey);
+    g.mouseMove(g.toScreen({620, 320}));
+    g.mouseUp(g.toScreen({620, 320}));
+    CHECK(m.selection().size() == 3);
+
+    g.mouseDown(g.toScreen({900, 900}), leftButton);
+    g.mouseUp(g.toScreen({900, 900}));
+    CHECK(m.selection().empty());
+}
+
+TEST(copyAndPasteOfSeveralNodesKeepsTheWiresBetweenThem) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const NodeId c = m.addNode("wrangle");
+    m.network().node(c).setExpression("a", "transform2.tx + 1");
+    m.commit("expression");
+    m.setSelection({b, c});
+    CHECK(m.copySelected());
+    CHECK(m.paste().empty() && m.network().nodeIds().size() == 5 && m.selection().size() == 2 && m.undoLabel() == "paste 2 nodes");
+    const NodeId b2 = m.network().findNode("transform1"), c2 = m.network().findNode("wrangle2");
+    CHECK(b2 != invalidNodeId && c2 == invalidNodeId);
+    const NodeId copyOfC = m.network().findNode("wrangle1");
+    CHECK(copyOfC != invalidNodeId && m.network().inputOf(b2, 0) == a);
+    CHECK(m.network().inputOf(copyOfC, 0) == b2);
+    CHECK(m.network().node(copyOfC).expression("a") == "transform1.tx + 1");
+    CHECK(m.network().inputOf(c, 0) == b);
+
+    m.undo();
+    CHECK(m.network().nodeIds().size() == 3);
+    m.select(a);
+    CHECK(m.cutSelected() && m.undoLabel() == "cut line1" && m.paste().empty() && m.network().findNode("line1") != invalidNodeId);
 }
 
 }  // namespace

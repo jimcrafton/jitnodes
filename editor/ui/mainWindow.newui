@@ -655,7 +655,7 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 0, y: 4 },
-                      size: { type: "Size", width: 49, height: 17 }
+                      size: { type: "Size", width: 45, height: 17 }
                     },
                     style: {
                       type: "LabelStyle",
@@ -672,8 +672,8 @@
                     textAlignment: "Left",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 88, y: 4 },
-                      size: { type: "Size", width: 200, height: 17 }
+                      pos: { type: "Point", x: 45, y: 4 },
+                      size: { type: "Size", width: 183, height: 17 }
                     },
                     name: "graphPath",
                     style: {
@@ -684,7 +684,7 @@
                       textColor: "#9a9ca3",
                       textAlignment: "Left"
                     },
-                    desiredSize: { type: "Size", width: 200, height: 17 },
+                    desiredSize: { type: "Size", width: 183, height: 17 },
                     desiredSizeOverride: true
                   },
                   {
@@ -692,10 +692,52 @@
                     text: "Up",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 327, y: 0 },
-                      size: { type: "Size", width: 75, height: 26 }
+                      pos: { type: "Point", x: 228, y: 0 },
+                      size: { type: "Size", width: 69, height: 26 }
                     },
                     name: "upButton",
+                    style: {
+                      type: "ThemedButtonStyle",
+                      font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                    }
+                  },
+                  {
+                    type: "Button",
+                    text: "Copy",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 296, y: 0 },
+                      size: { type: "Size", width: 69, height: 26 }
+                    },
+                    name: "copyButton",
+                    style: {
+                      type: "ThemedButtonStyle",
+                      font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                    }
+                  },
+                  {
+                    type: "Button",
+                    text: "Cut",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 365, y: 0 },
+                      size: { type: "Size", width: 69, height: 26 }
+                    },
+                    name: "cutButton",
+                    style: {
+                      type: "ThemedButtonStyle",
+                      font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                    }
+                  },
+                  {
+                    type: "Button",
+                    text: "Paste",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 434, y: 0 },
+                      size: { type: "Size", width: 69, height: 26 }
+                    },
+                    name: "pasteButton",
                     style: {
                       type: "ThemedButtonStyle",
                       font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
@@ -707,8 +749,8 @@
                     textAlignment: "Right",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 440, y: 4 },
-                      size: { type: "Size", width: 200, height: 17 }
+                      pos: { type: "Point", x: 502, y: 4 },
+                      size: { type: "Size", width: 183, height: 17 }
                     },
                     name: "graphStatus",
                     style: {
@@ -719,7 +761,7 @@
                       textColor: "#9a9ca3",
                       textAlignment: "Right"
                     },
-                    desiredSize: { type: "Size", width: 200, height: 17 },
+                    desiredSize: { type: "Size", width: 183, height: 17 },
                     desiredSizeOverride: true
                   },
                   {
@@ -727,8 +769,8 @@
                     text: "Fit",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 679, y: 0 },
-                      size: { type: "Size", width: 75, height: 26 }
+                      pos: { type: "Point", x: 685, y: 0 },
+                      size: { type: "Size", width: 69, height: 26 }
                     },
                     name: "fitGraphButton",
                     style: {
@@ -775,7 +817,7 @@
                 bounds: {
                   type: "Rect",
                   pos: { type: "Point", x: 0, y: 0 },
-                  size: { type: "Size", width: 340, height: 342 }
+                  size: { type: "Size", width: 340, height: 355 }
                 },
                 visible: true,
                 layout: {
@@ -834,6 +876,70 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 8, y: 59 },
+                      size: { type: "Size", width: 324, height: 26 }
+                    },
+                    visible: true,
+                    layout: {
+                      type: "FlexLayout",
+                      orientation: "Horizontal",
+                      crossAxisAlignment: "Center",
+                      spacing: 6
+                    },
+                    childViews: [
+                      {
+                        type: "Label",
+                        text: "Name",
+                        textAlignment: "Left",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 0, y: 4 },
+                          size: { type: "Size", width: 84, height: 17 }
+                        },
+                        style: {
+                          type: "LabelStyle",
+                          text: "Name",
+                          wordWrap: true,
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false },
+                          textColor: "#9a9ca3",
+                          textAlignment: "Left"
+                        },
+                        desiredSize: { type: "Size", width: 84, height: 17 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "TextField",
+                        text: "transform1",
+                        font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false },
+                        textColor: "#202020",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 90, y: 1 },
+                          size: { type: "Size", width: 153, height: 24 }
+                        },
+                        name: "nodeName",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 }
+                      },
+                      {
+                        type: "Button",
+                        text: "Rename",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 249, y: 0 },
+                          size: { type: "Size", width: 75, height: 26 }
+                        },
+                        name: "renameButton",
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    type: "SubView",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 8, y: 91 },
                       size: { type: "Size", width: 324, height: 1 }
                     },
                     visible: true,
@@ -849,8 +955,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 66 },
-                      size: { type: "Size", width: 324, height: 150 }
+                      pos: { type: "Point", x: 8, y: 98 },
+                      size: { type: "Size", width: 324, height: 130 }
                     },
                     visible: true,
                     name: "paramList",
@@ -861,7 +967,7 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 222 },
+                      pos: { type: "Point", x: 8, y: 235 },
                       size: { type: "Size", width: 324, height: 1 }
                     },
                     visible: true,
@@ -877,7 +983,7 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 229 },
+                      pos: { type: "Point", x: 8, y: 242 },
                       size: { type: "Size", width: 324, height: 26 }
                     },
                     visible: true,
@@ -921,7 +1027,7 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 261 },
+                      pos: { type: "Point", x: 8, y: 274 },
                       size: { type: "Size", width: 324, height: 26 }
                     },
                     visible: true,
@@ -966,7 +1072,7 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 293 },
+                      pos: { type: "Point", x: 8, y: 306 },
                       size: { type: "Size", width: 324, height: 18 }
                     },
                     visible: true,
@@ -1015,7 +1121,7 @@
                     textAlignment: "Left",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 8, y: 317 },
+                      pos: { type: "Point", x: 8, y: 330 },
                       size: { type: "Size", width: 316, height: 17 }
                     },
                     name: "paramError",
@@ -1036,8 +1142,8 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 0, y: 348 },
-                  size: { type: "Size", width: 340, height: 212 }
+                  pos: { type: "Point", x: 0, y: 361 },
+                  size: { type: "Size", width: 340, height: 199 }
                 },
                 visible: true,
                 layout: {
@@ -1178,7 +1284,7 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 6, y: 66 },
-                      size: { type: "Size", width: 328, height: 140 }
+                      size: { type: "Size", width: 328, height: 127 }
                     },
                     visible: true,
                     name: "viewportCanvas",
