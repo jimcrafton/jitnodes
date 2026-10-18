@@ -1,6 +1,6 @@
 #pragma once
 
-#include <bit>
+#include "jitnodes/core/bitCast.h"
 #include <cmath>
 #include <cstdint>
 
@@ -8,8 +8,8 @@
 
 namespace jitnodes {
 
-inline float maskBits(bool v) { return std::bit_cast<float>(v ? 0xFFFFFFFFu : 0u); }
-inline uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
+inline float maskBits(bool v) { return bitCast<float>(v ? 0xFFFFFFFFu : 0u); }
+inline uint32_t bitsOf(float f) { return bitCast<uint32_t>(f); }
 
 // Scalar semantics of every computational op; shared by the kernel interpreter and the parameter
 // expression evaluator so both agree with the JIT.
@@ -32,9 +32,9 @@ inline float evalOp(Op op, float a, float b, float c) {
         case Op::le: return maskBits(a <= b);
         case Op::ge: return maskBits(a >= b);
         case Op::eq: return maskBits(a == b);
-        case Op::logicalAnd: return std::bit_cast<float>(bitsOf(a) & bitsOf(b));
-        case Op::logicalOr: return std::bit_cast<float>(bitsOf(a) | bitsOf(b));
-        case Op::logicalNot: return std::bit_cast<float>(~bitsOf(a));
+        case Op::logicalAnd: return bitCast<float>(bitsOf(a) & bitsOf(b));
+        case Op::logicalOr: return bitCast<float>(bitsOf(a) | bitsOf(b));
+        case Op::logicalNot: return bitCast<float>(~bitsOf(a));
         case Op::select: return (bitsOf(a) & 0x80000000u) ? b : c;
         case Op::sin: return std::sin(a);
         case Op::cos: return std::cos(a);

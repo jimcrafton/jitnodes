@@ -1,6 +1,6 @@
 #include "vecEmitter.h"
 
-#include <bit>
+#include "jitnodes/core/bitCast.h"
 #include <cstring>
 #include <stdexcept>
 
@@ -33,10 +33,10 @@ x86::Vec VecEmitter::broadcast(const x86::Mem& scalar) {
 }
 
 x86::Vec VecEmitter::konstBits(uint32_t bits) {
-    const float f = std::bit_cast<float>(bits);
+    const float f = bitCast<float>(bits);
     size_t slot = pool_.size();
     for (size_t i = 0; i < pool_.size(); ++i) {
-        if (std::bit_cast<uint32_t>(pool_[i]) == bits) {
+        if (bitCast<uint32_t>(pool_[i]) == bits) {
             slot = i;
             break;
         }
@@ -45,7 +45,7 @@ x86::Vec VecEmitter::konstBits(uint32_t bits) {
     return broadcast(x86::dword_ptr(poolBase_, static_cast<int32_t>(slot * sizeof(float))));
 }
 
-x86::Vec VecEmitter::konst(float value) { return konstBits(std::bit_cast<uint32_t>(value)); }
+x86::Vec VecEmitter::konst(float value) { return konstBits(bitCast<uint32_t>(value)); }
 
 void VecEmitter::load(const Vec& dst, const x86::Mem& mem) {
     if (vex()) cc_.vmovaps(dst, mem);
