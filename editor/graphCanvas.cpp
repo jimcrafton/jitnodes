@@ -82,6 +82,19 @@ GraphCanvas::GraphCanvas(GraphController& controller) : controller_(controller) 
                     return newui::SyncReturn::Handled;
                 }
             }
+            if (key == newui::vkF2 && onRenameRequested) {
+                onRenameRequested();
+                return newui::SyncReturn::Handled;
+            }
+            if (key == newui::vkLeftArrow || key == newui::vkRightArrow || key == newui::vkUpArrow || key == newui::vkDownArrow) {
+                const int steps = (mask & newui::kmShift) ? 5 : 1;
+                const int dx = key == newui::vkLeftArrow ? -steps : key == newui::vkRightArrow ? steps : 0;
+                const int dy = key == newui::vkUpArrow ? -steps : key == newui::vkDownArrow ? steps : 0;
+                if (controller_.nudge(dx, dy)) {
+                    redraw();
+                    return newui::SyncReturn::Handled;
+                }
+            }
             if (key == newui::vkDelete && controller_.deleteSelected()) {
                 redraw();
                 return newui::SyncReturn::Handled;

@@ -83,6 +83,12 @@ struct NodeClip {
 };
 
 NodeClip copyNode(const Network& net, NodeId id);
+// Clips as text (a JSON document with format "jitnodes-nodes") for the system clipboard or a file. clipsFromText returns
+// no clips for text that is not such a document (so arbitrary clipboard text is ignored) and throws std::runtime_error for
+// one that is but is corrupt. Asset definitions are not included: pasting an instance of an asset the receiving side has not
+// registered fails in pasteNodes.
+std::string clipsToText(const std::vector<NodeClip>& clips);
+std::vector<NodeClip> clipsFromText(const std::string& text);
 // Adds copies with fresh ids and unique names (a clip's name when free). Inputs coming from another clip of the same call
 // connect to its copy (and expressions that refer to it follow its new name); other inputs connect to the node of that
 // name in net when there is one. Throws std::runtime_error for an unknown type or corrupt clip, leaving net unchanged.

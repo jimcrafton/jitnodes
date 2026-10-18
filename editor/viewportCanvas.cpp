@@ -235,7 +235,7 @@ void ViewportCanvas::paint(BLContext& ctx) {
         const float barW = 120.0f, barH = 8.0f, x0 = w - barW - 10.0f, y0 = h - 24.0f;
         const int steps = 40;
         for (int i = 0; i < steps; ++i) {
-            ctx.set_fill_style(BLRgba32(ViewportController::colormap(static_cast<float>(i) / (steps - 1))));
+            ctx.set_fill_style(BLRgba32(ViewportController::colormap(static_cast<float>(i) / (steps - 1), controller_.colorMap())));
             ctx.fill_rect(BLRect(x0 + barW * static_cast<float>(i) / steps, y0, barW / steps + 0.5f, barH));
         }
         char lo[32], hi[32];

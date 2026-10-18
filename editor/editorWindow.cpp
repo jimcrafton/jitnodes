@@ -1,6 +1,9 @@
 #include "editorWindow.h"
 
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <optional>
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
@@ -8,6 +11,7 @@
 #include <vector>
 
 #include "keyframeDialog.h"
+#include "newui/clipboardmgr.h"
 #include "newui/dialogs.h"
 #include "newui/utils.h"
 
@@ -89,7 +93,7 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
                                                [this](const std::string& name) { guarded([&] { editKeys(name); }); });
     view<newui::Label>("paramError");
     view<newui::Toggle>("displayToggle").onCheckedChanged.add(std::function<newui::SyncReturn(newui::Toggle&)>([this](newui::Toggle& t) {
-        const NodeId selected = model_.selected();
+        const NodeId selected = model_.displayTarget();
         if (!updatingUi_ && selected != invalidNodeId && t.isChecked() && model_.network().displayNode() != selected) {
             model_.setDisplay(selected);
             guarded([this] { edited(); });
@@ -99,6 +103,19 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     for (const char* name : {"graphPath"}) view<newui::Label>(name);
     view<newui::TextField>("spareName");
     onClick("upButton", [this] { controller_->up(); });
+    // Something copied in another program shows up in the Paste button when the canvas is entered or focused.
+    auto refreshPaste = [this](newui::View&) {
+        if (auto* b = dynamic_cast<newui::Button*>(root_.findView("pasteButton"))) b->setEnabled(model_.canPaste() || systemClipboardHasNodes());
+        return newui::SyncReturn::Ignored;
+    };
+    canvas_->onGotFocus.add(std::function<newui::SyncReturn(newui::View&)>(refreshPaste));
+    canvas_->onMouseDown.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
+        [refreshPaste](newui::View& v, const newui::Point&, std::uint32_t, std::uint32_t) { return refreshPaste(v); }));
+    controller_->writeClipboard = [](const std::string& text) { newui::ClipboardManager::setText(newui::utf8ToWide(text)); };
+    controller_->readClipboard = [] {
+        std::wstring text;
+        return newui::ClipboardManager::getText(text) ? newui::wideToUtf8(text) : std::string();
+    };
     onClick("copyButton", [this] { controller_->copySelected(); });
     onClick("cutButton", [this] { controller_->cutSelected(); });
     onClick("pasteButton", [this] { controller_->paste(); });
@@ -108,6 +125,11 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
         return newui::SyncReturn::Handled;
     }));
     onClick("renameButton", [this] { renameSelected(); });
+    canvas_->onRenameRequested = [this] {
+        newui::TextField& field = view<newui::TextField>("nodeName");
+        root_.setFocusedSubView(&field);
+        field.controller().selectAll();
+    };
     onClick("addSpareButton", [this] {
         newui::TextField& field = view<newui::TextField>("spareName");
         const NodeId id = model_.selected();
@@ -119,13 +141,33 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
         if (message_.empty()) field.setText(L"");
         edited();
     });
-    view<newui::DropDownList>("assetSelect");
+    newui::SubView* assetHost = dynamic_cast<newui::SubView*>(&view<newui::View>("assetListHost"));
+    if (!assetHost) throw std::runtime_error("mainWindow.newui: assetListHost must be a SubView");
+    assetHost->setLayout(std::make_unique<newui::FlexLayout>(newui::Orientation::Vertical));
+    assetTree_ = new newui::TreeView();
+    assetTree_->setName("assetList");
+    assetTree_->setBounds(newui::Rect(0, 0, assetHost->bounds().width(), assetHost->bounds().height()));
+    assetTree_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(1.0f));
+    assetTree_->setModel(std::make_unique<newui::StringTreeModel>());
+    assetTree_->onSelectionChanged.add(std::function<newui::SyncReturn(newui::TreeView&)>([this](newui::TreeView&) {
+        if (!updatingUi_) updateAssetDetails();
+        return newui::SyncReturn::Handled;
+    }));
+    assetHost->addChild(assetTree_);
+    view<newui::Label>("assetDetails");
     onClick("addAssetButton", [this] {
-        auto& select = view<newui::DropDownList>("assetSelect");
-        if (select.selectedIndex() && *select.selectedIndex() < assetNames_.size()) {
-            model_.addNode(assetNames_[*select.selectedIndex()]);
-            edited();
-        }
+        const std::string name = selectedAsset();
+        if (name.empty()) return;
+        model_.addNode(name);
+        edited();
+    });
+    onClick("reloadAssetButton", [this] {
+        const std::string name = selectedAsset();
+        if (name.empty()) return;
+        size_t updated = 0;
+        message_ = model_.reloadAsset(name, &updated);
+        if (message_.empty() && updated > 0) message_ = "reloaded " + name + ", " + std::to_string(updated) + " instance(s) rebuilt";
+        edited();
     });
     onClick("loadAssetButton", [this] { doLoadAsset(); });
     onClick("createAssetButton", [this] { doCreateAsset(); });
@@ -150,10 +192,45 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     view<newui::DropDownList>("attrSelect").onSelectionChanged.add(std::function<newui::SyncReturn(newui::DropDownList&)>([this](newui::DropDownList& d) {
         if (!updatingUi_ && d.selectedIndex()) {
             viewport_->selectChoice(*d.selectedIndex() == 0 ? std::nullopt : std::optional<size_t>(*d.selectedIndex() - 1));
+            updatingUi_ = true;
+            refreshAttributes();
+            updatingUi_ = false;
             viewportCanvas_->redraw();
         }
         return newui::SyncReturn::Handled;
     }));
+
+    {
+        auto& maps = view<newui::DropDownList>("mapSelect");
+        auto items = std::make_unique<newui::StringListModel>();
+        for (size_t i = 0; i < ViewportController::colorMapCount; ++i) items->addItem(ViewportController::colorMapName(static_cast<ViewportController::ColorMap>(i)));
+        maps.setModel(std::move(items));
+        maps.setSelectedIndex(static_cast<size_t>(viewport_->colorMap()));
+        maps.onSelectionChanged.add(std::function<newui::SyncReturn(newui::DropDownList&)>([this](newui::DropDownList& d) {
+            if (!updatingUi_ && d.selectedIndex()) {
+                viewport_->setColorMap(static_cast<ViewportController::ColorMap>(*d.selectedIndex()));
+                viewportCanvas_->redraw();
+            }
+            return newui::SyncReturn::Handled;
+        }));
+        for (const char* name : {"rangeMin", "rangeMax"}) {
+            newui::TextField& field = view<newui::TextField>(name);
+            field.setPlaceholder("auto");
+            field.onReturnPressed.add(std::function<newui::SyncReturn(newui::TextField&)>([this](newui::TextField&) {
+                guarded([this] { applyRange(); });
+                return newui::SyncReturn::Handled;
+            }));
+            field.onLostFocus.add(std::function<newui::SyncReturn(newui::View&)>([this](newui::View&) {
+                guarded([this] { applyRange(); });
+                return newui::SyncReturn::Handled;
+            }));
+        }
+        onClick("autoRangeButton", [this] {
+            viewport_->setRange(std::nullopt, std::nullopt);
+            viewportCanvas_->redraw();
+            refreshAttributes();
+        });
+    }
 
     newui::SubView* profileHost = dynamic_cast<newui::SubView*>(&view<newui::View>("profileRows"));
     if (!profileHost) throw std::runtime_error("mainWindow.newui: profileRows must be a SubView");
@@ -291,7 +368,6 @@ void EditorWindow::refresh() {
         const NodeId sel = model_.selected();
         if (auto* b = dynamic_cast<newui::Button*>(root_.findView("createAssetButton"))) b->setEnabled(sel != invalidNodeId && model_.canEnter(sel));
         if (auto* b = dynamic_cast<newui::Button*>(root_.findView("unlockAssetButton"))) b->setEnabled(sel != invalidNodeId && model_.isAssetInstance(sel));
-        if (auto* b = dynamic_cast<newui::Button*>(root_.findView("addAssetButton"))) b->setEnabled(!assetNames_.empty());
     }
     if (auto* spare = dynamic_cast<newui::Button*>(root_.findView("addSpareButton"))) {
         const NodeId sel = model_.selected();
@@ -316,13 +392,14 @@ void EditorWindow::refresh() {
 
     params_->sync();
     auto* display = dynamic_cast<newui::Toggle*>(root_.findView("displayToggle"));
-    display->setEnabled(selected != invalidNodeId);
-    display->setChecked(selected != invalidNodeId && model_.network().displayNode() == selected);
+    const NodeId target = model_.displayTarget();
+    display->setEnabled(target != invalidNodeId);
+    display->setChecked(target != invalidNodeId && model_.network().displayNode() == target);
     if (controller_ && message_.empty()) message_ = controller_->message();
     if (auto* b = dynamic_cast<newui::Button*>(root_.findView("copyButton"))) b->setEnabled(selectedCount > 0);
     if (auto* b = dynamic_cast<newui::Button*>(root_.findView("cutButton"))) b->setEnabled(selectedCount > 0);
-    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("pasteButton"))) b->setEnabled(model_.canPaste());
-    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("renameButton"))) b->setEnabled(selected != invalidNodeId);
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("pasteButton"))) b->setEnabled(model_.canPaste() || systemClipboardHasNodes());
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("renameButton"))) b->setEnabled(selectedCount > 0);
     setText("paramError", message_.empty() ? std::string("\u00b7") : message_);
 
     const CookResult& cook = model_.lastCook();
@@ -346,13 +423,25 @@ void EditorWindow::refresh() {
     updatingUi_ = false;
 }
 
-void EditorWindow::renameSelected() {
-    const NodeId id = model_.selected();
-    if (id == invalidNodeId) {
-        message_ = "select a node first";
-        return;
+bool EditorWindow::systemClipboardHasNodes() {
+    // Reading the clipboard can fail while another program holds it, so look again only when its content changed.
+    const DWORD sequence = ::GetClipboardSequenceNumber();
+    if (sequence != clipboardSequence_) {
+        clipboardSequence_ = sequence;
+        std::wstring text;
+        clipboardHasNodes_ = false;
+        if (newui::ClipboardManager::getText(text)) {
+            try {
+                clipboardHasNodes_ = !clipsFromText(newui::wideToUtf8(text)).empty();
+            } catch (const std::runtime_error&) {
+            }
+        }
     }
-    message_ = model_.renameNode(id, newui::wideToUtf8(view<newui::TextField>("nodeName").text()));
+    return clipboardHasNodes_;
+}
+
+void EditorWindow::renameSelected() {
+    message_ = model_.renameSelection(newui::wideToUtf8(view<newui::TextField>("nodeName").text()));
     edited();
 }
 
@@ -380,6 +469,45 @@ bool EditorWindow::selectAttribute(const std::string& label) {
     return false;
 }
 
+namespace {
+
+// Empty text is "auto" (nullopt); false when the text is neither empty nor a finite number.
+bool parseRangeEnd(const std::wstring& text, std::optional<float>& out) {
+    out.reset();
+    const std::string s = newui::wideToUtf8(text);
+    if (s.find_first_not_of(" \t") == std::string::npos) return true;
+    char* end = nullptr;
+    const float v = std::strtof(s.c_str(), &end);
+    while (end && (*end == ' ' || *end == '\t')) ++end;
+    if (end == s.c_str() || *end != '\0' || !std::isfinite(v)) return false;
+    out = v;
+    return true;
+}
+
+std::wstring rangeEndText(std::optional<float> v) {
+    if (!v) return {};
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", static_cast<double>(*v));
+    return newui::utf8ToWide(buf);
+}
+
+}  // namespace
+
+void EditorWindow::applyRange() {
+    if (updatingUi_ || !viewport_->hasValues()) return;
+    std::optional<float> low, high;
+    if (!parseRangeEnd(view<newui::TextField>("rangeMin").text(), low) || !parseRangeEnd(view<newui::TextField>("rangeMax").text(), high)) {
+        message_ = "the range needs numbers (or nothing for auto)";
+        view<newui::TextField>("rangeMin").setText(rangeEndText(viewport_->manualLow()));
+        view<newui::TextField>("rangeMax").setText(rangeEndText(viewport_->manualHigh()));
+        setText("statusText", message_);
+        return;
+    }
+    if (low == viewport_->manualLow() && high == viewport_->manualHigh()) return;
+    viewport_->setRange(low, high);
+    viewportCanvas_->redraw();
+}
+
 void EditorWindow::refreshAttributes() {
     std::vector<std::string> labels{"(none)"};
     for (const auto& c : viewport_->choices()) labels.push_back(c.label);
@@ -394,25 +522,59 @@ void EditorWindow::refreshAttributes() {
         select->setModel(std::move(items));
     }
     if (select->selectedIndex() != std::optional<size_t>(index)) select->setSelectedIndex(index);
+    for (auto [name, value] : {std::pair{"rangeMin", viewport_->manualLow()}, std::pair{"rangeMax", viewport_->manualHigh()}}) {
+        auto* field = dynamic_cast<newui::TextField*>(root_.findView(name));
+        if (field && !field->isFocused() && field->text() != rangeEndText(value)) field->setText(rangeEndText(value));
+        if (field) field->setEnabled(viewport_->hasValues());
+    }
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("autoRangeButton"))) b->setEnabled(viewport_->hasValues());
+}
+
+bool EditorWindow::selectAsset(const std::string& name) {
+    const auto at = std::find(assetNames_.begin(), assetNames_.end(), name);
+    if (at == assetNames_.end()) return false;
+    assetTree_->setSelectedPath(std::vector<size_t>{static_cast<size_t>(at - assetNames_.begin())});
+    updateAssetDetails();
+    return true;
+}
+
+std::string EditorWindow::selectedAsset() const {
+    const auto path = assetTree_->selectedPath();
+    return path && path->size() == 1 && path->front() < assetNames_.size() ? assetNames_[path->front()] : std::string();
 }
 
 void EditorWindow::refreshAssets() {
     const std::vector<std::string> names = model_.assetNames();
-    if (names == assetNames_) return;
-    auto* select = dynamic_cast<newui::DropDownList*>(root_.findView("assetSelect"));
-    if (!select) return;
-    std::string keep;
-    if (select->selectedIndex() && *select->selectedIndex() < assetNames_.size()) keep = assetNames_[*select->selectedIndex()];
-    assetNames_ = names;
-    auto items = std::make_unique<newui::StringListModel>();
-    std::optional<size_t> index;
-    for (size_t i = 0; i < names.size(); ++i) {
-        items->addItem(names[i]);
-        if (names[i] == keep) index = i;
+    if (names != assetNames_) {
+        const std::string keep = selectedAsset();
+        assetNames_ = names;
+        auto items = std::make_unique<newui::StringTreeModel>();
+        std::optional<size_t> index;
+        for (size_t i = 0; i < names.size(); ++i) {
+            items->addItem(names[i]);
+            if (names[i] == keep) index = i;
+        }
+        assetTree_->setModel(std::move(items));
+        if (!index && !names.empty()) index = 0;
+        assetTree_->setSelectedPath(index ? std::optional<std::vector<size_t>>(std::vector<size_t>{*index}) : std::nullopt);
     }
-    select->setModel(std::move(items));
-    if (!index && !names.empty()) index = 0;
-    select->setSelectedIndex(index);
+    updateAssetDetails();
+}
+
+void EditorWindow::updateAssetDetails() {
+    const std::string name = selectedAsset();
+    const EditorModel::AssetInfo info = name.empty() ? EditorModel::AssetInfo() : model_.assetInfo(name);
+    std::string text = "no asset selected";
+    if (!info.name.empty()) {
+        text = info.name + " v" + std::to_string(info.version) + ": " + std::to_string(info.inputs) + (info.inputs == 1 ? " input, " : " inputs, ");
+        text += std::to_string(info.parameters.size()) + (info.parameters.size() == 1 ? " parameter" : " parameters");
+        for (size_t i = 0; i < info.parameters.size(); ++i) text += (i ? ", " : " (") + info.parameters[i] + (i + 1 == info.parameters.size() ? ")" : "");
+        text += "; " + std::to_string(info.instances) + " in the graph";
+        if (!info.source.empty()) text += "; " + std::filesystem::path(info.source).filename().string();
+    }
+    setText("assetDetails", text);
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("addAssetButton"))) b->setEnabled(!info.name.empty());
+    if (auto* b = dynamic_cast<newui::Button*>(root_.findView("reloadAssetButton"))) b->setEnabled(!info.source.empty());
 }
 
 void EditorWindow::doLoadAsset() {

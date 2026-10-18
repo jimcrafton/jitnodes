@@ -25,6 +25,7 @@ namespace {
 constexpr int formatVersion = 1;
 constexpr const char* graphFormat = "jitnodes";
 constexpr const char* assetFormat = "jitnodes-asset";
+constexpr const char* clipFormat = "jitnodes-nodes";
 
 [[noreturn]] void fail(const std::string& message) { throw std::runtime_error("graph file: " + message); }
 
@@ -626,6 +627,54 @@ NodeClip copyNode(const Network& net, NodeId id) {
     writeNode(b, net, id, false);
     clip.text = std::make_shared<const std::string>(dump(doc));
     return clip;
+}
+
+std::string clipsToText(const std::vector<NodeClip>& clips) {
+    json5::document doc;
+    json5::builder b(doc);
+    b.push_object();
+    b["format"] = b.new_string(clipFormat);
+    b["version"] = json5::value(formatVersion);
+    b.push_array();
+    for (const NodeClip& clip : clips) {
+        json5::document body;
+        if (json5::from_string(*clip.text, body)) fail("the copied node is corrupt");
+        b.push_object();
+        b["type"] = b.new_string(clip.type);
+        b["name"] = b.new_string(clip.name);
+        b.push_array();
+        for (const std::string& name : clip.inputNames) b += b.new_string(name);
+        b["inputs"] = b.pop();
+        b["body"] = copyValue(b, body);
+        b += b.pop();
+    }
+    b["nodes"] = b.pop();
+    b.pop();
+    return dump(doc);
+}
+
+std::vector<NodeClip> clipsFromText(const std::string& text) {
+    std::vector<NodeClip> clips;
+    json5::document doc;
+    if (json5::from_string(text, doc) || !doc.is_object()) return clips;
+    json5::value format;
+    if (!member(doc, "format", format) || !format.is_string() || std::string(format.get_c_str()) != clipFormat) return clips;
+    if (static_cast<int>(requireNumberMember(doc, "version", "clip version")) != formatVersion) fail("unsupported clip version");
+    json5::value nodes;
+    if (!member(doc, "nodes", nodes) || !nodes.is_array()) fail("a clip needs a nodes array");
+    for (const json5::value& nv : json5::array_view(nodes)) {
+        if (!nv.is_object()) fail("a clipped node must be an object");
+        NodeClip clip;
+        clip.type = requireStringMember(nv, "type", "clip type");
+        clip.name = requireStringMember(nv, "name", "clip name");
+        json5::value inputs, body;
+        if (!member(nv, "inputs", inputs) || !inputs.is_array()) fail("a clipped node needs an inputs array");
+        for (const json5::value& in : json5::array_view(inputs)) clip.inputNames.push_back(requireString(in, "a clip input"));
+        if (!member(nv, "body", body) || !body.is_object()) fail("a clipped node needs a body object");
+        clip.text = std::make_shared<const std::string>(dumpValue(body));
+        clips.push_back(std::move(clip));
+    }
+    return clips;
 }
 
 std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips) {

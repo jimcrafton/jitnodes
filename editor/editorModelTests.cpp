@@ -788,6 +788,18 @@ TEST(subnetsBecomeAssetsGetUpdatedAndCanBeUnlocked) {
     CHECK(m.loadAssetsFrom(dir.string(), &loaded).empty() && loaded == 2);
     CHECK(m.loadAssetsFrom((dir / "nope").string(), &loaded).empty() && loaded == 0);
     CHECK(registry.assetVersion("editorMadeAsset") == 2);
+
+    m.select(invalidNodeId);
+    m.addNode("editorMadeAsset");
+    m.enter(sub2);
+    m.addNode("editorMadeAsset");
+    m.up();
+    const EditorModel::AssetInfo info = m.assetInfo("editorMadeAsset");
+    CHECK(info.name == "editorMadeAsset" && info.version == 2 && info.inputs == 1 && info.instances == 2 && info.source == pathB);
+    CHECK(std::find(info.parameters.begin(), info.parameters.end(), "amount") != info.parameters.end());
+    CHECK(m.assetInfo("line").name.empty() && m.assetInfo("nope").name.empty());
+    CHECK(m.reloadAsset("editorMadeAsset").empty() && m.assetInfo("editorMadeAsset").source == pathB);
+    CHECK(!m.reloadAsset("nope").empty());
     std::filesystem::remove_all(dir);
 }
 
@@ -849,6 +861,80 @@ TEST(viewportListsAttributesAndComputesTheirValuesAndRange) {
     CHECK(!v.hasValues());
 }
 
+TEST(theClipboardTravelsAsTextBetweenModels) {
+    EditorModel a;
+    CHECK(a.clipboardText().empty());
+    const NodeId line = a.addNode("line");
+    a.addNode("transform");
+    a.setSelection(a.network().nodeIds());
+    CHECK(a.copySelected());
+    const std::string text = a.clipboardText();
+    CHECK(text.find("jitnodes-nodes") != std::string::npos);
+
+    EditorModel b;
+    CHECK(!b.canPaste() && !b.setClipboardText("just some words") && !b.setClipboardText("") && !b.canPaste());
+    CHECK(!b.setClipboardText("{ format: \"jitnodes-nodes\", version: 1 }") && !b.canPaste());
+    CHECK(b.setClipboardText(text) && b.canPaste());
+    CHECK(b.paste().empty() && b.network().nodeIds().size() == 2 && b.network().node(b.selection().front()).typeName() == "line");
+    const NodeId first = b.selection().front();
+    CHECK(b.setClipboardText(text) && b.paste().empty() && b.network().nodeIds().size() == 4);
+    CHECK(b.network().node(first).posX() != b.network().node(b.selection().front()).posX());
+    (void)line;
+}
+
+TEST(pointsWithARadiusAreDrawnAsSpritesUntilAnAttributeIsChosen) {
+    ViewportController v;
+    v.setViewSize(400, 300);
+    v.setGeometry(attributeGeometry());
+    CHECK(!v.spritesActive());
+
+    EditorModel m;
+    m.addNode("line");
+    const NodeId wr = m.addNode("wrangle");
+    m.setParameter(wr, "code", "radius = 0.5; Cd.x = 1; temp = x;");
+    CHECK(m.cook().ok);
+    v.setGeometry(m.geometry());
+    CHECK(v.spritesActive() && !v.hasValues());
+    v.selectChoice(choiceIndex(v, "temp"));
+    CHECK(!v.spritesActive() && v.hasValues());
+    v.selectChoice(std::nullopt);
+    CHECK(v.spritesActive());
+    v.setGeometry(GeometryHandle());
+    CHECK(!v.spritesActive());
+}
+
+TEST(theColorRangeCanBeSetByHandAndTheMapChosen) {
+    ViewportController v;
+    v.setViewSize(400, 300);
+    v.setGeometry(attributeGeometry());
+    v.selectChoice(choiceIndex(v, "temp"));
+    v.setRange(0.25f, std::nullopt);
+    CHECK(v.valueMin() == 0.25f && std::fabs(v.valueMax() - 1.0f) < 1e-4f && v.manualLow() && !v.manualHigh());
+    v.setRange(0.0f, 0.5f);
+    CHECK(v.valueMin() == 0.0f && v.valueMax() == 0.5f && v.colorOf(0.5f) == ViewportController::colormap(1.0f) && v.colorOf(2.0f) == ViewportController::colormap(1.0f));
+    v.setRange(0.5f, 0.0f);
+    CHECK(v.colorOf(0.5f) == ViewportController::colormap(0.0f) && v.colorOf(0.0f) == ViewportController::colormap(1.0f));
+    v.setRange(0.4f, 0.4f);
+    CHECK(v.valueMin() < v.valueMax());
+    v.setRange(0.25f, 0.75f);
+    v.setGeometry(attributeGeometry());
+    CHECK(v.valueMin() == 0.25f && v.valueMax() == 0.75f);
+    v.selectChoice(choiceIndex(v, "N (length)"));
+    CHECK(!v.manualLow() && !v.manualHigh() && std::fabs(v.valueMin() - 1.0f) < 1e-5f);
+    v.setRange(std::nanf(""), std::nullopt);
+    CHECK(!v.manualLow());
+
+    CHECK(v.colorMap() == ViewportController::ColorMap::viridis && v.colorOf(v.valueMin()) == 0xFF440154u);
+    v.setColorMap(ViewportController::ColorMap::grayscale);
+    CHECK(v.colorOf(v.valueMin()) == 0xFF000000u && v.colorOf(v.valueMax()) == 0xFFFFFFFFu);
+    for (size_t i = 0; i < ViewportController::colorMapCount; ++i) {
+        const auto map = static_cast<ViewportController::ColorMap>(i);
+        CHECK(std::string(ViewportController::colorMapName(map)).size() > 0);
+        CHECK(ViewportController::colormap(0.0f, map) != ViewportController::colormap(1.0f, map));
+        CHECK(ViewportController::colormap(std::nanf(""), map) == 0xFF808080u);
+    }
+}
+
 TEST(colormapRunsFromDarkPurpleToYellowAndHandlesBadValues) {
     CHECK(ViewportController::colormap(0.0f) == 0xFF440154u && ViewportController::colormap(1.0f) == 0xFFFDE725u);
     CHECK(ViewportController::colormap(-3.0f) == 0xFF440154u && ViewportController::colormap(7.0f) == 0xFFFDE725u);
@@ -907,6 +993,40 @@ TEST(renamingANodeIsOneUndoStepAndRejectsBadNames) {
     CHECK(m.network().node(a).name() == "line1" && m.network().node(b).expression("tx") == "line1.length");
     m.redo();
     CHECK(m.network().node(a).name() == "source" && m.cook().ok);
+}
+
+TEST(renamingSeveralNodesNumbersThemInOneUndoStep) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const NodeId c = m.addNode("null");
+    m.setSelection({a, b});
+    CHECK(m.renameSelection("wall").empty() && m.network().node(a).name() == "wall1" && m.network().node(b).name() == "wall2");
+    CHECK(m.undoLabel() == "rename 2 nodes");
+    CHECK(!m.renameSelection("9lives").empty() && m.network().node(a).name() == "wall1");
+    m.setSelection({c});
+    CHECK(m.renameSelection("wall").empty() && m.network().node(c).name() == "wall");
+    m.setSelection({b, c});
+    CHECK(m.renameSelection("wall").empty() && m.network().node(b).name() == "wall2" && m.network().node(c).name() == "wall3");
+    m.undo();
+    m.undo();
+    CHECK(m.network().node(a).name() == "wall1" && m.network().node(b).name() == "wall2");
+    m.undo();
+    CHECK(m.network().node(a).name() == "line1" && m.network().node(b).name() == "transform2");
+    m.select(invalidNodeId);
+    CHECK(!m.renameSelection("x").empty());
+}
+
+TEST(theDisplayFlagGoesToTheLastSelectedNode) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    m.select(a);
+    CHECK(m.displayTarget() == a);
+    m.setSelection({a, b});
+    CHECK(m.displayTarget() == b);
+    m.select(invalidNodeId);
+    CHECK(m.displayTarget() == invalidNodeId);
 }
 
 TEST(copyCutAndPasteWorkOnTheSelectedNode) {
@@ -1016,6 +1136,24 @@ TEST(clickingWithShiftTogglesAndDraggingMovesTheWholeSelection) {
     CHECK(m.selected() == a);
     CHECK(g.selectAll() && m.selection().size() == 3);
     CHECK(g.deleteSelected() && m.network().nodeIds().empty());
+}
+
+TEST(nudgingMovesTheSelectionInOneUndoStep) {
+    EditorModel m;
+    const NodeId a = m.addNode("line");
+    const NodeId b = m.addNode("transform");
+    const float ax = m.network().node(a).posX(), ay = m.network().node(a).posY(), bx = m.network().node(b).posX();
+    m.select(invalidNodeId);
+    CHECK(!m.nudgeSelected(10, 0));
+    m.select(a);
+    CHECK(m.nudgeSelected(10, -20) && m.undoLabel() == "move node");
+    CHECK(m.network().node(a).posX() == ax + 10 && m.network().node(a).posY() == ay - 20 && m.network().node(b).posX() == bx);
+    m.selectAll();
+    CHECK(m.nudgeSelected(5, 0) && m.undoLabel() == "move nodes" && m.network().node(a).posX() == ax + 15 && m.network().node(b).posX() == bx + 5);
+    m.undo();
+    CHECK(m.network().node(a).posX() == ax + 10 && m.network().node(b).posX() == bx);
+    m.undo();
+    CHECK(m.network().node(a).posX() == ax && m.network().node(a).posY() == ay);
 }
 
 TEST(draggingABoxSelectsTheNodesItTouches) {

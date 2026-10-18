@@ -8,6 +8,9 @@
 
 #include "drawText.h"
 #include "newui/utils.h"
+#ifdef JITNODES_GUI_AUTOMATION
+#include "newui/automation.h"
+#endif
 
 namespace jitnodes::editor {
 
@@ -105,6 +108,9 @@ KeyframeDialog::KeyframeDialog(const std::string& title, std::vector<Keyframe> k
     if (!newui::Bundle::instance().loadFrame(dialog_)) throw std::runtime_error("could not load Resources/keyframeDialog.newui");
     dialog_.setTitle("Edit keyframes - " + title);
     newui::RootView& root = dialog_.rootView();
+#ifdef JITNODES_GUI_AUTOMATION
+    newui::Automation::expose(root);
+#endif
 
     dynamic_cast<newui::Label*>(find(root, "dlgTitle"))->setText(title);
     dynamic_cast<newui::Label*>(find(root, "dlgInfo"))->setText("Playhead " + number(playhead) + " s");
@@ -217,6 +223,11 @@ void KeyframeDialog::addRow(size_t index) {
     r.interp->setSelectedIndex(static_cast<size_t>(key.interp));
     auto* remove = make<newui::Button>(*row, 30, 24);
     remove->setText("x");
+    const std::string suffix = "." + std::to_string(index);
+    r.time->setName("keyTime" + suffix);
+    r.value->setName("keyValue" + suffix);
+    r.interp->setName("keyInterp" + suffix);
+    remove->setName("keyDelete" + suffix);
 
     r.shownTime = number(key.time);
     r.shownValue = number(key.value);

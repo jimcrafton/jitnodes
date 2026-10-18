@@ -55,7 +55,15 @@ void ViewportController::rebuildChoices() {
 }
 
 void ViewportController::selectChoice(std::optional<size_t> index) {
-    selectedLabel_ = index && *index < choices_.size() ? choices_[*index].label : std::string();
+    const std::string label = index && *index < choices_.size() ? choices_[*index].label : std::string();
+    if (label != selectedLabel_) manualLow_ = manualHigh_ = std::nullopt;
+    selectedLabel_ = label;
+    recomputeValues();
+}
+
+void ViewportController::setRange(std::optional<float> low, std::optional<float> high) {
+    manualLow_ = low && std::isfinite(*low) ? low : std::nullopt;
+    manualHigh_ = high && std::isfinite(*high) ? high : std::nullopt;
     recomputeValues();
 }
 
@@ -96,7 +104,9 @@ void ViewportController::recomputeValues() {
         hi = std::max(hi, v);
     }
     if (lo > hi) lo = hi = 0.0f;
-    if (hi - lo < 1e-12f) {
+    if (manualLow_) lo = *manualLow_;
+    if (manualHigh_) hi = *manualHigh_;
+    if (std::fabs(hi - lo) < 1e-12f) {
         lo -= 0.5f;
         hi += 0.5f;
     }
@@ -104,8 +114,22 @@ void ViewportController::recomputeValues() {
     valueMax_ = hi;
 }
 
-uint32_t ViewportController::colormap(float t) {
-    static const uint32_t stops[] = {0xFF440154u, 0xFF3B528Bu, 0xFF21918Cu, 0xFF5EC962u, 0xFFFDE725u};
+const char* ViewportController::colorMapName(ColorMap map) {
+    switch (map) {
+        case ColorMap::viridis: return "Viridis";
+        case ColorMap::magma: return "Magma";
+        case ColorMap::grayscale: return "Grayscale";
+        case ColorMap::coolWarm: return "Cool-warm";
+    }
+    return "";
+}
+
+uint32_t ViewportController::colormap(float t, ColorMap map) {
+    static const uint32_t viridis[] = {0xFF440154u, 0xFF3B528Bu, 0xFF21918Cu, 0xFF5EC962u, 0xFFFDE725u};
+    static const uint32_t magma[] = {0xFF000004u, 0xFF51127Cu, 0xFFB73779u, 0xFFFC8961u, 0xFFFCFDBFu};
+    static const uint32_t grayscale[] = {0xFF000000u, 0xFF404040u, 0xFF808080u, 0xFFC0C0C0u, 0xFFFFFFFFu};
+    static const uint32_t coolWarm[] = {0xFF3B4CC0u, 0xFF8DB0FEu, 0xFFDDDDDDu, 0xFFF4987Au, 0xFFB40426u};
+    const uint32_t* stops = map == ColorMap::magma ? magma : map == ColorMap::grayscale ? grayscale : map == ColorMap::coolWarm ? coolWarm : viridis;
     if (!std::isfinite(t)) return 0xFF808080u;
     t = std::clamp(t, 0.0f, 1.0f) * 4.0f;
     const size_t i = std::min<size_t>(static_cast<size_t>(t), 3);
@@ -118,7 +142,7 @@ uint32_t ViewportController::colormap(float t) {
 }
 
 uint32_t ViewportController::colorOf(float value) const {
-    return colormap(std::isfinite(value) ? (value - valueMin_) / (valueMax_ - valueMin_) : std::numeric_limits<float>::quiet_NaN());
+    return colormap(std::isfinite(value) ? (value - valueMin_) / (valueMax_ - valueMin_) : std::numeric_limits<float>::quiet_NaN(), colorMap_);
 }
 
 std::optional<size_t> ViewportController::nearestPoint(Vec screen, float radiusPx) const {

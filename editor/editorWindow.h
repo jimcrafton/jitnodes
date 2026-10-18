@@ -33,6 +33,8 @@ public:
 
     void refresh();
     size_t assetCount() const { return assetNames_.size(); }
+    // Selects an entry of the asset list by name; false when there is none.
+    bool selectAsset(const std::string& name);
     // Labels of the "Color by" list, starting with "(none)".
     const std::vector<std::string>& attributeLabels() const { return attributeLabels_; }
     // Opens a graph file without asking (used for the command line); errors are shown in the status line.
@@ -61,9 +63,13 @@ private:
     void startPlayback();
     void editKeys(const std::string& name);
     void renameSelected();
+    bool systemClipboardHasNodes();
     void afterNavigation();
     void refreshAssets();
+    void updateAssetDetails();
+    std::string selectedAsset() const;
     void refreshAttributes();
+    void applyRange();
     void doLoadAsset();
     void doCreateAsset();
     bool confirmDiscard();
@@ -87,6 +93,9 @@ private:
     newui::RunLoop::TimerHandle timer_ = newui::RunLoop::kInvalidTimerHandle;
     std::string message_;
     std::vector<std::string> assetNames_;
+    newui::TreeView* assetTree_ = nullptr;
+    unsigned long clipboardSequence_ = 0;
+    bool clipboardHasNodes_ = false;
     std::vector<std::string> attributeLabels_;
 };
 

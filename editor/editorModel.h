@@ -60,6 +60,21 @@ public:
     // Registers the assets of a file; instances in the graph built from an older definition are rebuilt (see
     // updateAssetInstances), which resets the undo history. Returns an error message; `updated` gets the number rebuilt.
     std::string loadAssetFile(const std::string& path, size_t* updated = nullptr);
+    // What the asset library browser shows about one registered asset. `source` is the file it was last loaded from or
+    // saved to (empty for assets that only came embedded in a graph file); `instances` counts the nodes of that type in
+    // the whole graph, inside subnets too. Unknown names give an empty name.
+    struct AssetInfo {
+        std::string name;
+        int version = 0;
+        int inputs = 0;
+        std::vector<std::string> parameters;
+        size_t instances = 0;
+        std::string source;
+    };
+    AssetInfo assetInfo(const std::string& name) const;
+    // Registers the asset's source file again, so edits made to the file outside the editor are picked up; instances are
+    // rebuilt like loadAssetFile does. Returns an error message.
+    std::string reloadAsset(const std::string& name, size_t* updated = nullptr);
     // Registers every *.asset.json file of a directory (missing directory: nothing happens); returns the first error.
     std::string loadAssetsFrom(const std::string& directory, size_t* loaded = nullptr);
     // Saves the subnet as an asset definition file and registers it as the node type `typeName`. The version is one more
@@ -96,9 +111,16 @@ public:
     void removeNode(NodeId id);
     // Deletes every selected node as one undo step; false when nothing is selected.
     bool removeSelected();
+    // Moves every selected node by (dx, dy) world units as one undo step; false when nothing is selected.
+    bool nudgeSelected(float dx, float dy);
     // Renames a node (see Network::renameNode; expressions that refer to it follow). One undo step; returns an error
     // message and changes nothing when the name is not acceptable.
     std::string renameNode(NodeId id, const std::string& name);
+    // Renames the selection as one undo step: one node gets `name`; several get its letters followed by 1, 2, ... in id
+    // order (skipping names in use). Returns an error message and changes nothing when the name is not acceptable.
+    std::string renameSelection(const std::string& name);
+    // The node the display flag goes to: the only selected node, or the last of several (invalidNodeId for none).
+    NodeId displayTarget() const;
     // Clipboard of the selected nodes. Copy and cut take them (false when nothing is selected); paste adds copies to the
     // current network, offset a little further for every paste of the same clip, selects them and leaves the display node
     // alone. Wires between the copied nodes are kept, other inputs are reconnected to nodes of the same names. Returns an
@@ -107,6 +129,11 @@ public:
     bool cutSelected();
     std::string paste();
     bool canPaste() const { return !clip_.empty(); }
+    // The clipboard as text for the system clipboard (empty when nothing was copied), and the other way round: text that
+    // holds nodes (clipsToText) replaces the clipboard and returns true; any other text changes nothing and returns false.
+    // Text equal to the current clipboard keeps the paste offset going.
+    std::string clipboardText() const;
+    bool setClipboardText(const std::string& text);
     void setDisplay(NodeId id);
     void ensurePositions();
 
@@ -159,6 +186,7 @@ private:
     void resetHistory();
     void rebaseHistory();
     std::map<std::string, size_t> assetRevisions() const;
+    std::map<std::string, std::string> assetSources_;
     size_t updateChangedAssets(const std::map<std::string, size_t>& before);
     Network& current();
     const Network& current() const;

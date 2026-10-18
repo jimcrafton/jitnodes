@@ -133,6 +133,17 @@ void EditorModel::removeNode(NodeId id) {
     history_->commit("delete " + name);
 }
 
+bool EditorModel::nudgeSelected(float dx, float dy) {
+    const std::vector<NodeId> ids = selection();
+    if (ids.empty()) return false;
+    for (NodeId id : ids) {
+        const Node& n = current().node(id);
+        moveNode(id, n.posX() + dx, n.posY() + dy);
+    }
+    history_->commit(ids.size() > 1 ? "move nodes" : "move node");
+    return true;
+}
+
 bool EditorModel::removeSelected() {
     const std::vector<NodeId> ids = selection();
     if (ids.empty()) return false;
@@ -155,6 +166,36 @@ std::string EditorModel::renameNode(NodeId id, const std::string& name) {
     return {};
 }
 
+std::string EditorModel::renameSelection(const std::string& name) {
+    const std::vector<NodeId> ids = selection();
+    if (ids.empty()) return "select a node first";
+    if (ids.size() == 1) return renameNode(ids.front(), name);
+    size_t letters = name.size();
+    while (letters > 0 && std::isdigit(static_cast<unsigned char>(name[letters - 1]))) --letters;
+    const std::string stem = name.substr(0, letters);
+    try {
+        for (NodeId id : ids) {
+            std::string candidate;
+            for (size_t n = 1;; ++n) {
+                candidate = stem + std::to_string(n);
+                const NodeId owner = current().findNode(candidate);
+                if (owner == invalidNodeId || owner == id) break;
+            }
+            current().renameNode(id, candidate);
+        }
+    } catch (const std::runtime_error& e) {
+        // Only the first rename can fail (the stem is not an identifier), so nothing has changed yet.
+        return e.what();
+    }
+    history_->commit("rename " + std::to_string(ids.size()) + " nodes");
+    return {};
+}
+
+NodeId EditorModel::displayTarget() const {
+    const std::vector<NodeId> ids = selection();
+    return ids.empty() ? invalidNodeId : ids.back();
+}
+
 bool EditorModel::copySelected() {
     const std::vector<NodeId> ids = selection();
     if (ids.empty()) return false;
@@ -171,6 +212,23 @@ bool EditorModel::cutSelected() {
     for (NodeId id : ids) current().removeNode(id);
     selection_.clear();
     history_->commit(label);
+    return true;
+}
+
+std::string EditorModel::clipboardText() const { return clip_.empty() ? std::string() : clipsToText(clip_); }
+
+bool EditorModel::setClipboardText(const std::string& text) {
+    std::vector<NodeClip> clips;
+    try {
+        clips = clipsFromText(text);
+    } catch (const std::runtime_error&) {
+        return false;
+    }
+    if (clips.empty()) return false;
+    if (clipsToText(clips) != clipboardText()) {
+        clip_ = std::move(clips);
+        pasteCount_ = 0;
+    }
     return true;
 }
 
@@ -446,12 +504,51 @@ std::string EditorModel::loadAssetFile(const std::string& path, size_t* updated)
     try {
         const auto before = assetRevisions();
         registerAssetFromFile(path);
+        for (const auto& [name, revision] : assetRevisions()) {
+            const auto old = before.find(name);
+            if (old == before.end() || old->second != revision) assetSources_[name] = path;
+        }
         const size_t n = updateChangedAssets(before);
         if (updated) *updated = n;
     } catch (const std::exception& e) {
         return e.what();
     }
     return {};
+}
+
+namespace {
+
+size_t countInstances(const Network& net, const std::string& typeName) {
+    size_t count = 0;
+    for (NodeId id : net.nodeIds()) {
+        const Node& n = net.node(id);
+        if (n.typeName() == typeName) ++count;
+        if (const Network* child = n.childNetwork(); child && !n.isAssetInstance()) count += countInstances(*child, typeName);
+    }
+    return count;
+}
+
+}  // namespace
+
+EditorModel::AssetInfo EditorModel::assetInfo(const std::string& name) const {
+    AssetInfo info;
+    NodeRegistry& registry = NodeRegistry::instance();
+    if (!registry.assetText(name)) return info;
+    info.name = name;
+    info.version = registry.assetVersion(name);
+    const std::unique_ptr<Node> sample = registry.create(name);
+    info.inputs = sample->inputCount();
+    info.parameters = sample->floatNames();
+    info.instances = countInstances(net_, name);
+    if (const auto it = assetSources_.find(name); it != assetSources_.end()) info.source = it->second;
+    return info;
+}
+
+std::string EditorModel::reloadAsset(const std::string& name, size_t* updated) {
+    if (updated) *updated = 0;
+    const auto it = assetSources_.find(name);
+    if (it == assetSources_.end()) return name + " has no source file to reload";
+    return loadAssetFile(std::string(it->second), updated);
 }
 
 std::string EditorModel::loadAssetsFrom(const std::string& directory, size_t* loaded) {
@@ -490,6 +587,7 @@ std::string EditorModel::createAsset(NodeId id, const std::string& typeName, con
         const auto before = assetRevisions();
         saveAssetToFile(current(), id, typeName, path, version);
         registerAssetFromFile(path);
+        assetSources_[typeName] = path;
 
         if (replace) {
             const Node& old = current().node(id);

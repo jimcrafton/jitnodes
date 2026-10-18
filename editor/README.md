@@ -127,7 +127,9 @@ Colour by attribute: the Color by list under the viewport title holds the point 
 attributes (`prim: name`). Choosing one colours the lines (each segment by the average of its end points; a primitive
 attribute colours the whole primitive) and the dots with a viridis-like map from purple (smallest) to yellow (largest), and
 draws a legend with the range in the corner; a constant attribute gets a range of one around its value and values that are
-not finite are grey. The choice is remembered by name while the graph changes, so it comes back when the attribute does.
+not finite are grey. The Map list picks another colour map (Viridis, Magma, Grayscale, Cool-warm); the Range fields set
+the smallest and largest value by hand (empty is auto for that end, an inverted range reverses the map) and Auto clears both.
+The range resets when another attribute is chosen. The choice is remembered by name while the graph changes, so it comes back when the attribute does.
 Hovering within 14 px of a point rings it and shows its index, position and the attribute value. Colouring draws at most
 20,000 segments (every n-th point beyond that); hover search is skipped above 300,000 points. The graph header has its own Fit button.
 
@@ -157,12 +159,14 @@ Assets: select a subnet and press Create asset... to save it as an asset definit
 the asset's type name; the version is one higher than the registered one, 1 for a new asset). The subnet is replaced by an
 instance of the new asset with the same name, wiring and promoted parameter values, and instances of an older version are
 updated (which resets the undo history, and the status line says so). Registered assets appear in the Assets list of the
-palette: choose one and press Add asset, or Load asset... to register a definition file. Select an instance and press Unlock
+palette, a list under the heading with a line of details (version, inputs, promoted parameters, instances in the graph, source
+file): choose one and press Add asset, Reload asset to read its source file again (instances are rebuilt), or Load asset... to
+register a definition file. Select an instance and press Unlock
 to turn it back into an ordinary subnet holding a copy of the contents. Graph files embed the definitions they use, so they
 open without the asset files. Instances cannot be entered; unlock them first, or edit the definition and save it again.
 
 Not wired: removing or renaming a promoted parameter (the library has no API for it), subnets with more than one input from
-the palette (use the file format), saving the changes of an unlocked subnet back to its asset in one step (use Create asset... with the same name), dragging keys on the curve, tangent handles, string expressions, node renaming.
+the palette (use the file format), saving the changes of an unlocked subnet back to its asset in one step (use Create asset... with the same name), dragging keys on the curve, tangent handles, string expressions.
 
 ## Looking at the running window
 
@@ -191,3 +195,27 @@ powershell -File editor/uiShot.ps1 -out shot.png -clicks "81,90;81,118"    # cli
 
 What the mockup cannot hold and the editor code has to supply: the three canvases, the `DropDownList` models, the
 parameter rows for the selected node (the mockup shows one transform), and the list rows of the profile table.
+
+## Shortcuts and renaming
+
+F2 over the graph moves the focus to the node name field with its text selected (Enter renames). With several nodes selected,
+the name field renames all of them as one undo step: the name's letters followed by 1, 2, ... in id order (`wall` gives `wall1`,
+`wall2`). The Display node toggle works on the only selected node, or on the last of several.
+
+Copy and cut also put the nodes on the system clipboard as JSON text (`format: "jitnodes-nodes"`), and paste reads it first, so
+nodes can be pasted into another editor window, a text editor or a file, and back. Other clipboard text is ignored. Asset
+definitions are not included: pasting an instance of an asset the receiving editor has not loaded reports an error. The Paste
+button enables itself when the canvas is entered or focused if the clipboard holds nodes.
+
+The arrow keys over the graph move the selected nodes by 10 units (Shift: 50), one undo step per key press.
+
+## GUI tests
+
+`tests/gui/test_editor_gui.py` drives the built editor with newui's guitest driver (real mouse and keyboard through
+`--automation <pipe>`; see `D:\code\newui\automation.md`). It needs an idle desktop with nothing covering the window:
+
+```
+python tests\gui\test_editor_gui.py --exe ..\out\build\x64-release-editor\editor\jitnodesEditor.exe
+```
+
+`JITNODES_GUI_AUTOMATION` (default ON) links the automation server; turn it off for a shipping build.

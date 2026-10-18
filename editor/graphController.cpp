@@ -254,6 +254,12 @@ bool GraphController::deleteSelected() {
     return true;
 }
 
+bool GraphController::nudge(int stepsX, int stepsY) {
+    if (!model_.nudgeSelected(static_cast<float>(stepsX) * nodeStep, static_cast<float>(stepsY) * nodeStep)) return false;
+    notify(true);
+    return true;
+}
+
 bool GraphController::selectAll() {
     model_.selectAll();
     notify(false);
@@ -263,6 +269,7 @@ bool GraphController::selectAll() {
 bool GraphController::copySelected() {
     message_.clear();
     if (!model_.copySelected()) return false;
+    if (writeClipboard) writeClipboard(model_.clipboardText());
     notify(false);
     return true;
 }
@@ -270,12 +277,14 @@ bool GraphController::copySelected() {
 bool GraphController::cutSelected() {
     message_.clear();
     if (!model_.cutSelected()) return false;
+    if (writeClipboard) writeClipboard(model_.clipboardText());
     hovered_ = invalidNodeId;
     notify(true);
     return true;
 }
 
 bool GraphController::paste() {
+    if (readClipboard) model_.setClipboardText(readClipboard());
     message_ = model_.paste();
     notify(message_.empty());
     return true;

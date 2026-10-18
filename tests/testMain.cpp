@@ -1712,6 +1712,31 @@ TEST(pasteingSeveralNodesRemapsTheirNamesWiresAndExpressions) {
     CHECK(throwsRuntimeError([&] { pasteNodes(net, broken); }) && net.nodeIds().size() == 4);
 }
 
+TEST(clipsRoundTripThroughTextAndOtherTextIsIgnored) {
+    Network net(2);
+    NodeId a = net.addNode("transform", "a");
+    NodeId a1 = net.addNode("transform", "a1");
+    net.connect(a, a1, 0);
+    net.node(a).setFloat("tx", 2.5f);
+    net.node(a1).setExpression("tx", "a.tx * 2");
+    const std::vector<NodeClip> clips = {copyNode(net, a), copyNode(net, a1)};
+    const std::string text = clipsToText(clips);
+
+    const std::vector<NodeClip> back = clipsFromText(text);
+    CHECK(back.size() == 2 && back[0].name == "a" && back[1].type == "transform" && back[1].inputNames == clips[1].inputNames);
+    Network other(2);
+    const std::vector<NodeId> pasted = pasteNodes(other, back);
+    CHECK(pasted.size() == 2 && other.node(pasted[0]).baseFloat("tx") == 2.5f && other.node(pasted[1]).expression("tx") == "a.tx * 2");
+    CHECK(other.inputOf(pasted[1], 0) == pasted[0]);
+
+    CHECK(clipsFromText("").empty() && clipsFromText("hello world").empty() && clipsFromText("[1, 2]").empty());
+    CHECK(clipsFromText("{ format: \"jitnodes\", version: 1 }").empty());
+    CHECK(throwsRuntimeError([&] { clipsFromText("{ format: \"jitnodes-nodes\", version: 1 }"); }));
+    CHECK(throwsRuntimeError([&] { clipsFromText("{ format: \"jitnodes-nodes\", version: 9, nodes: [] }"); }));
+    CHECK(throwsRuntimeError([&] { clipsFromText("{ format: \"jitnodes-nodes\", version: 1, nodes: [ { type: \"line\" } ] }"); }));
+    CHECK(clipsFromText(clipsToText({})).empty());
+}
+
 TEST(mergeTakesAnyNumberOfInputsAndKeepsOneSpare) {
     Network net(2);
     NodeId merge = net.addNode("merge");

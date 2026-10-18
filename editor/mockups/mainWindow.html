@@ -25,6 +25,8 @@
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
+  #assetListHost { height: 84px; background: var(--panelAlt); }
+  #assetDetails { height: 66px; font-size: 11px; color: var(--muted); }
 
   .graphArea { display: flex; flex-direction: column; flex-grow: 1; gap: 4px; padding: 6px; background: var(--panel); border-radius: 4px; }
   .graphHeader { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 20px; }
@@ -35,6 +37,8 @@
   #viewportInfo { width: 190px; text-align: right; }
   .viewport .head2 { display: flex; flex-direction: row; gap: 8px; align-items: center; height: 26px; }
   #attrSelect { width: 190px; }
+  #mapSelect { width: 100px; }
+  #rangeMin, #rangeMax { width: 62px; }
   #graphCanvas { flex-grow: 1; background: #1a1b1e; border: 1px solid var(--border); }
 
   .side { display: flex; flex-direction: column; gap: 6px; width: 340px; }
@@ -101,8 +105,10 @@
       <button id="addNull">null</button>
       <hr>
       <h3>Assets</h3>
-      <select id="assetSelect"><option>wobbleAsset</option></select>
+      <canvas id="assetListHost"></canvas>
+      <span id="assetDetails">wobbleAsset v1: 1 input, 2 parameters (amount, speed), 1 in the graph</span>
       <button id="addAssetButton">Add asset</button>
+      <button id="reloadAssetButton">Reload asset</button>
       <button id="loadAssetButton">Load asset...</button>
     </div>
 
@@ -137,6 +143,7 @@
       <div class="viewport">
         <div class="head"><span class="title">Viewport</span><span id="viewportInfo" class="title">100 points, 1 primitive</span><button id="fitButton">Fit</button></div>
         <div class="head2"><span class="title">Color by</span><select id="attrSelect"><option>(none)</option></select></div>
+        <div class="head2"><span class="title">Map</span><select id="mapSelect"><option>Viridis</option></select><span class="title">Range</span><input id="rangeMin" type="text" placeholder="auto"><input id="rangeMax" type="text" placeholder="auto"><button id="autoRangeButton">Auto</button></div>
         <canvas id="viewportCanvas"></canvas>
       </div>
     </div>

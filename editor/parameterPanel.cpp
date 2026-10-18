@@ -126,6 +126,7 @@ void ParameterPanel::addRow(const ParamInfo& info) {
     r.row = row;
     if (info.multiline) {
         r.area = make<newui::TextControl>(*row, 100, height, 1.0f);
+        r.area->setName("param." + info.name);
         r.area->setWordWrap(true);
         r.area->onLostFocus.add(std::function<newui::SyncReturn(newui::View&)>([this, index](newui::View&) {
             if (!rebuilding_) commit(index);
@@ -133,6 +134,7 @@ void ParameterPanel::addRow(const ParamInfo& info) {
         }));
     } else {
         r.field = make<newui::TextField>(*row, 100, 24, 1.0f);
+        r.field->setName("param." + info.name);
         r.field->setTextColor(colorFor(info));
         r.field->onReturnPressed.add(std::function<newui::SyncReturn(newui::TextField&)>([this, index](newui::TextField&) {
             if (!rebuilding_) commit(index);
@@ -147,6 +149,7 @@ void ParameterPanel::addRow(const ParamInfo& info) {
     if (!info.isText) {
         const std::string paramName = info.name;
         auto* fx = make<newui::Button>(*row, 30, 24);
+        fx->setName("fx." + paramName);
         fx->setText("fx");
         fx->onClick.add(std::function<newui::SyncReturn(newui::Control&)>([this, paramName](newui::Control&) {
             onMessage_(model_.toggleExpression(node_, paramName));
@@ -154,6 +157,7 @@ void ParameterPanel::addRow(const ParamInfo& info) {
             return newui::SyncReturn::Handled;
         }));
         auto* key = make<newui::Button>(*row, 30, 24);
+        key->setName("key." + paramName);
         key->setText("key");
         key->onClick.add(std::function<newui::SyncReturn(newui::Control&)>([this, paramName](newui::Control&) {
             onMessage_(model_.keyframeNow(node_, paramName));
@@ -161,6 +165,7 @@ void ParameterPanel::addRow(const ParamInfo& info) {
             return newui::SyncReturn::Handled;
         }));
         auto* keys = make<newui::Button>(*row, 30, 24);
+        keys->setName("keys." + paramName);
         keys->setText("...");
         keys->onClick.add(std::function<newui::SyncReturn(newui::Control&)>([this, paramName](newui::Control&) {
             if (onEditKeys_) onEditKeys_(paramName);

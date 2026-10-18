@@ -8,6 +8,9 @@
 #include "keyframeDialog.h"
 #include "newui/mouse_constants.h"
 #include "newui/utils.h"
+#ifdef JITNODES_GUI_AUTOMATION
+#include "newui/automation.h"
+#endif
 
 extern void registerReflectionData();
 
@@ -46,14 +49,6 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
     expect(canvas.isVisible(), "the canvas is visible (a plain SubView is invisible by default)");
     GraphController& graph = window.controller();
     const NodeId first = model.network().nodeIds().front();
-    const Vec start = graph.toScreen({model.network().node(first).posX() + nodeWidth / 2, model.network().node(first).posY() + nodeHeight / 2});
-    const float x0 = model.network().node(first).posX();
-    canvas.onMouseDown.syncCall(canvas, newui::Point(start.x, start.y), newui::mbmLeftButton, 0u);
-    canvas.onMouseMove.syncCall(canvas, newui::Point(start.x + 40, start.y + 10), newui::mbmLeftButton, 0u);
-    canvas.onMouseUp.syncCall(canvas, newui::Point(start.x + 40, start.y + 10), newui::mbmLeftButton, 0u);
-    expect(model.selected() == first && model.network().node(first).posX() == x0 + 40, "dragging a node through the canvas events moves it");
-    expect(model.undoLabel() == "move node", "the move is one undo step");
-
     ParameterPanel& panel = window.parameters();
     model.select(model.network().nodeIds().front());
     window.refresh();
@@ -77,30 +72,6 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
     }
     model.undo();
     window.refresh();
-
-    {
-        const NodeId node = model.selected();
-        const std::string oldName = model.network().node(node).name();
-        expect(window.textField("nodeName").text() == newui::utf8ToWide(oldName), "the name field shows the selected node");
-        window.textField("nodeName").setText(L"shifter");
-        click(window, "renameButton");
-        expect(model.network().node(node).name() == "shifter" && model.undoLabel() == "rename " + oldName, "the rename button renames the node");
-        window.textField("nodeName").setText(L"bad name");
-        click(window, "renameButton");
-        expect(model.network().node(node).name() == "shifter", "an invalid name is rejected");
-        const size_t before = model.network().nodeIds().size();
-        expect(!window.button("pasteButton").isEnabled(), "paste is disabled while the clipboard is empty");
-        click(window, "copyButton");
-        expect(window.button("pasteButton").isEnabled(), "copy fills the clipboard");
-        click(window, "pasteButton");
-        expect(model.network().nodeIds().size() == before + 1 && model.network().node(model.selected()).name() == "shifter1", "paste adds a uniquely named copy");
-        click(window, "cutButton");
-        expect(model.network().nodeIds().size() == before, "cut removes the selected node");
-        model.undo();
-        model.undo();
-        model.undo();
-        window.refresh();
-    }
 
     ViewportController& viewport = window.viewport();
     model.setDisplay(model.network().nodeIds()[1]);
@@ -152,9 +123,6 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
         }
         expect(text, "the profile canvas draws the first row's text");
     }
-    window.profileCanvas().onMouseDown.syncCall(window.profileCanvas(), newui::Point(20, 30), newui::mbmLeftButton, 0u);
-    expect(model.selected() == profile.rows()[1].id, "clicking a profile row selects its node");
-
     {
         KeyframeDialog dialog("transform2.tx", {{0.0, 1.0f, KeyInterp::linear}, {2.0, 5.0f, KeyInterp::smooth}}, 1.0);
         expect(dialog.rowCount() == 2, "the keyframe dialog has a row per key");
@@ -240,39 +208,6 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
     const Vec onNode = graph.toScreen({model.network().node(first).posX() + 10, model.network().node(first).posY() + 6});
     expect(pixelAt({3, 3}) == 0xFF1A1B1Eu, "the canvas paints its background");
     expect(pixelAt(onNode) != 0xFF1A1B1Eu, "the canvas paints the nodes");
-    {
-        model.newGraph();
-        window.refresh();
-        click(window, "addLine");
-        click(window, "addSubnet");
-        const NodeId sub = model.selected();
-        const Vec c = graph.toScreen({model.network().node(sub).posX() + nodeWidth / 2, model.network().node(sub).posY() + nodeHeight / 2});
-        canvas.onMouseDblClick.syncCall(canvas, newui::Point(c.x, c.y), newui::mbmLeftButton, 0u);
-        expect(model.depth() == 1, "double-clicking a subnet enters it");
-        click(window, "addSubnetInput");
-        click(window, "addTransform");
-        expect(model.network().nodeIds().size() == 2 && model.rootNetwork().nodeIds().size() == 2, "palette buttons add nodes inside the subnet");
-        expect(model.lastCook().ok && model.lastCook().points == 100 && model.geometry(), "the viewport shows the subnet's output while inside");
-        click(window, "upButton");
-        expect(model.depth() == 0 && model.selected() == sub, "Up leaves the subnet and selects it");
-        window.textField("spareName").setText(L"amount");
-        click(window, "addSpareButton");
-        bool promoted = false;
-        for (const ParamInfo& p : model.parameters(sub)) promoted = promoted || p.name == "amount";
-        expect(promoted, "Add parameter promotes a parameter on the selected subnet");
-        expect(window.parameters().fieldOf("amount") != nullptr, "the parameter panel lists the promoted parameter");
-    }
-    {
-        model.newGraph();
-        window.refresh();
-        expect(window.assetCount() >= 1, "the assets of the Assets directory are listed");
-        click(window, "addLine");
-        click(window, "addAssetButton");
-        expect(model.network().nodeIds().size() == 2 && model.isAssetInstance(model.selected()), "Add asset adds an instance of the chosen asset");
-        expect(model.lastCook().ok && model.lastCook().points == 100, "the asset instance cooks");
-        click(window, "unlockAssetButton");
-        expect(!model.isAssetInstance(model.selected()) && model.canEnter(model.selected()), "Unlock turns the instance into an editable subnet");
-    }
     return failed == 0;
 }
 
@@ -280,10 +215,11 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
 
 int main(int argc, char** argv) {
     const bool checkOnly = argc > 1 && std::strcmp(argv[1], "--check") == 0;
-    std::string startupFile, startupAttribute;
+    std::string startupFile, startupAttribute, automationPipe;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--attribute" && i + 1 < argc) startupAttribute = argv[++i];
+        if (arg == "--automation" && i + 1 < argc) automationPipe = argv[++i];
+        else if (arg == "--attribute" && i + 1 < argc) startupAttribute = argv[++i];
         else if (arg != "--check" && startupFile.empty()) startupFile = arg;
     }
     registerReflectionData();
@@ -308,7 +244,16 @@ int main(int argc, char** argv) {
         if (checkOnly) return selfCheck(window, model) ? 0 : 1;
         if (!startupFile.empty()) window.openFile(startupFile);
         if (!startupAttribute.empty() && !window.selectAttribute(startupAttribute)) std::fprintf(stderr, "no attribute named '%s'\n", startupAttribute.c_str());
+#ifdef JITNODES_GUI_AUTOMATION
+        if (!automationPipe.empty()) {
+            newui::Automation::expose(frame.rootView());
+            newui::Automation::start(automationPipe, app.runLoop());
+        }
+#endif
         app.run();
+#ifdef JITNODES_GUI_AUTOMATION
+        newui::Automation::stop();
+#endif
     } catch (const std::exception& e) {
         std::fprintf(stderr, "jitnodesEditor: %s\n", e.what());
         return 1;

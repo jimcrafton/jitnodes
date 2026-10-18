@@ -39,8 +39,18 @@ public:
     float valueMin() const { return valueMin_; }
     float valueMax() const { return valueMax_; }
     const std::string& valueLabel() const { return valueLabel_; }
-    // Viridis-like map of t in [0, 1] to 0xAARRGGBB (grey for values that are not finite).
-    static uint32_t colormap(float t);
+    enum class ColorMap { viridis, magma, grayscale, coolWarm };
+    static constexpr size_t colorMapCount = 4;
+    static const char* colorMapName(ColorMap map);
+    ColorMap colorMap() const { return colorMap_; }
+    void setColorMap(ColorMap map) { colorMap_ = map; }
+    // The range the colour map spans. It is the smallest and largest value unless an end is set; each end is cleared
+    // by passing nullopt, and both are cleared when another attribute is chosen.
+    void setRange(std::optional<float> low, std::optional<float> high);
+    std::optional<float> manualLow() const { return manualLow_; }
+    std::optional<float> manualHigh() const { return manualHigh_; }
+    // Maps t in [0, 1] to 0xAARRGGBB (grey for values that are not finite); the default map is viridis-like.
+    static uint32_t colormap(float t, ColorMap map = ColorMap::viridis);
     uint32_t colorOf(float value) const;
 
     // The point nearest to a screen position within `radiusPx`, and the hovered point (set by mouse moves without a button).
@@ -90,6 +100,8 @@ private:
     bool dragging_ = false;
     std::vector<AttribChoice> choices_;
     std::string selectedLabel_;
+    ColorMap colorMap_ = ColorMap::viridis;
+    std::optional<float> manualLow_, manualHigh_;
     std::vector<float> values_;
     AttribClass valueClass_ = AttribClass::point;
     float valueMin_ = 0.0f, valueMax_ = 1.0f;

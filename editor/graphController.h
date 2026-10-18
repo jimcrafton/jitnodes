@@ -57,7 +57,14 @@ public:
     bool wheel(Vec screen, float delta);
     bool deleteSelected();
     bool selectAll();
+    // Moves the selected nodes by a number of steps (screen-independent: nodeStep world units per step); true when something moved.
+    bool nudge(int stepsX, int stepsY);
+    static constexpr float nodeStep = 10.0f;
     // Clipboard of the selected node (see EditorModel); each returns true when something happened that needs a repaint.
+    // Hooks for the system clipboard: copy and cut hand the nodes over as text, paste asks for the text first (nodes copied in
+    // another editor window or process arrive that way). Both are optional.
+    std::function<void(const std::string&)> writeClipboard;
+    std::function<std::string()> readClipboard;
     bool copySelected();
     bool cutSelected();
     bool paste();

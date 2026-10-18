@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "newui/newui.h"
 #include "newui/rootview.h"
 #include "newui/runloop.h"
@@ -17,6 +19,9 @@ public:
     explicit GraphCanvas(GraphController& controller);
 
     void paint(BLContext& ctx) override;
+
+    // Called when F2 is pressed over the canvas.
+    std::function<void()> onRenameRequested;
 
     void fit() { controller_.frameAll(bounds().width(), bounds().height()); }
 
