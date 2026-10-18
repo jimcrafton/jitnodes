@@ -38,7 +38,9 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dbghelp.h>
 #include <psapi.h>
+#pragma comment(lib, "dbghelp.lib")
 #endif
 
 using namespace jitnodes;
@@ -2357,11 +2359,17 @@ void scenarioFaults(const Options& opt, Report& rep) {
     markAllDirty();
     rep.check(digest(*net.cookDisplay()) == want, "after the cancelled cook the graph cooks correctly");
 
-    // Allocation failures: make the n-th allocation of a cook throw std::bad_alloc, for a sweep of n.
+    // Allocation failures: make the n-th allocation of a cook throw std::bad_alloc, for a sweep of n. With iterator debugging (MSVC debug
+    // builds) the standard containers allocate inside noexcept moves, where a failure can only terminate, so the sweeps are skipped there.
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
+    std::printf("  allocation failure sweeps skipped: this build's standard library allocates inside noexcept moves\n");
+    return;
+#endif
     size_t swept = 0, failedCooks = 0, unaffected = 0;
     const long limit = opt.quick ? 2000 : 12000;
     const long stride = opt.quick ? 97 : 53;
     for (long n = 0; n < limit; n += stride) {
+        if (opt.verbose) std::printf("    allocation failure at #%ld\n", n);
         markAllDirty();
         failAllocationCountdown().store(n);
         bool threw = false;
@@ -2438,7 +2446,32 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
 void operator delete[](void* p, size_t) noexcept { std::free(p); }
 
+#ifdef _WIN32
+// An abort in a worker thread otherwise leaves no trace at all; print where std::terminate was reached.
+void printTraceAndAbort() {
+    void* frames[48];
+    const USHORT count = CaptureStackBackTrace(0, 48, frames, nullptr);
+    HANDLE process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+    SymInitialize(process, nullptr, TRUE);
+    alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+    std::printf("\n    std::terminate called, stack:\n");
+    for (USHORT i = 0; i < count; ++i) {
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        if (SymFromAddr(process, reinterpret_cast<DWORD64>(frames[i]), &displacement, symbol)) std::printf("      %s\n", symbol->Name);
+    }
+    std::fflush(stdout);
+    std::abort();
+}
+#endif
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    std::set_terminate(printTraceAndAbort);
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // keep the progress visible if a scenario crashes the process
     Options opt;
     for (int i = 1; i < argc; ++i) {

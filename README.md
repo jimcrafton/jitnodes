@@ -40,6 +40,7 @@ changes. `History` provides undo/redo that only touches the nodes that changed.
 ## More
 - [docs/architecture.md](docs/architecture.md): code layout, the node execution (cooking) design with diagrams, the JIT, and performance figures.
 - [docs/wrangle.md](docs/wrangle.md): the wrangle scripting language: syntax, types, operators, functions, examples.
+- [docs/assets.md](docs/assets.md): assets (reusable nodes): how to write them, use them in a graph, in code and in the editor, and update them.
 - [docs/editor.md](docs/editor.md): the newui desktop editor: how to use it and how it is built.
 - [docs/stress-test.md](docs/stress-test.md): `jitnodesStress`, a test with thousands of nodes and tens of thousands of points per node, and what it found.
 - [docs/design.md](docs/design.md): design, research notes and roadmap.

@@ -90,6 +90,7 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
   worker thread touches the outer network).
 - Saving: a subnet stores its child graph inline (`"graph"`, same shape as the root: fps, display, nodes) and its
   `"spare"` parameter names. Profiles (`profileReport`, `resetProfile`) descend into children, indented.
+- A user guide for assets (writing, using, editor workflow, updating) is in [assets.md](assets.md).
 - Assets: `saveAsset(net, subnetId, "typeName")` turns a subnet into a definition (`format: "jitnodes-asset"`: type,
   number of inputs, `promote` names with their default values, and the child graph). `registerAsset(text)` /
   `registerAssetFromFile` add it to `NodeRegistry` as a node type with that name (re-registering replaces the

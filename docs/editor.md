@@ -163,7 +163,9 @@ history, and the status line says so). The **asset library** in the palette list
 the list shows the selected asset's version, inputs, promoted parameters, how many instances are in the graph and its
 source file. **Add asset** instantiates it, **Reload asset** reads its source file again (so edits made outside the
 editor are picked up and instances rebuilt), **Load asset...** registers a definition file, and **Unlock** turns an
-instance back into an ordinary, editable subnet. Asset instances cannot be entered.
+instance back into an ordinary, editable subnet. Asset instances cannot be entered. [assets.md](assets.md) covers the
+whole workflow: what a definition contains, writing one by hand or in code, where the editor looks for them, and
+updating or migrating them.
 
 ## How the editor is built
 

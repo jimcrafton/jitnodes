@@ -107,6 +107,11 @@ it may do with the node:
 
 **`Network`** owns the nodes in slots (`Node` + its input ids), assigns ids, checks for cycles on `connect`, keeps the
 kernel cache and thread pool, and implements cooking. One node is the *display node*, the one `cookDisplay()` cooks.
+Besides the slots it keeps three indexes in step with every edit, so that no operation has to scan the whole graph:
+the **consumers** of each node (one entry per wired input), the **referrers** of each node name (nodes whose expressions
+mention it) and the **names** themselves. They make `markDirty`, cycle detection, the "exactly one consumer" test of
+fusion and `findNode` / `uniqueName` independent of the size of the graph (`Network::indexesConsistent()` checks them
+against a scan; the tests call it). Graphs of 30,000 nodes connect, edit, plan and paste in well under a second.
 
 **Parameters** come in two kinds:
 
@@ -129,7 +134,8 @@ Cooking is lazy, demand driven and cached:
 
 1. **An edit marks nodes dirty.** `setFloat`, `setString`, `setExpression`, `connect`, `disconnect`, `setTime` (for time
    dependent nodes only) and similar calls go through `Network::markDirty`, which walks *downstream* along wires and
-   also to every node whose expressions reference the dirtied node by name, dropping their cached geometry. Moving a
+   also to every node whose expressions reference the dirtied node by name (both through the indexes above), dropping
+   their cached geometry. Moving a
    node in the editor or any other layout hint does not dirty anything.
 2. **`cook(id)` plans.** `planCook` walks *upstream* from the requested node and creates one `CookTask` per dirty
    (or never cooked) node, or per fused chain, or per flattened merge tree. Clean nodes with a cached result are
@@ -153,7 +159,8 @@ nodes in dependency order, and `profileReport()` prints per-node timings.
 
 When `planCook` reaches a point-wise node it walks upstream while the previous node is point-wise, of the same
 attribute class, dirty or uncached, has exactly one consumer and is not the display node. The members are merged by
-`composeKernels`: the later node's loads of a channel are *replaced by the expression the earlier node computed*, so
+`composeKernels` / `appendKernel` (each member is appended to the accumulated graph in place, so a chain of *k* nodes is
+composed in O(*k*)): the later node's loads of a channel are *replaced by the expression the earlier node computed*, so
 intermediate values stay in registers and common-subexpression and dead-code elimination apply across node
 boundaries. All parameters are concatenated into one block, so changing any slider of any member still reuses the
 cached machine code.
@@ -197,6 +204,10 @@ Consequences worth knowing:
 operands always precede their users. A `KernelSpec` is the DAG plus the channel names it reads and writes, their
 types, the `(channel, expression)` stores and the number of runtime parameters. `KernelSpec::signature()` is its
 canonical text (structure, constants, channel types **and channel names**) and the cache key. Names are part of the key because a compiled `Kernel` binds its channels by the names of the spec it was built from: two programs that differ only in the attributes they touch (`x = x * 2;` and `y = y * 2;`) therefore compile separately, while programs that differ only in the values of parameters share one kernel. The graph interns nodes through a hash index, so building even a graph of thousands of nodes (a long fused chain) is linear in its size.
+
+The kernel cache holds at most `KernelCompiler::maxCachedKernels` (4,096) kernels, about 3-4 KB each. When it is full the
+least recently used quarter is dropped; kernels a running cook still holds stay alive through their `shared_ptr`. Editing
+a wrangle's code makes a new program per keystroke, so without the cap a long session would grow without bound.
 
 **Masks.** A comparison produces a per-lane *mask* (all one bits or all zero bits), never 0.0 or 1.0. `select(mask, a, b)`
 blends by mask, so `?:` compiles without branches. The parser converts non-comparison conditions into `value != 0`,
@@ -245,7 +256,15 @@ type name, input count, `promote` defaults, the child graph, an `assetVersion`),
 `NodeRegistry`, and instances (`AssetNode`) copy the definition. Graph files embed the definitions they use, so they
 are self-contained. `updateAssetInstances` rebuilds instances whose definition changed (keeping every parameter that
 still exists), migration hooks can rename or rescale parameters across versions, and `unlockAssetInstance` turns an
-instance back into an editable subnet. Details are in [design.md](design.md#subnets-and-assets).
+instance back into an editable subnet. A guide to writing, using and updating assets, in code and in the editor, is [assets.md](assets.md); more
+details are in [design.md](design.md#subnets-and-assets).
+
+**Depth limits.** Planning, merge flattening and `executionOrder` are iterative, so a chain or a left-leaning merge tree of
+any length cooks. What still recurses is limited so that it fails with an error instead of overflowing the stack:
+subnets and assets nest at most `Network::maxSubnetDepth` (64) levels (cooking, saving, loading and undo recurse through
+them), parameter expressions that refer to each other at most 400 deep, wrangle text at most 256 levels of nesting.
+Beyond the counts, the recursive paths check `stackHeadroom()` (`core/stackGuard.h`) because the size of a frame differs
+between release, debug and sanitizer builds.
 
 ## Persistence, undo and clips
 

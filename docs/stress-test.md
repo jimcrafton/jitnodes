@@ -74,6 +74,7 @@ Options for these: `--fuzz-iterations N`, `--fuzz-first N`, `--duration SECONDS`
 ## Other tools
 
 - **AddressSanitizer.** `cmake --preset x64-asan && cmake --build --preset x64-asan --target jitnodesTests jitnodesStress`, then run both. All of the above pass (a few minutes for the quick sizes). The JIT-generated code itself is not instrumented, and ASan frames are several times larger than release frames, which is how it found the stack-depth problems listed below. On Linux the same option adds UBSan.
+- **Debug builds.** `x64-debug` and `x64-debug-editor` build and pass everything (93 unit tests, all 16 stress scenarios, the editor model tests, and the 66 + 5 GUI tests against the debug editor). The allocation-failure sweeps of `faults` are skipped there: the MSVC debug standard library allocates inside `noexcept` moves, so an injected `bad_alloc` can only terminate. On Windows the stress test installs a `std::terminate` handler that prints a symbolised stack, which is how that was diagnosed.
 - **ThreadSanitizer** is not available for MSVC or clang-cl on Windows. On Linux, configure with `-DCMAKE_CXX_FLAGS=-fsanitize=thread` and run `jitnodesStress --scenario concurrent,cancel,fuzz`.
 - **Editor GUI load test.** `editor/tests/gui/test_editor_gui_load.py` opens the 2,646-node graph in the real editor and drives select all, nudge, copy/paste, cut and undo with real input (it takes over mouse and keyboard, so run it on an idle desktop):
   `python editor\tests\gui\test_editor_gui_load.py --exe out\build\x64-release-editor\editor\jitnodesEditor.exe`.
