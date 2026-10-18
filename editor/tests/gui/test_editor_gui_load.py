@@ -37,6 +37,10 @@ class BigGraph(EditorCase):
         self.args = (graphFile(),)
         return super().launch()
 
+    def warmUp(self):
+        # The first input sent to any editor, even an empty one, takes about a second; keep it out of the measured steps.
+        self.app.click_at(self.emptyPoint())
+
     def waitForNodes(self, count, what):
         started = time.time()
         self.app.wait_until(lambda: self.status().startswith(f"{count} nodes"), what, timeout=LIMIT)
@@ -58,6 +62,7 @@ class BigGraph(EditorCase):
 
     def test_select_all_and_nudge_every_node(self):
         self.waitForNodes(NODES, "open")
+        self.warmUp()
         self.timed("select all", self.selectAll)
         self.assertEqual(f"{NODES} nodes selected", self.title())
         self.timed("nudge 3 times", lambda: [self.app.key("shift+right") for _ in range(3)])
