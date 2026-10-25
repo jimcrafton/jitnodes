@@ -4,6 +4,7 @@
 #include "jitnodes/core/arena.h"
 #include "jitnodes/core/threadPool.h"
 #include "jitnodes/geo/geometry.h"
+#include "jitnodes/geo/raster.h"
 #include "jitnodes/geo/svgExport.h"
 #include "jitnodes/geo/topology.h"
 #include "jitnodes/graph/animation.h"

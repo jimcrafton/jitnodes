@@ -92,8 +92,9 @@ check box makes the selected node the display node.
 
 Viewport: shows the geometry of the display node after every cook, so editing a parameter or moving the playhead redraws it.
 Primitives are stroked as polylines (closed ones are closed); points are drawn as dots for geometry without primitives or
-with at most 64 points. Left, middle or right drag pans, the wheel zooms around the cursor, and Fit or a double click frames
-the geometry (the first geometry after New or Open is fitted automatically). The grid steps by powers of ten and its step
+with at most 64 points. Left, middle or right drag pans, the wheel zooms around the cursor, and Fit frames the geometry (the
+first geometry after New or Open is fitted automatically). A double click maximizes the viewport over the graph and a second
+one restores it; a right click opens a menu with Export... (PNG or JPEG). The grid steps by powers of ten and its step
 is shown in the corner; the header shows the point and primitive counts. Geometry over 40,000 points is drawn with every
 n-th point.
 

@@ -102,8 +102,10 @@ it may do with the node:
 | `childNetwork()` | container (subnet, asset instance) that owns a nested `Network` |
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
-`merge`, `attribCreate`, `null`, `resample`, `subdivide`, `copyToPoints`, `blast`, `subnet0` ... `subnet4` and
-`subnetInput`; assets register more.
+`merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, the point and image nodes
+`generate`, `scatter`, `noise`, `warp`, `colorRamp` and `render` (see [fx.md](fx.md); sources in
+`src/graph/generateNodes.cpp` and `fxNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`
+and `subnetInput`; assets register more.
 
 **`Network`** owns the nodes in slots (`Node` + its input ids), assigns ids, checks for cycles on `connect`, keeps the
 kernel cache and thread pool, and implements cooking. One node is the *display node*, the one `cookDisplay()` cooks.

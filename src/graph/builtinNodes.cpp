@@ -173,6 +173,8 @@ void registerBuiltinNodes() {
     add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");
     registerTopologyNodes();
+    registerGenerateNodes();
+    registerFxNodes();
     registerSubnetNodes();
 }
 

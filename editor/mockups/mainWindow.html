@@ -89,7 +89,7 @@
   </div>
 
   <div class="main">
-    <div class="palette">
+    <div id="palettePanel" class="palette">
       <h3>Nodes</h3>
       <button id="addLine">line</button>
       <button id="addTransform">transform</button>
@@ -103,6 +103,12 @@
       <button id="addSubnet">subnet</button>
       <button id="addSubnetInput">subnetInput</button>
       <button id="addNull">null</button>
+      <button id="addGenerate">generate</button>
+      <button id="addScatter">scatter</button>
+      <button id="addNoise">noise</button>
+      <button id="addWarp">warp</button>
+      <button id="addColorRamp">colorRamp</button>
+      <button id="addRender">render</button>
       <hr>
       <h3>Assets</h3>
       <canvas id="assetListHost"></canvas>
@@ -112,7 +118,7 @@
       <button id="loadAssetButton">Load asset...</button>
     </div>
 
-    <div class="graphArea">
+    <div id="graphPanel" class="graphArea">
       <div class="graphHeader">
         <span class="title">Network</span>
         <span id="graphPath" class="title">/</span>
@@ -126,8 +132,8 @@
       <canvas id="graphCanvas"></canvas>
     </div>
 
-    <div class="side">
-      <div class="params">
+    <div id="sidePanel" class="side">
+      <div id="paramsPanel" class="params">
         <span id="nodeTitle" class="nodeTitle">transform1</span>
         <span id="nodeType" class="nodeType">transform, cooked 1x</span>
         <div class="paramRow"><span class="name">Name</span><input id="nodeName" type="text" value="transform1"><button id="renameButton">Rename</button></div>
@@ -140,7 +146,7 @@
         <span id="paramError" class="error">&middot;</span>
       </div>
 
-      <div class="viewport">
+      <div id="viewportPanel" class="viewport">
         <div class="head"><span class="title">Viewport</span><span id="viewportInfo" class="title">100 points, 1 primitive</span><button id="fitButton">Fit</button></div>
         <div class="head2"><span class="title">Color by</span><select id="attrSelect"><option>(none)</option></select></div>
         <div class="head2"><span class="title">Map</span><select id="mapSelect"><option>Viridis</option></select><span class="title">Range</span><input id="rangeMin" type="text" placeholder="auto"><input id="rangeMax" type="text" placeholder="auto"><button id="autoRangeButton">Auto</button></div>

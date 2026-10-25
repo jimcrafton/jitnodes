@@ -267,7 +267,8 @@ The language has no built-in attributes except `x` and `y`, but several nodes an
 | `group.<name>` | point / primitive | `blast` | non-zero = in group `<name>` |
 | `scale`, `angle` | point (on the *target* input of `copyToPoints`) | `copyToPoints` | per-instance scale (multiplied with the node's `scale`) and rotation in radians (added to its `angle`) |
 | `copyIndex` | point, primitive | *written by* `copyToPoints` | which target point an instance came from (int) |
-| `radius` | point | editor viewport | presence turns on sprite drawing: disc radius in world units |
+| `rand`, `rand2` | point | *written by* `generate`, `scatter` | independent uniform random numbers in 0..1 per point (the language has no `rand` of its own); see [fx.md](fx.md) |
+| `radius` | point | editor viewport, `render` | presence turns on sprite drawing: disc radius in world units |
 | `Cd.x`, `Cd.y`, `Cd.z` | point | editor viewport (sprites) | colour 0-1, default white |
 | `alpha` | point | editor viewport (sprites) | opacity 0-1, default 1 |
 | `softness` | point | editor viewport (sprites) | 0 hard disc, 1 radial gradient (default 1) |

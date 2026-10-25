@@ -23,6 +23,8 @@ void usage() {
         "  --isa NAME    JIT instruction set: sse2, avx2 (default) or avx512\n"
         "  --svg FILE    write the cooked geometry as SVG\n"
         "  --points      draw points in the SVG\n"
+        "  --png FILE    render the geometry's points as sprites to a PNG (settings from a render node, see docs/fx.md)\n"
+        "  --size WxH    PNG size in pixels (default: the render node's width and height)\n"
         "  --save FILE   write the graph back out (normalises formatting)\n"
         "  --profile     print per-node timings\n"
         "  --types       list registered node types");
@@ -31,7 +33,7 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string graphPath, nodeName, svgPath, savePath, isaName_;
+    std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_;
     std::vector<std::string> assetPaths;
     double time = 0.0;
     bool haveTime = false, profile = false, points = false, listTypes = false;
@@ -52,6 +54,8 @@ int main(int argc, char** argv) {
         else if (arg == "--isa") isaName_ = value();
         else if (arg == "--asset") assetPaths.push_back(value());
         else if (arg == "--svg") svgPath = value();
+        else if (arg == "--png") pngPath = value();
+        else if (arg == "--size") sizeText = value();
         else if (arg == "--save") savePath = value();
         else if (arg == "--points") points = true;
         else if (arg == "--profile") profile = true;
@@ -109,6 +113,14 @@ int main(int argc, char** argv) {
             if (!out) throw std::runtime_error("cannot open '" + svgPath + "' for writing");
             out << geometryToSvg(*geo, options);
             std::printf("wrote %s\n", svgPath.c_str());
+        }
+        if (!pngPath.empty()) {
+            int width = 0, height = 0;
+            if (!sizeText.empty() && std::sscanf(sizeText.c_str(), "%dx%d", &width, &height) != 2)
+                throw std::runtime_error("--size expects WIDTHxHEIGHT, got '" + sizeText + "'");
+            const RenderSettings settings = renderSettingsFromDetails(*geo, width, height);
+            writePng(pngPath, renderSplats(*geo, settings, net.pool()));
+            std::printf("wrote %s (%dx%d)\n", pngPath.c_str(), settings.width, settings.height);
         }
         if (profile) std::printf("\n%s", net.profileReport().c_str());
     } catch (const std::exception& e) {

@@ -2607,6 +2607,300 @@ TEST(networkMergeAndWrangle) {
     CHECK(net.executionOrder(wr).size() == 4);
 }
 
+bool cookThrows(Network& net, NodeId id) {
+    try {
+        net.cook(id);
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+TEST(generateIsDeterministicAndBounded) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 5000.0f);
+    net.node(gen).setFloat("seed", 5.0f);
+    net.node(gen).setFloat("cx", 10.0f);
+    net.node(gen).setFloat("cy", -5.0f);
+    net.node(gen).setFloat("width", 4.0f);
+    net.node(gen).setFloat("height", 2.0f);
+    auto geo = net.cook(gen);
+    CHECK(geo->pointCount() == 5000 && geo->primitiveCount() == 0);
+    const AttribArray* rand = geo->findAttrib(AttribClass::point, "rand");
+    CHECK(rand && geo->hasAttrib(AttribClass::point, "rand2") && geo->findAttrib(AttribClass::point, "id")->type() == AttribType::int32);
+    double meanX = 0.0, meanRand = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        CHECK(geo->x()[i] >= 8.0f && geo->x()[i] <= 12.0f && geo->y()[i] >= -6.0f && geo->y()[i] <= -4.0f);
+        CHECK(rand->at(i) >= 0.0f && rand->at(i) < 1.0f);
+        meanX += geo->x()[i];
+        meanRand += rand->at(i);
+    }
+    CHECK(std::fabs(meanX / 5000.0 - 10.0) < 0.1 && std::fabs(meanRand / 5000.0 - 0.5) < 0.03);
+
+    // The thread count does not change the points.
+    Network threaded(4);
+    NodeId gen2 = threaded.addNode("generate");
+    for (const char* p : {"count", "seed", "cx", "cy", "width", "height"}) threaded.node(gen2).setFloat(p, net.node(gen).getFloat(p));
+    CHECK(sameGeometry(*geo, *threaded.cook(gen2)));
+    net.node(gen).setFloat("seed", 6.0f);
+    CHECK(!sameGeometry(*geo, *net.cook(gen)));
+
+    net.node(gen).setString("shape", "disc");
+    net.node(gen).setFloat("cx", 0.0f);
+    net.node(gen).setFloat("cy", 0.0f);
+    geo = net.cook(gen);
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const float u = geo->x()[i] / 2.0f, v = geo->y()[i];
+        CHECK(u * u + v * v <= 1.0001f);
+    }
+    net.node(gen).setString("shape", "gaussian");
+    geo = net.cook(gen);
+    double var = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) var += static_cast<double>(geo->x()[i]) * geo->x()[i];
+    CHECK(std::fabs(std::sqrt(var / 5000.0) - 2.0 / 3.0) < 0.05);
+
+    net.node(gen).setString("shape", "blob");
+    CHECK(cookThrows(net, gen));
+    net.node(gen).setString("shape", "rect");
+    net.node(gen).setFloat("count", 0.0f);
+    CHECK(net.cook(gen)->pointCount() == 0);
+}
+
+TEST(scatterFillsClosedShapesAndWalksOpenOnes) {
+    Network net(2);
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 96.0f);
+    net.node(circle).setFloat("radius", 2.0f);
+    NodeId scatter = net.addNode("scatter");
+    net.node(scatter).setFloat("count", 4000.0f);
+    net.node(scatter).setFloat("lineCount", 0.0f);
+    net.connect(circle, scatter);
+    auto geo = net.cook(scatter);
+    CHECK(geo->pointCount() == 4000 && geo->primitiveCount() == 0);
+    double meanR2 = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const double r2 = static_cast<double>(geo->x()[i]) * geo->x()[i] + static_cast<double>(geo->y()[i]) * geo->y()[i];
+        CHECK(r2 <= 4.0);
+        meanR2 += r2;
+    }
+    CHECK(std::fabs(meanR2 / 4000.0 - 2.0) < 0.15);  // uniform over a disc of radius 2
+
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 5.0f);
+    net.node(line).setFloat("length", 4.0f);
+    NodeId merge = net.addNode("merge");
+    NodeId both = net.addNode("scatter");
+    net.node(both).setFloat("count", 1000.0f);
+    net.node(both).setFloat("lineCount", 300.0f);
+    net.connect(circle, merge, 0);
+    net.connect(line, merge, 1);
+    net.connect(merge, both);
+    geo = net.cook(both);
+    CHECK(geo->pointCount() == 1300);
+    const auto& prim = geo->findAttrib(AttribClass::point, "srcPrim")->ints();
+    const auto& u = geo->findAttrib(AttribClass::point, "u")->floats();
+    size_t fromLine = 0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        if (prim[i] == 1) {
+            ++fromLine;
+            CHECK(geo->y()[i] == 0.0f && geo->x()[i] >= 0.0f && geo->x()[i] <= 4.0f && u[i] >= 0.0f && u[i] <= 1.0f);
+            CHECK_NEAR(geo->x()[i], u[i] * 4.0f);
+        } else {
+            CHECK(prim[i] == 0);
+        }
+    }
+    CHECK(fromLine == 300);
+
+    net.node(both).setFloat("spread", 0.5f);
+    geo = net.cook(both);
+    float maxOffset = 0.0f;
+    for (size_t i = 0; i < geo->pointCount(); ++i)
+        if (geo->findAttrib(AttribClass::point, "srcPrim")->ints()[i] == 1) maxOffset = std::max(maxOffset, std::fabs(geo->y()[i]));
+    CHECK(maxOffset > 0.2f && maxOffset <= 0.5001f);
+
+    // An empty or degenerate shape gives no points.
+    NodeId single = net.addNode("line");
+    net.node(single).setFloat("count", 1.0f);
+    NodeId none = net.addNode("scatter");
+    net.connect(single, none);
+    CHECK(net.cook(none)->pointCount() == 0);
+}
+
+TEST(scatterKeepsConcaveShapesHollow) {
+    Network net(1);
+    // Eight circle points with the four diagonal ones pulled in make a four-pointed star whose notches (both |x| and |y| above 0.22) are outside.
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 8.0f);
+    NodeId star = net.addNode("wrangle");
+    net.node(star).setString("code", "s = abs(x) > 0.1 && abs(y) > 0.1 ? 0.3 : 1; x = x * s; y = y * s;");
+    NodeId scatter = net.addNode("scatter");
+    net.node(scatter).setFloat("count", 3000.0f);
+    net.connect(circle, star);
+    net.connect(star, scatter);
+    auto geo = net.cook(scatter);
+    CHECK(geo->pointCount() == 3000);
+    size_t nearAxis = 0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const float ax = std::fabs(geo->x()[i]), ay = std::fabs(geo->y()[i]);
+        CHECK(!(ax > 0.22f && ay > 0.22f));
+        nearAxis += ax > 0.5f || ay > 0.5f ? 1 : 0;
+    }
+    CHECK(nearAxis > 100);
+}
+
+TEST(noiseNodeProducesBoundedDeterministicFields) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 4000.0f);
+    net.node(line).setFloat("length", 400.0f);
+    NodeId noise = net.addNode("noise");
+    net.connect(line, noise);
+    net.node(noise).setString("name", "n");
+    auto geo = net.cook(noise);
+    const AttribArray* n = geo->findAttrib(AttribClass::point, "n");
+    CHECK(n && geo->pointCount() == 4000);
+    double mean = 0.0, sq = 0.0;
+    float lo = 1e9f, hi = -1e9f;
+    for (size_t i = 0; i < 4000; ++i) {
+        mean += n->at(i);
+        sq += static_cast<double>(n->at(i)) * n->at(i);
+        lo = std::min(lo, n->at(i));
+        hi = std::max(hi, n->at(i));
+    }
+    mean /= 4000.0;
+    CHECK(mean > 0.4 && mean < 0.6 && std::sqrt(sq / 4000.0 - mean * mean) > 0.03 && lo > -0.5f && hi < 1.5f);
+    CHECK(sameGeometry(*geo, *net.cook(noise)));
+
+    net.node(noise).setString("mode", "ridged");
+    geo = net.cook(noise);
+    for (size_t i = 0; i < 4000; ++i) CHECK(geo->findAttrib(AttribClass::point, "n")->at(i) >= 0.0f && geo->findAttrib(AttribClass::point, "n")->at(i) <= 1.0f);
+
+    net.node(noise).setFloat("phase", 3.5f);
+    CHECK(!sameGeometry(*geo, *net.cook(noise)));
+    net.node(noise).setString("mode", "bogus");
+    CHECK(cookThrows(net, noise));
+}
+
+TEST(warpDisplacesPointsAndZeroAmountIsIdentity) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 2000.0f);
+    NodeId warp = net.addNode("warp");
+    net.connect(gen, warp);
+    net.node(warp).setFloat("amount", 0.0f);
+    CHECK(sameGeometry(*net.cook(gen), *net.cook(warp)));
+
+    for (const char* mode : {"noise", "curl"}) {
+        net.node(warp).setString("mode", mode);
+        net.node(warp).setFloat("amount", 2.0f);
+        net.node(warp).setFloat("iterations", 3.0f);
+        auto src = net.cook(gen);
+        auto out = net.cook(warp);
+        double moved = 0.0;
+        for (size_t i = 0; i < out->pointCount(); ++i) {
+            CHECK(std::isfinite(out->x()[i]) && std::isfinite(out->y()[i]));
+            moved += std::hypot(out->x()[i] - src->x()[i], out->y()[i] - src->y()[i]);
+        }
+        CHECK(moved / 2000.0 > 0.05);
+        CHECK(out->hasAttrib(AttribClass::point, "rand"));
+    }
+    net.node(warp).setString("mode", "swirl");
+    CHECK(cookThrows(net, warp));
+}
+
+TEST(colorRampMapsAnAttributeToColour) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    net.node(line).setFloat("length", 1.0f);
+    NodeId ramp = net.addNode("colorRamp");
+    net.connect(line, ramp);
+    net.node(ramp).setString("attribute", "x");
+    net.node(ramp).setString("ramp", "0 #000000, 0.5 #ff0000, 1 0 0 1");
+    auto geo = net.cook(ramp);
+    const auto& r = geo->findAttrib(AttribClass::point, "Cd.x")->floats();
+    const auto& g = geo->findAttrib(AttribClass::point, "Cd.y")->floats();
+    const auto& b = geo->findAttrib(AttribClass::point, "Cd.z")->floats();
+    CHECK(std::fabs(r[0]) < 1e-3f && std::fabs(r[1] - 1.0f) < 1e-3f && std::fabs(r[2]) < 1e-3f);
+    CHECK(std::fabs(b[2] - 1.0f) < 1e-3f && std::fabs(g[1]) < 1e-3f);
+
+    net.node(ramp).setFloat("min", 1.0f);
+    net.node(ramp).setFloat("max", 0.0f);  // an inverted range reverses the ramp
+    geo = net.cook(ramp);
+    CHECK(std::fabs(geo->findAttrib(AttribClass::point, "Cd.z")->floats()[0] - 1.0f) < 1e-3f);
+
+    net.node(ramp).setString("attribute", "missing");
+    CHECK(cookThrows(net, ramp));
+    net.node(ramp).setString("attribute", "x");
+    net.node(ramp).setString("ramp", "0 #12");
+    CHECK(cookThrows(net, ramp));
+    net.node(ramp).setString("ramp", "");
+    CHECK(cookThrows(net, ramp));
+}
+
+TEST(renderNodeAndSplatRendererDrawAdditiveSprites) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 1.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.node(wr).setString("code", "radius = 2; alpha = 0.5; softness = 0; Cd.x = 1; Cd.y = 0; Cd.z = 0;");
+    NodeId render = net.addNode("render");
+    net.connect(gen, wr);
+    net.connect(wr, render);
+    net.node(render).setFloat("exposure", 20.0f);
+    net.node(render).setFloat("gamma", 1.0f);
+    net.node(render).setFloat("width", 100.0f);
+    net.node(render).setFloat("height", 50.0f);
+    net.node(render).setFloat("viewWidth", 10.0f);
+    net.node(render).setString("background", "#000000");
+
+    auto geo = net.cook(render);
+    CHECK(hasRenderSettings(*geo) && !hasRenderSettings(*net.cook(wr)));
+    RenderSettings settings = renderSettingsFromDetails(*geo);
+    CHECK(settings.width == 100 && settings.height == 50 && settings.additive);
+    CHECK_NEAR(settings.maxX - settings.minX, 10.0f);
+    CHECK_NEAR(settings.maxY - settings.minY, 5.0f);
+
+    Image image = renderSplats(*geo, settings, net.pool());
+    CHECK(image.width == 100 && image.height == 50 && image.pixels.size() == 5000);
+    const uint32_t centre = image.pixels[25 * 100 + 50], corner = image.pixels[0];
+    CHECK(((centre >> 16) & 255u) > 240u && ((centre >> 8) & 255u) < 4u && (centre & 255u) < 4u);
+    CHECK((corner & 0xFFFFFFu) < 0x030303u);
+    // Radius 2 at 10 pixels per unit: covered out to 20 pixels, nothing beyond.
+    CHECK(((image.pixels[25 * 100 + 66] >> 16) & 255u) > 200u && ((image.pixels[25 * 100 + 75] >> 16) & 255u) < 4u);
+
+    // Over compositing is exact for opaque sprites and shows the background elsewhere.
+    net.node(render).setFloat("additive", 0.0f);
+    net.node(render).setString("background", "#0000ff");
+    geo = net.cook(render);
+    image = renderSplats(*geo, renderSettingsFromDetails(*geo), nullptr);
+    CHECK((image.pixels[0] & 0xFFFFFFu) == 0x0000FFu);
+    const uint32_t over = image.pixels[25 * 100 + 50];
+    CHECK(std::abs(static_cast<int>((over >> 16) & 255u) - 128) <= 2 && std::abs(static_cast<int>(over & 255u) - 128) <= 2);
+
+    net.node(render).setString("background", "red");
+    CHECK(cookThrows(net, render));
+
+    // A sprite smaller than a pixel keeps its energy: the lit pixels add up to about radius^2 * alpha in pixel units.
+    net.node(render).setString("background", "#000000");
+    net.node(render).setFloat("additive", 1.0f);
+    net.node(wr).setString("code", "radius = 0.05; alpha = 1; softness = 0; Cd.x = 1; Cd.y = 1; Cd.z = 1;");
+    net.node(render).setFloat("exposure", 1.0f);
+    geo = net.cook(render);
+    image = renderSplats(*geo, renderSettingsFromDetails(*geo), nullptr);
+    size_t lit = 0;
+    for (uint32_t px : image.pixels) lit += (px & 255u) > 8u ? 1 : 0;
+    CHECK(lit >= 1 && lit <= 4);
+
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_render.png").string();
+    writePng(path, image);
+    CHECK(std::filesystem::file_size(path) > 5000 * 3);
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {

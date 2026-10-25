@@ -42,6 +42,10 @@ public:
     // Chooses an entry of the Color by list by its label (for example "temp" or "N (length)"); false when there is none.
     bool selectAttribute(const std::string& label);
     size_t viewCount() const { return viewCount_; }
+    // The viewport panel takes over the main area (the palette, the graph and the parameters are hidden), or goes back to its place
+    // in the side column. Double-clicking the viewport does this.
+    void toggleViewportMaximized();
+    bool viewportMaximized() const { return viewportMaximized_; }
 
     newui::Button& button(const char* name) { return view<newui::Button>(name); }
     newui::TextField& textField(const char* name) { return view<newui::TextField>(name); }
@@ -70,6 +74,8 @@ private:
     std::string selectedAsset() const;
     void refreshAttributes();
     void applyRange();
+    void showViewportMenu();
+    void doExportImage();
     void doLoadAsset();
     void doCreateAsset();
     bool confirmDiscard();
@@ -88,6 +94,11 @@ private:
     std::unique_ptr<ProfileController> profile_;
     ProfileCanvas* profileCanvas_ = nullptr;
     ViewportCanvas* viewportCanvas_ = nullptr;
+    newui::SubView* palettePanel_ = nullptr;
+    newui::SubView* graphPanel_ = nullptr;
+    newui::SubView* sidePanel_ = nullptr;
+    newui::SubView* paramsPanel_ = nullptr;
+    bool viewportMaximized_ = false;
     size_t viewCount_ = 0;
     bool updatingUi_ = false;
     newui::RunLoop::TimerHandle timer_ = newui::RunLoop::kInvalidTimerHandle;

@@ -415,6 +415,29 @@ class Viewport(EditorCase):
         self.add("addLine", "addResample")
         self.assertIn("points", self.label("viewportInfo"))
 
+    def test_double_click_maximizes_the_viewport_and_again_restores_it(self):
+        self.add("addLine", "addResample")
+        thumbnail = self.app.find("viewportCanvas")
+        graph = self.app.find("graphCanvas")
+        self.app.double_click("viewportCanvas")
+        maximized = self.app.find("viewportCanvas")
+        self.assertGreater(maximized.w, thumbnail.w * 2)
+        self.assertGreater(maximized.h, thumbnail.h)
+        self.assertEqual(0, self.app.find("graphCanvas").w, "the graph is out of the way while the viewport is maximized")
+        self.app.double_click("viewportCanvas")
+        restored = self.app.find("viewportCanvas")
+        self.assertLess(abs(restored.w - thumbnail.w), 2)
+        self.assertEqual(graph.w, self.app.find("graphCanvas").w)
+
+    def test_right_click_opens_a_menu_that_escape_closes(self):
+        self.add("addLine", "addResample")
+        r = self.app.find("viewportCanvas")
+        self.app.click_at((r.x + 20, r.y + 20), button="right", settle=False)
+        self.app.key("escape")
+        self.app.wait_idle()
+        self.assertIn("points", self.label("viewportInfo"))
+        self.assertFalse(self.label("statusText").startswith("exported"), self.label("statusText"))
+
 
 class ColorByAttribute(EditorCase):
     args = (os.path.join(GRAPHS, "attributes.json"), "--attribute", "height")

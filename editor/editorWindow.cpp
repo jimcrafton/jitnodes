@@ -10,8 +10,10 @@
 #include <utility>
 #include <vector>
 
+#include "imageExport.h"
 #include "keyframeDialog.h"
 #include "newui/clipboardmgr.h"
+#include "newui/menus.h"
 #include "newui/dialogs.h"
 #include "newui/utils.h"
 
@@ -28,6 +30,8 @@ const std::vector<PaletteEntry> palette = {
     {"addLine", "line"}, {"addTransform", "transform"}, {"addWrangle", "wrangle"}, {"addMerge", "merge"},
     {"addAttribCreate", "attribCreate"}, {"addResample", "resample"}, {"addSubdivide", "subdivide"},
     {"addCopyToPoints", "copyToPoints"}, {"addBlast", "blast"}, {"addSubnet", "subnet"}, {"addSubnetInput", "subnetInput"}, {"addNull", "null"},
+    {"addGenerate", "generate"}, {"addScatter", "scatter"}, {"addNoise", "noise"}, {"addWarp", "warp"}, {"addColorRamp", "colorRamp"},
+    {"addRender", "render"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
@@ -188,6 +192,13 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     viewportCanvas_->setBounds(newui::Rect(0, 0, viewportHost->bounds().width(), viewportHost->bounds().height()));
     viewportCanvas_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(1.0f));
     viewportHost->addChild(viewportCanvas_);
+    palettePanel_ = &view<newui::SubView>("palettePanel");
+    graphPanel_ = &view<newui::SubView>("graphPanel");
+    sidePanel_ = &view<newui::SubView>("sidePanel");
+    paramsPanel_ = &view<newui::SubView>("paramsPanel");
+    view<newui::SubView>("viewportPanel");
+    viewportCanvas_->onToggleMaximize = [this] { newui::Application::instance().runLoop().post([this] { toggleViewportMaximized(); }); };
+    viewportCanvas_->onContextMenu = [this] { newui::Application::instance().runLoop().post([this] { showViewportMenu(); }); };
     view<newui::Label>("viewportInfo");
     view<newui::DropDownList>("attrSelect").onSelectionChanged.add(std::function<newui::SyncReturn(newui::DropDownList&)>([this](newui::DropDownList& d) {
         if (!updatingUi_ && d.selectedIndex()) {
@@ -607,6 +618,50 @@ void EditorWindow::doCreateAsset() {
     message_ = model_.createAsset(id, type, path, true, &updated);
     if (message_.empty() && updated > 0) message_ = std::to_string(updated) + " existing instance(s) updated; undo history was reset";
     edited();
+}
+
+void EditorWindow::toggleViewportMaximized() {
+    viewportMaximized_ = !viewportMaximized_;
+    for (newui::SubView* panel : {palettePanel_, graphPanel_, paramsPanel_}) panel->setVisible(!viewportMaximized_);
+    // The side column has a fixed width in the thumbnail state; with the other panels hidden it takes all the room.
+    sidePanel_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(viewportMaximized_ ? 1.0f : 0.0f));
+    if (newui::View* row = sidePanel_->parent()) row->updateLayout();
+    viewport_->resetFit();
+    viewportCanvas_->redraw();
+}
+
+void EditorWindow::showViewportMenu() {
+    newui::MenuItem menu;
+    bool exportChosen = false;
+    menu.addChild(std::make_unique<newui::MenuItem>("Export..."))->onClick.add([&exportChosen](newui::MenuItem&) {
+        exportChosen = true;
+        return newui::SyncReturn::Handled;
+    });
+    POINT at{};
+    ::GetCursorPos(&at);
+    newui::ContextMenu popup;
+    popup.show(frame_.frameHandle(), menu, at.x, at.y);
+    if (exportChosen) guarded([this] { doExportImage(); });
+}
+
+void EditorWindow::doExportImage() {
+    if (!viewport_->geometry()) {
+        message_ = "there is nothing to export";
+        refresh();
+        return;
+    }
+    newui::FileDialogOptions options;
+    options.title = "Export image";
+    options.defaultFileName = "viewport.png";
+    options.defaultExtension = "png";
+    options.filters = {{"PNG image", "*.png"}, {"JPEG image", "*.jpg;*.jpeg"}};
+    std::string path;
+    if (!newui::Dialog::showSaveFile(frame_.frameHandle(), options, path)) return;
+    if (std::filesystem::path(path).extension().empty()) path += ".png";
+    const Image image = viewportCanvas_->renderForExport();
+    message_ = exportImage(image, path);
+    if (message_.empty()) message_ = "exported " + baseName(path) + " (" + std::to_string(image.width) + " x " + std::to_string(image.height) + ")";
+    refresh();
 }
 
 void EditorWindow::afterNavigation() {

@@ -56,8 +56,8 @@ set_target_properties(newui::automation PROPERTIES
   IMPORTED_LOCATION "${newuiAutomationLib}"
   INTERFACE_LINK_LIBRARIES newui::newui)
 
-add_library(editorCore STATIC editorModel.cpp graphLayout.cpp graphController.cpp viewportController.cpp profileController.cpp keyframeEditor.cpp)
-target_link_libraries(editorCore PUBLIC jitnodes::jitnodes)
+add_library(editorCore STATIC editorModel.cpp graphLayout.cpp graphController.cpp viewportController.cpp profileController.cpp keyframeEditor.cpp imageExport.cpp)
+target_link_libraries(editorCore PUBLIC jitnodes::jitnodes windowscodecs.lib ole32.lib uuid.lib)
 target_include_directories(editorCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(MSVC)
   target_compile_options(editorCore PRIVATE /W4 /permissive- /utf-8)

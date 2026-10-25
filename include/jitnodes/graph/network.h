@@ -97,6 +97,8 @@ private:
 
 void registerBuiltinNodes();
 void registerTopologyNodes();
+void registerGenerateNodes();
+void registerFxNodes();
 void registerSubnetNodes();
 
 class Network {
