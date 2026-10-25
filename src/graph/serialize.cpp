@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -58,9 +59,10 @@ KeyInterp parseInterp(const std::string& s) {
     fail("unknown keyframe interpolation '" + s + "'");
 }
 
-std::string dump(const json5::document& doc) {
+std::string dump(const json5::document& doc, bool compact = false) {
     json5::writer_params params;
     params.json_compatible = true;
+    params.compact = compact;
     std::ostringstream os;
     os << std::setprecision(9);
     json5::to_stream(os, doc, params);
@@ -118,6 +120,50 @@ json5::value writeAssets(json5::builder& b, const std::set<std::string>& types) 
 
 json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs = true);
 
+// {"points": n, "prims": [[start, count, closed, kind]], "attribs"/"primAttribs": [{"name": n, "values": [floats]}], "ints"/"primInts": the same
+// with integers, "detail": {name: value}}; empty sections are left out. Attribute names are values, not keys: the JSON5 reader rejects keys
+// such as "n.x".
+json5::value writeGeometry(json5::builder& b, const Geometry& g) {
+    b.push_object();
+    b["points"] = json5::value(static_cast<double>(g.pointCount()));
+    b.push_array();
+    for (const Primitive& p : g.primitives()) {
+        b.push_array();
+        b += json5::value(static_cast<double>(p.start));
+        b += json5::value(static_cast<double>(p.count));
+        b += json5::value(p.closed ? 1.0 : 0.0);
+        b += json5::value(static_cast<double>(p.kind));
+        b += b.pop();
+    }
+    b["prims"] = b.pop();
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        const bool point = cls == AttribClass::point;
+        for (AttribType type : {AttribType::float32, AttribType::int32}) {
+            bool any = false;
+            for (const auto& entry : g.attribs(cls)) any |= entry.second.type() == type;
+            if (!any) continue;
+            b.push_array();
+            for (const auto& [name, array] : g.attribs(cls)) {
+                if (array.type() != type) continue;
+                b.push_object();
+                b["name"] = b.new_string(name);
+                b.push_array();
+                for (size_t i = 0; i < array.size(); ++i)
+                    b += type == AttribType::float32 ? floatValue(array.floats()[i]) : json5::value(static_cast<double>(array.ints()[i]));
+                b["values"] = b.pop();
+                b += b.pop();
+            }
+            b[type == AttribType::float32 ? (point ? "attribs" : "primAttribs") : (point ? "ints" : "primInts")] = b.pop();
+        }
+    }
+    if (!g.details().empty()) {
+        b.push_object();
+        for (const auto& [name, value] : g.details()) b[name] = floatValue(value);
+        b["detail"] = b.pop();
+    }
+    return b.pop();
+}
+
 // Adds fps/time/display/nodes to the currently open object.
 void writeGraphFields(json5::builder& b, const Network& net, bool includeTime) {
     requireStack("the graph");
@@ -127,6 +173,27 @@ void writeGraphFields(json5::builder& b, const Network& net, bool includeTime) {
     b.push_array();
     for (NodeId id : net.nodeIds()) b += writeNode(b, net, id);
     b["nodes"] = b.pop();
+}
+
+thread_local bool skipDefaults = false;
+
+// A node of the type as the registry makes it; null for types that cannot be made without more than a name (assets, containers).
+const Node* defaultNode(const std::string& type) {
+    thread_local std::map<std::string, std::unique_ptr<Node>> made;
+    auto it = made.find(type);
+    if (it == made.end()) {
+        std::unique_ptr<Node> node;
+        const NodeRegistry& registry = NodeRegistry::instance();
+        if (registry.has(type) && !registry.assetText(type)) {
+            try {
+                node = registry.create(type);
+            } catch (const std::exception&) {
+            }
+        }
+        if (node && node->childNetwork() != nullptr) node.reset();
+        it = made.emplace(type, std::move(node)).first;
+    }
+    return it->second.get();
 }
 
 json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs) {
@@ -149,13 +216,32 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         b["spare"] = b.pop();
     }
 
+    // A compact save leaves out what a freshly made node of the type already has: its reader starts from those values.
+    const Node* fresh = skipDefaults ? defaultNode(n.typeName()) : nullptr;
     b.push_object();
-    for (const std::string& name : n.floatNames()) b[name] = floatValue(n.baseFloat(name));
+    for (const std::string& name : n.floatNames()) {
+        if (fresh != nullptr && fresh->hasFloat(name) && fresh->baseFloat(name) == n.baseFloat(name) && n.expression(name).empty() && n.keyframes(name).empty()) continue;
+        b[name] = floatValue(n.baseFloat(name));
+    }
     b["floats"] = b.pop();
 
     b.push_object();
-    for (const std::string& name : n.stringNames()) b[name] = b.new_string(n.getString(name));
+    for (const std::string& name : n.stringNames()) {
+        if (fresh != nullptr && fresh->getString(name) == n.getString(name)) continue;
+        b[name] = b.new_string(n.getString(name));
+    }
     b["strings"] = b.pop();
+
+    bool hasGeometry = false;
+    for (const std::string& name : n.geometryNames()) hasGeometry |= n.geometryParam(name)->pointCount() > 0 || n.geometryParam(name)->primitiveCount() > 0;
+    if (hasGeometry) {
+        b.push_object();
+        for (const std::string& name : n.geometryNames()) {
+            const Geometry& g = *n.geometryParam(name);
+            if (g.pointCount() > 0 || g.primitiveCount() > 0) b[name] = writeGeometry(b, g);
+        }
+        b["geometries"] = b.pop();
+    }
 
     bool hasExpressions = false, hasKeys = false;
     for (const std::string& name : n.floatNames()) {
@@ -234,6 +320,62 @@ std::string requireStringMember(const json5::value& obj, const char* key, const 
 void loadGraphBody(Network& net, const json5::value& body);
 void registerAssetValue(const json5::value& def, const std::string& text);
 
+std::vector<double> requireNumbers(const json5::value& v, size_t count, const std::string& what) {
+    const json5::array_view arr(v);
+    if (!arr.is_valid() || arr.size() != count) fail(what + " must be an array of " + std::to_string(count) + " numbers");
+    std::vector<double> out;
+    out.reserve(count);
+    for (const json5::value& item : arr) out.push_back(requireNumber(item, what));
+    return out;
+}
+
+GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
+    json5::value pointsValue;
+    if (!member(v, "points", pointsValue)) fail(what + " has no point count");
+    const double pointCount = requireNumber(pointsValue, what + ".points");
+    if (pointCount < 0 || pointCount > 1e8) fail(what + " has a bad point count");
+    auto g = std::make_shared<Geometry>();
+    g->resizePoints(static_cast<size_t>(pointCount));
+    json5::value prims;
+    if (member(v, "prims", prims)) {
+        const json5::array_view list(prims);
+        if (!list.is_valid()) fail(what + ".prims must be an array");
+        for (const json5::value& item : list) {
+            const std::vector<double> f = requireNumbers(item, 4, what + " primitive");
+            if (f[0] < 0 || f[1] < 0 || f[0] + f[1] > pointCount || (f[3] != 0 && f[3] != 1)) fail(what + " has a bad primitive");
+            g->addPrimitive({static_cast<uint32_t>(f[0]), static_cast<uint32_t>(f[1]), f[2] != 0, static_cast<PrimKind>(static_cast<int>(f[3]))});
+        }
+    }
+    struct Section {
+        const char* key;
+        AttribClass cls;
+        AttribType type;
+    };
+    for (const Section& s : {Section{"attribs", AttribClass::point, AttribType::float32}, Section{"ints", AttribClass::point, AttribType::int32},
+                             Section{"primAttribs", AttribClass::primitive, AttribType::float32},
+                             Section{"primInts", AttribClass::primitive, AttribType::int32}}) {
+        json5::value section;
+        if (!member(v, s.key, section)) continue;
+        const json5::array_view list(section);
+        if (!list.is_valid()) fail(what + "." + s.key + " must be an array");
+        for (const json5::value& entry : list) {
+            const std::string name = requireStringMember(entry, "name", what + " attribute name");
+            json5::value array;
+            if (!member(entry, "values", array)) fail(what + " attribute '" + name + "' has no values");
+            const std::vector<double> values = requireNumbers(array, g->count(s.cls), what + " attribute '" + name + "'");
+            AttribArray& attrib = g->attrib(s.cls, name, s.type);
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (s.type == AttribType::float32) attrib.floats()[i] = static_cast<float>(values[i]);
+                else attrib.ints()[i] = static_cast<int32_t>(values[i]);
+            }
+        }
+    }
+    json5::value detail;
+    if (member(v, "detail", detail))
+        for (auto [name, value] : json5::object_view(detail)) g->setDetail(std::string(name), static_cast<float>(requireNumber(value, what + ".detail")));
+    return g;
+}
+
 // Applies the saved parameters (and child graph) of a node to n. Existing nodes keep their spare parameters.
 void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
     {
@@ -251,6 +393,7 @@ void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
         }
         for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
         for (auto [key, value] : json5::object_view(nv["strings"])) n.setString(key, requireString(value, std::string("strings.") + key));
+        for (auto [key, value] : json5::object_view(nv["geometries"])) n.setGeometryParam(key, readGeometry(value, std::string("geometries.") + key));
         for (auto [key, value] : json5::object_view(nv["expressions"])) n.setExpression(key, requireString(value, std::string("expressions.") + key));
         for (auto [key, value] : json5::object_view(nv["keyframes"])) {
             std::vector<Keyframe> keys;
@@ -415,7 +558,7 @@ void registerAssetValue(const json5::value& def, const std::string& text) {
 
 }  // namespace
 
-std::string saveNetwork(const Network& net, bool includeTime) {
+std::string saveNetwork(const Network& net, bool includeTime, bool compact) {
     json5::document doc;
     json5::builder b(doc);
     b.push_object();
@@ -424,9 +567,16 @@ std::string saveNetwork(const Network& net, bool includeTime) {
     std::set<std::string> assets;
     collectAssets(net, assets);
     if (!assets.empty()) b["assets"] = writeAssets(b, assets);
-    writeGraphFields(b, net, includeTime);
+    skipDefaults = compact;
+    try {
+        writeGraphFields(b, net, includeTime);
+    } catch (...) {
+        skipDefaults = false;
+        throw;
+    }
+    skipDefaults = false;
     b.pop();
-    return dump(doc);
+    return dump(doc, compact);
 }
 
 void loadNetwork(Network& net, const std::string& text) {
@@ -514,6 +664,8 @@ void transferParameters(const Node& from, Node& to) {
     const std::vector<std::string> kept = to.stringNames();
     for (const std::string& name : from.stringNames())
         if (std::find(kept.begin(), kept.end(), name) != kept.end()) to.setString(name, from.getString(name));
+    for (const std::string& name : from.geometryNames())
+        if (to.hasGeometryParam(name)) to.setGeometryParam(name, from.geometryParam(name));
 }
 
 bool isOutdated(const Node& n, const std::string& typeName) {

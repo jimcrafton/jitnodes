@@ -12,11 +12,26 @@
 
 namespace jitnodes {
 
+// polyline: the primitive's points are its vertices.
+// cubic: the points are cubic Bezier control points in SVG order - anchor, out handle, in handle, anchor, ... An open primitive has 3n + 1
+// points (n segments); a closed one has 3n, and the last segment returns to the first anchor. Handles are ordinary points, so nodes that move
+// points (transform, wrangle, noise) move them with their anchors, and a point attribute on an anchor can ride on its handles too. Nodes that
+// only understand polylines flatten curves first (flattenCurves).
+enum class PrimKind : uint8_t { polyline, cubic };
+
 struct Primitive {
     uint32_t start = 0;
     uint32_t count = 0;
     bool closed = false;
+    PrimKind kind = PrimKind::polyline;
 };
+
+// Segment count of a cubic primitive; 0 when its point count does not fit the layout above.
+inline uint32_t cubicSegments(const Primitive& p) {
+    if (p.kind != PrimKind::cubic) return 0;
+    if (p.closed) return p.count >= 3 && p.count % 3 == 0 ? p.count / 3 : 0;
+    return p.count >= 4 && p.count % 3 == 1 ? (p.count - 1) / 3 : 0;
+}
 
 class Geometry {
 public:
@@ -77,5 +92,8 @@ private:
 };
 
 using GeometryHandle = std::shared_ptr<const Geometry>;
+
+// Same points, primitives, attributes (names, types and values) and detail values.
+bool sameGeometry(const Geometry& a, const Geometry& b);
 
 }  // namespace jitnodes

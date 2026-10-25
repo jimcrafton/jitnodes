@@ -473,6 +473,140 @@ TEST(resampleOpenLineKeepsEndpointsAndInterpolatesAttributes) {
     CHECK(net.cook(rs)->pointCount() == 5);
 }
 
+namespace {
+Geometry archCurve(bool closed) {
+    // open: one cubic from (0,0) to (10,0) arching up to y = 7.5; closed: that arch and its mirror below, two segments
+    Geometry g;
+    const float openX[] = {0, 0, 10, 10}, openY[] = {0, 10, 10, 0};
+    const float closedX[] = {0, 0, 10, 10, 10, 0}, closedY[] = {0, 10, 10, 0, -10, -10};
+    const size_t n = closed ? 6 : 4;
+    g.resizePoints(n);
+    g.attrib(AttribClass::point, "w");
+    for (size_t i = 0; i < n; ++i) {
+        g.x()[i] = closed ? closedX[i] : openX[i];
+        g.y()[i] = closed ? closedY[i] : openY[i];
+    }
+    g.attrib(AttribClass::point, "w").floats()[3] = 10.0f;
+    g.addPrimitive({0, static_cast<uint32_t>(n), closed, PrimKind::cubic});
+    return g;
+}
+}  // namespace
+
+TEST(cubicPrimitiveLayoutAndFlatten) {
+    Geometry open = archCurve(false);
+    CHECK(hasCurves(open) && cubicSegments(open.primitives()[0]) == 1);
+    Primitive bad{0, 5, false, PrimKind::cubic};
+    CHECK(cubicSegments(bad) == 0);
+
+    Geometry flat = flattenCurves(open, 0.01f);
+    CHECK(!hasCurves(flat) && flat.primitiveCount() == 1 && flat.primitives()[0].kind == PrimKind::polyline && !flat.primitives()[0].closed);
+    const size_t n = flat.pointCount();
+    CHECK(n > 8);
+    CHECK_NEAR(flat.x()[0], 0.0f);
+    CHECK_NEAR(flat.y()[0], 0.0f);
+    CHECK_NEAR(flat.x()[n - 1], 10.0f);
+    CHECK_NEAR(flat.y()[n - 1], 0.0f);
+    float top = 0.0f;
+    for (size_t i = 0; i < n; ++i) top = std::max(top, flat.y()[i]);
+    CHECK(top > 7.4f && top <= 7.5f + 1e-4f);
+    const AttribArray* w = flat.findAttrib(AttribClass::point, "w");
+    CHECK(w != nullptr);
+    CHECK_NEAR(w->at(0), 0.0f);
+    CHECK_NEAR(w->at(n - 1), 10.0f);
+    for (size_t i = 1; i < n; ++i) CHECK(w->at(i) >= w->at(i - 1));
+
+    Geometry closed = flattenCurves(archCurve(true), 0.05f);
+    CHECK(closed.primitiveCount() == 1 && closed.primitives()[0].closed && closed.primitives()[0].kind == PrimKind::polyline);
+    CHECK_NEAR(closed.x()[0], 0.0f);
+    CHECK(std::fabs(closed.x()[closed.pointCount() - 1]) > 0.1f || std::fabs(closed.y()[closed.pointCount() - 1]) > 0.1f);
+
+    Geometry resampled = resamplePolylines(open, 8, 0.0f);
+    CHECK(resampled.pointCount() == 8 && !hasCurves(resampled));
+    CHECK_NEAR(resampled.x()[0], 0.0f);
+    CHECK_NEAR(resampled.x()[7], 10.0f);
+}
+
+namespace {
+class GeoParamNode : public Node {
+public:
+    GeoParamNode() : Node("testGeoParam", 0) { declareGeometry("curve"); }
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return geometryParam("curve"); }
+};
+
+GeometryHandle authoredCurve(float shift) {
+    auto g = std::make_shared<Geometry>(archCurve(false));
+    g->x()[1] += shift;
+    g->attrib(AttribClass::point, "id", AttribType::int32).ints()[2] = 7;
+    g->addVectorAttrib(AttribClass::point, "n", 2);
+    g->attrib(AttribClass::primitive, "layer", AttribType::int32).ints()[0] = 3;
+    g->attrib(AttribClass::primitive, "weight").floats()[0] = 0.1f;
+    g->setDetail("scale", 1.25f);
+    return g;
+}
+}  // namespace
+
+TEST(compactSaveLeavesOutDefaultsAndRoundTrips) {
+    Network net;
+    NodeId circle = net.addNode("circle");
+    NodeId other = net.addNode("circle");
+    net.node(other).setFloat("radius", 7.0f);
+    net.node(other).setExpression("count", "8");
+    const std::string full = saveNetwork(net, false, false);
+    const std::string compact = saveNetwork(net, false, true);
+    CHECK(compact.size() < full.size());
+    Network loaded;
+    loadNetwork(loaded, compact);
+    CHECK(loaded.nodeIds().size() == 2);
+    CHECK(loaded.node(circle).getFloat("radius") == net.node(circle).getFloat("radius"));
+    CHECK(loaded.node(other).baseFloat("radius") == 7.0f);
+    CHECK(loaded.node(other).expression("count") == "8");
+    CHECK(saveNetwork(loaded, false, false) == full);
+}
+
+TEST(geometryParametersSaveSnapshotAndPaste) {
+    static const bool registered = (NodeRegistry::instance().registerType("testGeoParam", [] { return std::make_unique<GeoParamNode>(); }), true);
+    (void)registered;
+    Network net;
+    NodeId id = net.addNode("testGeoParam");
+    CHECK(net.node(id).geometryParam("curve")->pointCount() == 0);
+    net.node(id).setGeometryParam("curve", authoredCurve(0.0f));
+    CHECK(sameGeometry(*net.cook(id), *authoredCurve(0.0f)));
+    CHECK(net.cook(id)->primitives()[0].kind == PrimKind::cubic);
+
+    const std::string text = saveNetwork(net);
+    Network loaded;
+    loadNetwork(loaded, text);
+    CHECK(loaded.nodeIds().size() == 1);
+    CHECK(sameGeometry(*loaded.node(loaded.nodeIds()[0]).geometryParam("curve"), *authoredCurve(0.0f)));
+
+    GraphSnapshot before = snapshotNetwork(net);
+    net.node(id).setGeometryParam("curve", authoredCurve(2.0f));
+    CHECK(!sameGeometry(*net.cook(id), *authoredCurve(0.0f)));
+    GraphSnapshot after = snapshotNetwork(net, &before);
+    CHECK(!sameGraph(before, after));
+    restoreSnapshot(net, before, &after);
+    CHECK(sameGeometry(*net.cook(id), *authoredCurve(0.0f)));
+
+    // an unchanged geometry does not dirty the node
+    net.cook(id);
+    net.node(id).setGeometryParam("curve", authoredCurve(0.0f));
+    CHECK(!net.node(id).dirty());
+
+    std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, id)})));
+    CHECK(pasted.size() == 1 && sameGeometry(*net.cook(pasted[0]), *authoredCurve(0.0f)));
+}
+
+TEST(flattenNodeAndSvgExportOfCurves) {
+    Network net;
+    NodeId circle = net.addNode("circle");
+    NodeId flat = net.addNode("flatten");
+    net.connect(circle, flat);
+    auto geo = net.cook(flat);
+    CHECK(geo->primitiveCount() == 1 && !hasCurves(*geo));
+    const std::string svg = geometryToSvg(archCurve(false));
+    CHECK(svg.find("<path d=\"M") != std::string::npos && svg.find(" C") != std::string::npos);
+}
+
 TEST(resampleAndSubdivideClosedCurves) {
     Network net;
     NodeId circle = net.addNode("circle");

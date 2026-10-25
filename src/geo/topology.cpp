@@ -58,7 +58,80 @@ void transferPrimAttribs(const Geometry& src, Geometry& dst, const std::vector<u
     }
 }
 
+bool hasCurves(const Geometry& in) {
+    for (const Primitive& p : in.primitives())
+        if (cubicSegments(p) > 0) return true;
+    return false;
+}
+
+Geometry flattenCurves(const Geometry& in, float tolerance) {
+    if (!hasCurves(in)) return in;
+    const float* x = in.x();
+    const float* y = in.y();
+    tolerance = std::max(tolerance, 1e-4f);
+
+    struct At {
+        uint32_t first = 0;   // the cubic segment the sample lies on: its first control point and its end anchor
+        uint32_t end = 0;
+        float t = 0.0f;
+        bool curve = false;   // false for the points of a polyline primitive, which keep their position
+    };
+    std::vector<PointSample> samples;
+    std::vector<At> at;
+    std::vector<Primitive> prims;
+    std::vector<uint32_t> srcPrim;
+
+    for (uint32_t pi = 0; pi < in.primitiveCount(); ++pi) {
+        const Primitive& p = in.primitives()[pi];
+        srcPrim.push_back(pi);
+        const uint32_t segments = cubicSegments(p);
+        if (segments == 0) {
+            copyPoints(p, samples, prims);
+            prims.back().kind = PrimKind::polyline;
+            at.resize(samples.size());
+            continue;
+        }
+        const uint32_t start = static_cast<uint32_t>(samples.size());
+        for (uint32_t s = 0; s < segments; ++s) {
+            const uint32_t i0 = p.start + 3 * s;
+            const uint32_t i3 = p.start + (3 * s + 3) % p.count;
+            const uint32_t i1 = i0 + 1, i2 = i0 + 2;
+            // |B''| <= 6 * dd, and a chord of n pieces is off by at most |B''| / (8 n^2)
+            const float dd = std::max(std::hypot(x[i0] - 2 * x[i1] + x[i2], y[i0] - 2 * y[i1] + y[i2]),
+                                      std::hypot(x[i1] - 2 * x[i2] + x[i3], y[i1] - 2 * y[i2] + y[i3]));
+            const int n = std::clamp(static_cast<int>(std::ceil(std::sqrt(0.75f * dd / tolerance))), 1, 64);
+            for (int k = 0; k < n; ++k) {
+                const float t = static_cast<float>(k) / static_cast<float>(n);
+                samples.push_back({i0, i3, t});
+                at.push_back({i0, i3, t, true});
+            }
+        }
+        if (!p.closed) {
+            const uint32_t last = p.start + p.count - 1;
+            samples.push_back({last, last, 0.0f});
+            at.push_back({last - 3, last, 1.0f, true});
+        }
+        prims.push_back({start, static_cast<uint32_t>(samples.size()) - start, p.closed, PrimKind::polyline});
+    }
+
+    Geometry out = gatherPoints(in, samples);
+    float* ox = out.x();
+    float* oy = out.y();
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (!at[i].curve) continue;
+        const uint32_t i0 = at[i].first, i1 = i0 + 1, i2 = i0 + 2, i3 = at[i].end;
+        const float t = at[i].t, u = 1.0f - t;
+        const float b0 = u * u * u, b1 = 3 * u * u * t, b2 = 3 * u * t * t, b3 = t * t * t;
+        ox[i] = b0 * x[i0] + b1 * x[i1] + b2 * x[i2] + b3 * x[i3];
+        oy[i] = b0 * y[i0] + b1 * y[i1] + b2 * y[i2] + b3 * y[i3];
+    }
+    for (const Primitive& p : prims) out.addPrimitive(p);
+    transferPrimAttribs(in, out, srcPrim);
+    return out;
+}
+
 Geometry resamplePolylines(const Geometry& in, size_t count, float spacing) {
+    if (hasCurves(in)) return resamplePolylines(flattenCurves(in), count, spacing);
     const float* x = in.x();
     const float* y = in.y();
     std::vector<PointSample> samples;
@@ -131,6 +204,7 @@ Geometry subdivideOnce(const Geometry& in) {
 }  // namespace
 
 Geometry subdividePolylines(const Geometry& in, int iterations) {
+    if (hasCurves(in)) return subdividePolylines(flattenCurves(in), iterations);
     if (iterations <= 0) return in;
     Geometry current = subdivideOnce(in);
     for (int i = 1; i < iterations; ++i) current = subdivideOnce(current);
@@ -185,6 +259,7 @@ Geometry copyToPoints(const Geometry& source, const Geometry& targets, float sca
 }
 
 Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bool keepGroup) {
+    if (hasCurves(in)) return blast(flattenCurves(in), cls, group, keepGroup);
     const size_t n = in.pointCount();
     std::vector<char> keepPoint(n, 1);
     std::vector<char> keepPrim(in.primitiveCount(), 1);

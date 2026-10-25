@@ -14,7 +14,8 @@ namespace jitnodes {
 // values, expressions, keyframes, spare parameters, wiring, the display node, fps and (optionally) the
 // playhead are saved, and subnets store their child graph inline. Cooked geometry and caches are not
 // saved. Asset definitions used by the graph are embedded so the file is self-contained.
-std::string saveNetwork(const Network& net, bool includeTime = true);
+// compact writes one line without indentation, for graphs embedded in other files.
+std::string saveNetwork(const Network& net, bool includeTime = true, bool compact = false);
 
 // Replaces the contents of net. Throws std::runtime_error describing the problem (with the node
 // name where relevant); on failure net is left untouched (asset definitions embedded in the file may

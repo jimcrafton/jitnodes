@@ -126,4 +126,25 @@ Geometry Geometry::concat(const std::vector<const Geometry*>& parts, ThreadPool*
     return out;
 }
 
+bool sameGeometry(const Geometry& a, const Geometry& b) {
+    if (a.pointCount() != b.pointCount() || a.primitiveCount() != b.primitiveCount() || a.details() != b.details()) return false;
+    for (size_t i = 0; i < a.primitiveCount(); ++i) {
+        const Primitive& p = a.primitives()[i];
+        const Primitive& q = b.primitives()[i];
+        if (p.start != q.start || p.count != q.count || p.closed != q.closed || p.kind != q.kind) return false;
+    }
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        const auto& left = a.attribs(cls);
+        const auto& right = b.attribs(cls);
+        if (left.size() != right.size()) return false;
+        for (auto l = left.begin(), r = right.begin(); l != left.end(); ++l, ++r) {
+            if (l->first != r->first || l->second.type() != r->second.type() || l->second.size() != r->second.size()) return false;
+            if (l->second.sharesStorageWith(r->second)) continue;
+            for (size_t i = 0; i < l->second.size(); ++i)
+                if (l->second.at(i) != r->second.at(i)) return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace jitnodes

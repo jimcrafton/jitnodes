@@ -38,6 +38,20 @@ std::string geometryToSvg(const Geometry& geo, const SvgOptions& options) {
 
     for (const Primitive& p : geo.primitives()) {
         if (p.count == 0) continue;
+        if (const uint32_t segments = cubicSegments(p)) {
+            std::snprintf(buf, sizeof(buf), "  <path d=\"M%.6g,%.6g", px(p.start), py(p.start));
+            out += buf;
+            for (uint32_t s = 0; s < segments; ++s) {
+                const size_t i = p.start + 3 * s;
+                std::snprintf(buf, sizeof(buf), " C%.6g,%.6g %.6g,%.6g %.6g,%.6g", px(i + 1), py(i + 1), px(i + 2), py(i + 2),
+                              px(p.start + (3 * s + 3) % p.count), py(p.start + (3 * s + 3) % p.count));
+                out += buf;
+            }
+            if (p.closed) out += " Z";
+            std::snprintf(buf, sizeof(buf), "\" fill=\"none\" stroke=\"%s\" stroke-width=\"%.6g\" stroke-linejoin=\"round\"/>\n", options.stroke.c_str(), strokeWidth);
+            out += buf;
+            continue;
+        }
         out += p.closed ? "  <polygon points=\"" : "  <polyline points=\"";
         for (uint32_t j = 0; j < p.count; ++j) {
             std::snprintf(buf, sizeof(buf), "%s%.6g,%.6g", j ? " " : "", px(p.start + j), py(p.start + j));

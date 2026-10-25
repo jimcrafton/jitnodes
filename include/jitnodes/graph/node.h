@@ -83,6 +83,13 @@ public:
     void setString(const std::string& name, const std::string& value);
     const std::string& getString(const std::string& name) const;
 
+    // Geometry parameters hold authored geometry (a drawn curve, a point cloud): saved with the node in full, so they take part in undo
+    // snapshots, clips and copies like any other parameter. A null handle and an empty geometry are the same, and read back as an empty one.
+    void setGeometryParam(const std::string& name, GeometryHandle geometry);
+    const GeometryHandle& geometryParam(const std::string& name) const;
+    bool hasGeometryParam(const std::string& name) const { return geometries_.count(name) != 0; }
+    std::vector<std::string> geometryNames() const;
+
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
         posX_ = x;
@@ -122,6 +129,7 @@ public:
 protected:
     void declareFloat(const std::string& name, float defaultValue);
     void declareString(const std::string& name, const std::string& defaultValue);
+    void declareGeometry(const std::string& name);
 
 private:
     friend class Network;
@@ -149,6 +157,7 @@ private:
     Network* network_ = nullptr;
     std::map<std::string, FloatParam> floats_;
     std::map<std::string, std::string> strings_;
+    std::map<std::string, GeometryHandle> geometries_;
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
     bool dirty_ = true;

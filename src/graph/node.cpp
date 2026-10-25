@@ -23,6 +23,8 @@ void Node::addSpareFloat(const std::string& name, float defaultValue) {
 
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
 
+void Node::declareGeometry(const std::string& name) { geometries_[name] = std::make_shared<const Geometry>(); }
+
 Node::FloatParam& Node::floatParam(const std::string& name) {
     auto it = floats_.find(name);
     if (it == floats_.end()) throw std::runtime_error("unknown float parameter '" + name + "' on " + typeName_);
@@ -124,6 +126,27 @@ const std::string& Node::getString(const std::string& name) const {
     auto it = strings_.find(name);
     if (it == strings_.end()) throw std::runtime_error("unknown string parameter '" + name + "' on " + typeName_);
     return it->second;
+}
+
+void Node::setGeometryParam(const std::string& name, GeometryHandle geometry) {
+    auto it = geometries_.find(name);
+    if (it == geometries_.end()) throw std::runtime_error("unknown geometry parameter '" + name + "' on " + typeName_);
+    if (!geometry) geometry = std::make_shared<const Geometry>();
+    if (it->second == geometry || sameGeometry(*it->second, *geometry)) return;
+    it->second = std::move(geometry);
+    markChanged();
+}
+
+const GeometryHandle& Node::geometryParam(const std::string& name) const {
+    auto it = geometries_.find(name);
+    if (it == geometries_.end()) throw std::runtime_error("unknown geometry parameter '" + name + "' on " + typeName_);
+    return it->second;
+}
+
+std::vector<std::string> Node::geometryNames() const {
+    std::vector<std::string> names;
+    for (const auto& entry : geometries_) names.push_back(entry.first);
+    return names;
 }
 
 void Node::markChanged() {

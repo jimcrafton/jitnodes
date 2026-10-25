@@ -64,6 +64,15 @@ public:
     }
 };
 
+class FlattenNode : public Node {
+public:
+    FlattenNode() : Node("flatten", 1) { declareFloat("tolerance", 0.25f); }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        return std::make_shared<Geometry>(flattenCurves(*in[0], getFloat("tolerance")));
+    }
+};
+
 class CopyToPointsNode : public Node {
 public:
     CopyToPointsNode() : Node("copyToPoints", 2) {
@@ -101,6 +110,7 @@ void registerTopologyNodes() {
     add<CircleNode>("circle");
     add<ResampleNode>("resample");
     add<SubdivideNode>("subdivide");
+    add<FlattenNode>("flatten");
     add<CopyToPointsNode>("copyToPoints");
     add<BlastNode>("blast");
 }
