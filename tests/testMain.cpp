@@ -823,6 +823,40 @@ TEST(expressionParametersFollowTime) {
     CHECK(net.node(xf).cookCount() == 3);
 }
 
+// setTime remembers which nodes can depend on time; every edit that changes that has to be seen by the next setTime.
+TEST(setTimeFollowsAnimationAddedAndRemovedAfterwards) {
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    net.node(line).setFloat("count", 2.0f);
+    net.node(line).setFloat("length", 1.0f);
+    net.connect(line, xf);
+
+    CHECK(!net.setTime(1.0));                       // nothing animated: nothing affected (and the list is built empty)
+    net.cook(xf);
+    net.node(xf).setKeyframes("ty", {{0.0, 0.0f, KeyInterp::linear}, {2.0, 10.0f, KeyInterp::linear}});
+    CHECK(net.setTime(1.5));                        // keys added after the first setTime are seen
+    CHECK_NEAR(net.cook(xf)->y()[0], 7.5f);
+
+    net.node(xf).clearAnimation("ty");
+    net.cook(xf);
+    CHECK(!net.setTime(1.75));                      // and removed again
+    net.node(xf).setExpression("tx", "time");
+    CHECK(net.setTime(2.0));
+    CHECK_NEAR(net.cook(xf)->x()[0], 2.0f);
+
+    NodeId later = net.addNode("transform");        // a node added afterwards
+    net.connect(line, later);
+    net.node(later).setExpression("tx", "frame");
+    net.setFps(10.0);
+    CHECK(net.setTime(3.0));
+    CHECK_NEAR(net.cook(later)->x()[0], 30.0f);
+
+    net.removeNode(xf);
+    net.removeNode(later);
+    CHECK(!net.setTime(4.0));                       // removed nodes are forgotten
+}
+
 TEST(keyframedParametersAnimateAndClear) {
     Network net;
     NodeId line = net.addNode("line");

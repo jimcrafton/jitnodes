@@ -199,8 +199,8 @@ public:
     void invalidateReferencesTo(const std::string& nodeName);
     bool anyDependsOnTime() const;
     // Only nodes whose parameters depend on time (keyframes, `time`/`frame` in expressions, or references
-    // to such parameters on other nodes) are invalidated when the time changes.
-    void setTime(double t);
+    // to such parameters on other nodes) are invalidated when the time changes. Returns whether any node was.
+    bool setTime(double t);
     double time() const { return time_; }
     void setFps(double fps) { fps_ = fps; }
     double fps() const { return fps_; }
@@ -246,6 +246,11 @@ private:
     static constexpr size_t maxExpressionDepth = 400;
 
     std::map<NodeId, Slot> slots_;
+    // The nodes setTime has to look at: those with an expression or keys on a parameter, and subnets. Rebuilt after any edit that can change which
+    // nodes those are (every markDirty, node added or removed); setTime's own markDirty calls do not.
+    mutable std::vector<NodeId> timeCandidates_;
+    mutable bool timeCandidatesValid_ = false;
+    bool settingTime_ = false;
     // Reverse indexes, kept in step with every change of wiring and of expression references: consumers_ holds one entry per wired
     // input (so a node wired twice into one consumer appears twice), referrers_ the nodes whose expressions mention a node name.
     std::unordered_map<NodeId, std::vector<NodeId>> consumers_;

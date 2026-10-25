@@ -77,6 +77,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     s.inputs.assign(static_cast<size_t>(n->inputCount()), invalidNodeId);
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
+    timeCandidatesValid_ = false;
     names_[name] = id;
     nextId_ = std::max(nextId_, id + 1);
     slots_.at(id).node->onAttached(*this);
@@ -85,6 +86,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 
 void Network::clear() {
     slots_.clear();
+    timeCandidatesValid_ = false;
     consumers_.clear();
     referrers_.clear();
     names_.clear();
@@ -128,6 +130,7 @@ void Network::removeNode(NodeId id) {
     indexReferences(*slot(id).node, false);
     forgetName(slot(id).node->name());
     slots_.erase(id);
+    timeCandidatesValid_ = false;
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
 
@@ -292,6 +295,7 @@ NodeId Network::inputOf(NodeId to, int inputIndex) const {
 
 void Network::markDirty(NodeId id) {
     slot(id);
+    if (!settingTime_) timeCandidatesValid_ = false;
     std::unordered_set<NodeId> seen;
     std::vector<NodeId> pending{id};
     while (!pending.empty()) {
@@ -308,6 +312,7 @@ void Network::markDirty(NodeId id) {
 }
 
 void Network::markAllDirty() {
+    timeCandidatesValid_ = false;
     for (auto& entry : slots_) {
         entry.second.node->dirty_ = true;
         entry.second.node->cooked_.reset();
@@ -368,13 +373,26 @@ bool Network::indexesConsistent() const {
     return wantConsumers == haveConsumers && wantReferrers == haveReferrers && wantNames == names_;
 }
 
-void Network::setTime(double t) {
-    if (t == time_) return;
+bool Network::setTime(double t) {
+    if (t == time_) return false;
     time_ = t;
+    if (!timeCandidatesValid_) {
+        timeCandidates_.clear();
+        for (const auto& entry : slots_) {
+            const Node& n = *entry.second.node;
+            bool candidate = n.childNetwork() != nullptr;
+            for (auto it = n.floats_.begin(); !candidate && it != n.floats_.end(); ++it) candidate = it->second.animated();
+            if (candidate) timeCandidates_.push_back(entry.first);
+        }
+        timeCandidatesValid_ = true;
+    }
     std::vector<NodeId> affected;
-    for (const auto& entry : slots_)
-        if (dependsOnTime(entry.first)) affected.push_back(entry.first);
+    for (NodeId id : timeCandidates_)
+        if (dependsOnTime(id)) affected.push_back(id);
+    settingTime_ = true;
     for (NodeId id : affected) markDirty(id);
+    settingTime_ = false;
+    return !affected.empty();
 }
 
 float Network::resolveSymbol(NodeId owner, const std::string& symbol) {
@@ -449,9 +467,11 @@ bool Network::paramDependsOnTime(NodeId id, const std::string& name, std::set<st
 
 bool Network::dependsOnTime(NodeId id) const {
     std::set<std::pair<NodeId, std::string>> visiting;
-    for (const auto& entry : node(id).floats_)
-        if (paramDependsOnTime(id, entry.first, visiting)) return true;
-    return node(id).childDependsOnTime();
+    const Node& n = node(id);
+    for (const auto& entry : n.floats_)
+        // A plain number cannot depend on time; skipping it avoids the lookups by name, which dominate when a graph has thousands of nodes.
+        if (entry.second.animated() && paramDependsOnTime(id, entry.first, visiting)) return true;
+    return n.childDependsOnTime();
 }
 
 bool Network::anyDependsOnTime() const {
