@@ -74,7 +74,7 @@ takes a few minutes; later builds only rebuild what changed. `ui/mainWindow.newu
   to model is tested without a mouse or a visible window.
 
 Wired so far: New/Open/Save (Save asks for a path the first time; New and Open ask before discarding changes), Undo/Redo
-(enabled from `canUndo`/`canRedo`), the eleven palette buttons, Play/Pause with the time slider and label, the fusion
+(enabled from `canUndo`/`canRedo`), the eighteen palette buttons, Play/Pause with the time slider and label, the fusion
 toggle, thread count and instruction set drop-downs, the node title/type, status, cook info, profile summary and the window
 title (`name*` when modified). The graph starts empty: click a palette button (for example `line`, then `transform`) to add nodes. Graph canvas: left-drag a node to move it; left-drag from an output port (bottom centre) to a node or an input port (top)
 to connect; left-drag a connected input port to detach and re-drop the wire; double-click a node to make it the display
@@ -187,7 +187,7 @@ powershell -File editor/uiShot.ps1 -out shot.png -clicks "81,90;81,118"    # cli
 | | `undoButton`, `redoButton` | `History::undo` / `redo` (enable from `canUndo` / `canRedo`, tooltip from the labels) |
 | | `playButton`, `timeSlider`, `timeLabel` | `Network::setTime` on a timer; slider 0..100 maps to the playhead range |
 | | `fusionToggle`, `threadsSelect`, `isaSelect` | `setFusionEnabled`, `setThreadCount`, `KernelCompiler::setIsa` (models filled in code) |
-| Palette | `addLine`, `addTransform`, ... `addNull` (one per node type) | `Network::addNode` at the canvas centre, then `History::commit` |
+| Palette | `addLine`, `addTransform`, ... `addRender` (one per node type, including the [fx nodes](../docs/fx.md)) | `Network::addNode` at the canvas centre, then `History::commit` |
 | Graph | `graphCanvas`, `graphStatus` | `GraphCanvas` (Blend2D): nodes, wires, display flag, select/move/connect/delete |
 | Parameters | `nodeTitle`, `nodeType`, `paramSx` ... `keyTy`, `displayToggle`, `paramError` | sample rows for a transform; rebuilt per selected node from `floatNames` / `stringNames`, `fx` opens `setExpression`, `key` opens `setKeyframes` |
 | Viewport | `viewportCanvas`, `fitButton` | placeholder drawn from the display node's cooked geometry (SVG path / Blend2D) |

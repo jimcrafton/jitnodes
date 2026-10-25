@@ -1,0 +1,30 @@
+// scatter fills a closed shape (left, 20,000 points) and walks along an open curve (right, 12,000 points with spread 0.25).
+//   jitnodesCli examples/graphs/fx/fxScatter.json --png fxScatter.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "circle", name: "blob", floats: { count: 48, radius: 5 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "blobShape",
+      strings: { code: "k = 1 + 0.22 * sin(x * 1.3 + y * 0.7) + 0.18 * cos(y * 1.9 - x * 0.5); nx = x * k - 9; ny = y * k; x = nx; y = ny;" },
+      inputs: [1]
+    },
+    { id: 3, type: "scatter", name: "fill", floats: { count: 20000, lineCount: 0, seed: 4 }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "fillLook", strings: { code: "radius = 0.07; alpha = 0.8; softness = 0.6; Cd.x = 1; Cd.y = lerp(0.4, 0.9, rand); Cd.z = 0.3;" }, inputs: [3] },
+    { id: 5, type: "line", name: "curve", floats: { count: 80, length: 14 }, inputs: [] },
+    { id: 6, type: "wrangle", name: "curveShape", strings: { code: "x = x + 3; y = 3.5 * sin(x * 0.7);" }, inputs: [5] },
+    { id: 7, type: "scatter", name: "walk", floats: { count: 0, lineCount: 12000, spread: 0.25, seed: 5 }, inputs: [6] },
+    { id: 8, type: "wrangle", name: "walkLook", strings: { code: "radius = 0.07; alpha = 0.8; softness = 0.6; Cd.x = 0.3; Cd.y = lerp(0.6, 1, u); Cd.z = 1;" }, inputs: [7] },
+    { id: 9, type: "merge", name: "all", inputs: [4, 8] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1, gamma: 2.2, width: 700, height: 350, viewWidth: 36, viewCx: 0.5, viewCy: 0 },
+      strings: { background: "#000000" },
+      inputs: [9]
+    }
+  ]
+}

@@ -423,10 +423,11 @@ class Viewport(EditorCase):
         maximized = self.app.find("viewportCanvas")
         self.assertGreater(maximized.w, thumbnail.w * 2)
         self.assertGreater(maximized.h, thumbnail.h)
-        self.assertEqual(0, self.app.find("graphCanvas").w, "the graph is out of the way while the viewport is maximized")
+        self.assertFalse(self.app.find("graphPanel").visible, "the graph is out of the way while the viewport is maximized")
         self.app.double_click("viewportCanvas")
         restored = self.app.find("viewportCanvas")
         self.assertLess(abs(restored.w - thumbnail.w), 2)
+        self.assertTrue(self.app.find("graphPanel").visible)
         self.assertEqual(graph.w, self.app.find("graphCanvas").w)
 
     def test_right_click_opens_a_menu_that_escape_closes(self):

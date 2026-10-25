@@ -9,6 +9,14 @@ jitnodesCli examples/graphs/nebula.json --png nebula.png
 jitnodesEditor examples/graphs/nebula.json
 ```
 
+![The nebula graph rendered by jitnodesCli](images/nebula.png)
+
+In the editor the six nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, render): select a
+node, click a button and the new node is wired to the selected one. Each example below is a small graph in
+`examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
+parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
+viewport to enlarge it).
+
 ## Contents
 
 1. [The nodes](#the-nodes)
@@ -36,6 +44,12 @@ Makes `count` points in a box, an ellipse or a Gaussian blob. Up to 50 million p
 
 Point attributes: `rand` and `rand2` (independent, uniform in 0..1) and `id` (int, the index). There are no primitives.
 
+![rect, disc and gaussian, 20,000 points each](images/fxGenerate.png)
+
+`examples/graphs/fx/fxGenerate.json`: three `generate` nodes (`shape` rect, disc, gaussian; `cx` -11, 0, 11), each
+followed by a wrangle that sets `radius`, `alpha` and colour, merged into a `render`. Note that a `generate` node
+makes bare points: without a `radius` and `alpha` a downstream `render` draws nothing, so something has to set them.
+
 ### scatter (one input)
 
 Scatters points on the shapes of its input: **inside closed primitives, along open ones**.
@@ -57,6 +71,13 @@ three or two points, zero area or length) are skipped.
 Point attributes: `rand`, `rand2`, `srcPrim` (int, the index of the input primitive) and `u` (0..1 along an open
 primitive, 0 for a closed one). Input attributes are not carried over: scatter creates new points.
 
+![scatter inside a closed shape and along an open curve](images/fxScatter.png)
+
+`examples/graphs/fx/fxScatter.json`: `circle` bent by a wrangle into a lumpy closed shape and filled with
+`count` = 20000 (left); `line` bent into a wave and walked with `lineCount` = 12000 and `spread` = 0.25 (right, tinted
+by `u`, the position along the curve). A `scatter` with both kinds of primitive in its input does both at once; set
+`count` or `lineCount` to 0 to switch one off.
+
 ### noise (one input)
 
 Writes a noise field, sampled at each point's `x`, `y`, into a point attribute.
@@ -73,6 +94,13 @@ Writes a noise field, sampled at each point's `x`, `y`, into a point attribute.
 | `seed` | 1 | picks another field |
 | `amplitude`, `bias` | 1, 0 | result is `value * amplitude + bias` |
 
+![fbm, ridged and turbulence noise through colour ramps](images/fxNoise.png)
+
+`examples/graphs/fx/fxNoise.json`: the same `scale` and `seed` in each mode (fbm, ridged, turbulence), 60,000 points on
+a box each, coloured with a `colorRamp` whose `min` and `max` cover the range of that mode (fbm 0.15..0.85, ridged
+0..1, turbulence 0..0.6). The noise is a function of the point's `x` and `y`, so the three boxes show different parts
+of the same field; give them the same `offsetX` to see the modes on identical coordinates.
+
 ### warp (one input)
 
 Moves the points through a noise field. Attributes (including ones computed by `noise` earlier) travel with the points,
@@ -85,6 +113,13 @@ so the pattern is carried into the new shapes.
 | `scale`, `octaves`, `lacunarity`, `gain`, `seed`, `phase` | as in `noise` | the field that moves the points |
 | `iterations` | 1 | the move is split in this many steps and the field is re-sampled at each new position (and phase); more steps give longer, more curled streaks. 1 to 64 |
 
+![a grid, the same grid noise-warped and curl-warped](images/fxWarp.png)
+
+`examples/graphs/fx/fxWarp.json`: a checker pattern made by a wrangle (left, unwarped), then through `warp` in `noise`
+mode (middle, `amount` 1.2: the grid wobbles but stays connected) and in `curl` mode (right, `amount` 1.5,
+`iterations` 3: the pattern is dragged into swirls and tears apart, since curl flow moves points rather than
+stretching a surface). Both warps read the same unwarped points, and the colour travels with each point.
+
 ### colorRamp (one input)
 
 Maps a float attribute onto a gradient and writes `Cd.x`, `Cd.y`, `Cd.z`.
@@ -95,6 +130,9 @@ Maps a float attribute onto a gradient and writes `Cd.x`, `Cd.y`, `Cd.z`.
 | `ramp` | `0 #000000, 1 #ffffff` | stops separated by commas, semicolons or new lines; each is a position then a colour, either `#rgb`, `#rrggbb` or three numbers 0..1 (`0.5 1 0.2 0.1`). Colours are interpolated linearly in RGB; positions outside the stops clamp to the end colours |
 | `min`, `max` | 0, 1 | attribute values that map to ramp positions 0 and 1 (an inverted range reverses the ramp) |
 | `gamma` | 1 | the position is raised to this power first; above 1 favours the dark end |
+
+The ramps in the pictures above are, for example, `0 #0b0630, 0.35 #3b4cc0, 0.7 #f4a582, 1 #fff7e0` (the fbm box in
+`fxNoise.json`) and `0 #101a4a, 0.5 #3aa0d8, 1 #ffd070` (the checker in `fxWarp.json`).
 
 ### render (one input)
 
@@ -111,6 +149,15 @@ before (lines, dots, plain sprites). Choosing a *Color by* attribute in the edit
 | `background` | `#000000` | colour of empty space |
 | `width`, `height` | 1400, 700 | size of the PNG written by `jitnodesCli` unless `--size WxH` is given |
 | `viewCx`, `viewCy`, `viewWidth` | 0, 0, 0 | the world window the PNG shows (its centre and width; the height follows the aspect ratio). `viewWidth` 0 fits the bounds of the points. The editor ignores these and uses its own pan and zoom |
+
+| Additive (`fxRenderAdditive.json`) | Over (`fxRenderOver.json`) |
+|---|---|
+| ![three clouds drawn additively](images/fxRenderAdditive.png) | ![the same clouds composited over each other](images/fxRenderOver.png) |
+
+The same three clouds (30,000 soft sprites each, `alpha` 0.06) with `additive` 1 and 0. Additive: light adds up, so the
+overlaps go towards white and the order of the sprites does not matter. Over: later sprites cover earlier ones, so the
+last merged input (blue) wins. In additive mode the `background` is treated as light too and is brightened by `gamma`
+along with everything else, so `#000000` is what a dark-sky picture needs; the over mode draws the colour as it is.
 
 ## From points to an image
 

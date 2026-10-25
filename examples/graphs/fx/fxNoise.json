@@ -1,0 +1,28 @@
+// The three noise modes sampled on the same size of box and drawn through a colour ramp: fbm, ridged and turbulence.
+//   jitnodesCli examples/graphs/fx/fxNoise.json --png fxNoise.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "fbmPoints", floats: { count: 60000, seed: 1, cx: -11, width: 10, height: 10 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 2, type: "noise", name: "fbm", floats: { scale: 0.25, octaves: 5, seed: 3 }, strings: { name: "n", mode: "fbm" }, inputs: [1] },
+    { id: 3, type: "colorRamp", name: "fbmColor", floats: { min: 0.15, max: 0.85 }, strings: { attribute: "n", ramp: "0 #0b0630, 0.35 #3b4cc0, 0.7 #f4a582, 1 #fff7e0" }, inputs: [2] },
+    { id: 4, type: "generate", name: "ridgedPoints", floats: { count: 60000, seed: 2, cx: 0, width: 10, height: 10 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 5, type: "noise", name: "ridged", floats: { scale: 0.25, octaves: 5, seed: 3 }, strings: { name: "n", mode: "ridged" }, inputs: [4] },
+    { id: 6, type: "colorRamp", name: "ridgedColor", floats: { min: 0, max: 1 }, strings: { attribute: "n", ramp: "0 #020a14, 0.5 #0e6b8c, 1 #d8fbff" }, inputs: [5] },
+    { id: 7, type: "generate", name: "turbPoints", floats: { count: 60000, seed: 3, cx: 11, width: 10, height: 10 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 8, type: "noise", name: "turbulence", floats: { scale: 0.25, octaves: 5, seed: 3 }, strings: { name: "n", mode: "turbulence" }, inputs: [7] },
+    { id: 9, type: "colorRamp", name: "turbColor", floats: { min: 0, max: 0.6 }, strings: { attribute: "n", ramp: "0 #140404, 0.5 #b03a12, 1 #ffe9a8" }, inputs: [8] },
+    { id: 10, type: "merge", name: "all", inputs: [3, 6, 9] },
+    { id: 11, type: "wrangle", name: "look", strings: { code: "radius = 0.07; alpha = 1; softness = 0.5;" }, inputs: [10] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, width: 700, height: 350, viewWidth: 34 },
+      strings: { background: "#05060c" },
+      inputs: [11]
+    }
+  ]
+}

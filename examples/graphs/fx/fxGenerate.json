@@ -1,0 +1,24 @@
+// The three shapes of the generate node side by side: rect, disc and gaussian, 20,000 points each.
+//   jitnodesCli examples/graphs/fx/fxGenerate.json --png fxGenerate.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 10,
+  nodes: [
+    { id: 1, type: "generate", name: "rectPoints", floats: { count: 20000, seed: 1, cx: -11, width: 9, height: 9 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 2, type: "wrangle", name: "rectLook", strings: { code: "radius = 0.1; alpha = 0.8; softness = 0.6; Cd.x = 1; Cd.y = 0.55; Cd.z = 0.3;" }, inputs: [1] },
+    { id: 3, type: "generate", name: "discPoints", floats: { count: 20000, seed: 2, cx: 0, width: 9, height: 9 }, strings: { shape: "disc" }, inputs: [] },
+    { id: 4, type: "wrangle", name: "discLook", strings: { code: "radius = 0.1; alpha = 0.8; softness = 0.6; Cd.x = 0.4; Cd.y = 0.85; Cd.z = 0.5;" }, inputs: [3] },
+    { id: 5, type: "generate", name: "gaussPoints", floats: { count: 20000, seed: 3, cx: 11, width: 9, height: 9 }, strings: { shape: "gaussian" }, inputs: [] },
+    { id: 6, type: "wrangle", name: "gaussLook", strings: { code: "radius = 0.1; alpha = 0.8; softness = 0.6; Cd.x = 0.35; Cd.y = 0.6; Cd.z = 1;" }, inputs: [5] },
+    { id: 7, type: "merge", name: "all", inputs: [2, 4, 6] },
+    {
+      id: 10, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1, gamma: 2.2, width: 700, height: 350, viewWidth: 34 },
+      strings: { background: "#000000" },
+      inputs: [7]
+    }
+  ]
+}
