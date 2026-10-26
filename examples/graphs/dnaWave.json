@@ -1,0 +1,129 @@
+// A DNA double helix emerging from a glowing frequency wave, after an "abstract DNA and frequency wave" illustration.
+//   jitnodesCli examples/graphs/dnaWave.json --png dnaWave.png
+// Every layer is points drawn additively: the helix strands and rungs are formulas on uniform points, the wave is a few dozen
+// sine curves with random frequency, phase and a beating envelope, chosen per point from a hash of the curve index.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 51,
+  nodes: [
+    // Helix strands: x runs along the axis; the strand (+1 or -1) is picked by rand, y is the tube thickness before it is replaced.
+    { id: 1, type: "generate", name: "strandPoints", floats: { count: 260000, seed: 4, width: 21, height: 1, cx: 9.5 }, strings: { shape: "rect" }, inputs: [], pos: [60, 60] },
+    {
+      id: 2, type: "wrangle", name: "strandShape",
+      strings: { code: "s = rand > 0.5 ? 1 : -1; ph = 0.5 * x; amp = 0.7 + 0.11 * clamp(x, 0, 14); z = s * cos(ph); q = y; ny = s * amp * sin(ph) + 0.045 * x + 0.6 * y * (0.7 + 0.3 * abs(z)); y = ny;" },
+      inputs: [1], pos: [60, 146]
+    },
+    { id: 3, type: "noise", name: "strandTexture", floats: { scale: 5, octaves: 3, seed: 8 }, strings: { name: "tx", mode: "fbm" }, inputs: [2], pos: [60, 232] },
+    {
+      id: 4, type: "wrangle", name: "strandLook",
+      strings: { code: "fade = clamp((x + 0.5) / 3, 0, 1); front = 0.5 + 0.5 * z; g = clamp((x - 6) / 12, 0, 1); n = q * 2; lit = 1 - 0.55 * (n - 0.3) * (n - 0.3); spec = exp(0 - (n - 0.4) * (n - 0.4) * 14) * front * front; radius = 0.05 + 0.03 * front; alpha = fade * (0.018 + 0.05 * front * front) * lit * (0.3 + 1.4 * tx) * (1 + 0.7 * spec); k = lit * (0.6 + 0.4 * front); Cd.x = lerp(0.08, 0.3, g) * k + 0.4 * spec; Cd.y = lerp(0.42, 1, g) * k + 0.4 * spec; Cd.z = lerp(1, 0.45, g) * k + 0.4 * spec; softness = 1;" },
+      inputs: [3], pos: [60, 318]
+    },
+
+    // Base pairs: a bar across the helix every unit of x, between the two strands.
+    { id: 10, type: "generate", name: "rungPoints", floats: { count: 90000, seed: 12, width: 21, height: 2, cx: 9.5 }, strings: { shape: "rect" }, inputs: [], pos: [300, 60] },
+    {
+      id: 11, type: "wrangle", name: "rungShape",
+      strings: { code: "xq = floor(x) + 0.5 + (rand - 0.5) * 0.3; amp = 0.7 + 0.11 * clamp(xq, 0, 14); t = y; ny = amp * sin(0.5 * xq) * t + 0.045 * xq; x = xq; y = ny;" },
+      inputs: [10], pos: [300, 146]
+    },
+    {
+      id: 12, type: "wrangle", name: "rungLook",
+      strings: { code: "fade = clamp((x - 0.5) / 3, 0, 1); g = clamp((x - 6) / 12, 0, 1); dz = 0.5 + 0.5 * t * cos(0.5 * xq); radius = 0.04 + 0.025 * dz; alpha = fade * (0.01 + 0.02 * abs(t) * abs(t)) * (0.6 + 0.8 * rand2) * (0.25 + 1.1 * dz); Cd.x = lerp(0.3, 0.45, g) * (0.5 + 0.5 * dz); Cd.y = lerp(0.65, 1, g) * (0.5 + 0.5 * dz); Cd.z = lerp(1, 0.55, g) * (0.6 + 0.4 * dz); softness = 1;" },
+      inputs: [11], pos: [300, 232]
+    },
+
+    // Frequency wave: 36 sine curves, each point belongs to one (c) and gets its frequency, amplitude and beat from hashes of c.
+    { id: 20, type: "generate", name: "wavePoints", floats: { count: 800000, seed: 20, width: 19.5, height: 1, cx: -8.25 }, strings: { shape: "rect" }, inputs: [], pos: [540, 60] },
+    {
+      id: 21, type: "wrangle", name: "waveShape",
+      strings: {
+        code: "ci = floor(rand * 36); h1 = sin(ci * 1.37 + 0.7) * 43758.5453; h1 = h1 - floor(h1); h2 = sin(ci * 2.11 + 1.9) * 43758.5453; h2 = h2 - floor(h2); h3 = sin(ci * 0.83 + 3.1) * 43758.5453; h3 = h3 - floor(h3); h4 = sin(ci * 1.91 + 5.3) * 43758.5453; h4 = h4 - floor(h4); dx = x + 7; w = dx < 0 ? 7 : 3.8; env = 0.2 + 5.2 * exp(0 - dx * dx / (w * w)); beat = 0.5 + 0.5 * cos((0.3 + 1.2 * h3) * x + 6.28 * h4); wa = (0.25 + 0.75 * h2) * env * beat; y = wa * sin((2 + 10 * h1 * h1) * x + 18.84 * h4);"
+      },
+      inputs: [20], pos: [540, 146]
+    },
+    {
+      id: 22, type: "wrangle", name: "waveLook",
+      strings: {
+        code: "u = clamp((x + 18) / 18, 0, 1); dot = rand2 > 0.93; radius = dot ? 0.045 : 0.028; alpha = dot ? 0.35 * (0.3 + beat) : 0.0042 + 0.005 * beat; og = clamp((h3 - 0.68) * 8, 0, 1); vi = clamp((0.28 - h3) * 6, 0, 1); gr = clamp((0.45 - u) * 2.5, 0, 1) * (1 - og); Cd.x = lerp(lerp(0.03, 0.15, u), 1, og) + 0.4 * vi; Cd.y = lerp(lerp(0.85, 0.95, gr), 0.5, og) - 0.45 * vi; Cd.z = lerp(1, 0.1, og) - 0.45 * gr; softness = 1;"
+      },
+      inputs: [21], pos: [540, 232]
+    },
+
+    // The bright axis along the wave, and the flare where it meets the helix.
+    { id: 30, type: "generate", name: "axisPoints", floats: { count: 200000, seed: 30, width: 34, height: 0.03, cx: -4 }, strings: { shape: "gaussian" }, inputs: [], pos: [780, 60] },
+    {
+      id: 31, type: "wrangle", name: "axisLook",
+      strings: { code: "k = exp(0 - abs(x + 0.5) * 0.14); radius = 0.04 + 0.09 * exp(0 - abs(x + 0.5) * 0.6); alpha = 0.07 * k; u = clamp((x + 19) / 12, 0, 1); Cd.x = lerp(0.2, 0.85, u); Cd.y = 1; Cd.z = lerp(0.6, 1, u); softness = 1;" },
+      inputs: [30], pos: [780, 146]
+    },
+    { id: 32, type: "generate", name: "flarePoints", floats: { count: 60000, seed: 32, width: 3, height: 0.8, cx: 0 }, strings: { shape: "gaussian" }, inputs: [], pos: [1020, 60] },
+    {
+      id: 33, type: "wrangle", name: "flareLook",
+      strings: { code: "radius = 0.1 + 0.2 * rand; alpha = 0.006; Cd.x = 0.75; Cd.y = 0.92; Cd.z = 1; softness = 1;" },
+      inputs: [32], pos: [1020, 146]
+    },
+
+    // Vertical spike of the flare: a narrow gaussian column that fades with distance from the core.
+    { id: 34, type: "generate", name: "spikePoints", floats: { count: 120000, seed: 34, width: 0.15, height: 16, cx: 0.3 }, strings: { shape: "gaussian" }, inputs: [], pos: [1020, 232] },
+    {
+      id: 35, type: "wrangle", name: "spikeLook",
+      strings: { code: "k = exp(0 - abs(y) * 0.45); radius = 0.03 + 0.08 * exp(0 - abs(y) * 0.9); alpha = 0.006 * k; Cd.x = 0.55; Cd.y = 0.95; Cd.z = 1; softness = 1;" },
+      inputs: [34], pos: [1020, 318]
+    },
+
+    // Lens flare ghosts: five faint rings strung along a diagonal through the core. gi picks the ghost, the unit-disc point is scaled and moved to it.
+    { id: 36, type: "generate", name: "ghostPoints", floats: { count: 160000, seed: 36, width: 2, height: 2 }, strings: { shape: "disc" }, inputs: [], pos: [1020, 404] },
+    {
+      id: 37, type: "wrangle", name: "ghostShape",
+      strings: { code: "gi = floor(rand * 5); tt = gi < 1 ? 0 - 9 : (gi < 2 ? 0 - 5 : (gi < 3 ? 4.5 : (gi < 4 ? 8 : 12))); rr = gi < 1 ? 0.9 : (gi < 2 ? 1.6 : (gi < 3 ? 1.1 : (gi < 4 ? 2.2 : 0.7))); rho = x * x + y * y; px = 0.2 + tt * 0.88 + x * rr; py = tt * 0.47 + y * rr; x = px; y = py;" },
+      inputs: [36], pos: [1020, 490]
+    },
+    {
+      id: 38, type: "wrangle", name: "ghostLook",
+      strings: { code: "radius = 0.13; alpha = 0.00003 * (0.2 + 4 * rho * rho * rho); Cd.x = gi == 1 || gi == 3 ? 1 : (gi == 2 ? 0.7 : 0.15); Cd.y = gi == 1 ? 0.6 : (gi == 3 ? 0.9 : (gi == 2 ? 0.4 : 0.85)); Cd.z = gi == 1 ? 0.2 : (gi == 3 ? 0.5 : 1); softness = 1;" },
+      inputs: [37], pos: [1020, 576]
+    },
+
+    // Glass pane over the picture: a curved sheen across the top, two diagonal reflection streaks and a light rim along the frame,
+    // all drawn as very faint wide sprites laid over the whole view.
+    { id: 46, type: "generate", name: "glassPoints", floats: { count: 240000, seed: 46, width: 36, height: 20 }, strings: { shape: "rect" }, inputs: [], pos: [1980, 60] },
+    {
+      id: 47, type: "wrangle", name: "glassLook",
+      strings: {
+        code: "sheen = clamp((y - (2.5 - 0.015 * x * x)) / 7, 0, 1); s1 = (x - 1.6 * y - 5) / 1.5; s2 = (x - 1.6 * y + 2) / 0.5; de = min(18 - abs(x), 10 - abs(y)); rim = exp(0 - de * 1.2); wt = 0.9 * sheen * sheen + 1.8 * exp(0 - s1 * s1) * (0.35 + 0.65 * sheen) + 1.1 * exp(0 - s2 * s2) * (0.35 + 0.65 * sheen) + 0.5 * rim; radius = 0.6; alpha = 0.00006 * wt; Cd.x = 0.55; Cd.y = 0.82; Cd.z = 1; softness = 1;"
+      },
+      inputs: [46], pos: [1980, 146]
+    },
+
+    // Navy backdrop of huge faint sprites, soft bokeh discs, and a fine sparkle near the axis.
+    { id: 40, type: "generate", name: "backdropPoints", floats: { count: 3000, seed: 40, width: 60, height: 34, cx: 3 }, strings: { shape: "gaussian" }, inputs: [], pos: [1260, 60] },
+    {
+      id: 41, type: "wrangle", name: "backdropLook",
+      strings: { code: "radius = 3 + 4 * rand; alpha = 0.00018; Cd.x = 0.02; Cd.y = 0.1; Cd.z = 0.33; softness = 1;" },
+      inputs: [40], pos: [1260, 146]
+    },
+    { id: 42, type: "generate", name: "bokehPoints", floats: { count: 18, seed: 6, width: 34, height: 18 }, strings: { shape: "rect" }, inputs: [], pos: [1500, 60] },
+    {
+      id: 43, type: "wrangle", name: "bokehLook",
+      strings: { code: "radius = 0.5 + 1.1 * rand * rand; alpha = 0.08 + 0.1 * rand2; Cd.x = 0.08; Cd.y = lerp(0.35, 0.6, rand2); Cd.z = 1; softness = 1;" },
+      inputs: [42], pos: [1500, 146]
+    },
+    { id: 44, type: "generate", name: "sparklePoints", floats: { count: 6000, seed: 44, width: 30, height: 6, cx: 2 }, strings: { shape: "gaussian" }, inputs: [], pos: [1740, 60] },
+    {
+      id: 45, type: "wrangle", name: "sparkleLook",
+      strings: { code: "g = clamp((x - 4) / 12, 0, 1); radius = 0.012 + 0.02 * rand * rand; alpha = 0.15 + 0.7 * rand2; Cd.x = lerp(0.7, 0.4, g); Cd.y = 1; Cd.z = lerp(1, 0.55, g); softness = 1;" },
+      inputs: [44], pos: [1740, 146]
+    },
+
+    { id: 50, type: "merge", name: "all", inputs: [4, 12, 22, 31, 33, 35, 38, 41, 43, 45, 47], pos: [780, 460] },
+    {
+      id: 51, type: "render", name: "image",
+      floats: { exposure: 1, gamma: 2.2, bloom: 0.45, bloomRadius: 16, width: 1400, height: 778, viewWidth: 36 },
+      strings: { background: "#000000" },
+      inputs: [50], pos: [780, 546]
+    }
+  ]
+}

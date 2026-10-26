@@ -5,7 +5,8 @@ plants), sixteen shape them (noise, warp, colour, spacing, sampling curves, wide
 smoothing, waves, strange attractors, flow lines, Voronoi cells, Lloyd relaxation, and three simulations: particles, boids,
 springs), and one (`render`) says
 how the points become an image. Together they draw pictures such as the nebula in
-`examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
+`examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s) and the DNA helix and
+frequency wave in `examples/graphs/dnaWave.json` (see [the DNA and frequency wave graph](#the-dna-and-frequency-wave-graph)).
 
 ```
 jitnodesCli examples/graphs/nebula.json --png nebula.png
@@ -26,8 +27,9 @@ viewport to enlarge it).
 1. [The nodes](#the-nodes)
 2. [From points to an image](#from-points-to-an-image)
 3. [The nebula graph](#the-nebula-graph)
-4. [Writing your own look](#writing-your-own-look)
-5. [Performance and limits](#performance-and-limits)
+4. [The DNA and frequency wave graph](#the-dna-and-frequency-wave-graph)
+5. [Writing your own look](#writing-your-own-look)
+6. [Performance and limits](#performance-and-limits)
 
 ## The nodes
 
@@ -868,6 +870,46 @@ panorama: dark space, coloured gas in wisps, a hot core, blue streaks and stars.
 Wrangles drive the look because they are the cheap, fully animatable part: all of `alpha`, `radius` and the mixing
 constants can be edited live. Animate a `noise` node's `phase` or a `warp` node's `phase` with `time` and the whole
 nebula evolves.
+
+## The DNA and frequency wave graph
+
+`examples/graphs/dnaWave.json` draws a DNA double helix growing out of a glowing frequency wave, in about 1.9 million
+sprites (cooking and drawing at 1400 x 778 and writing the PNG takes about 0.9 s). It has no noise-driven gas, no
+simulation: every shape is a formula applied by a `wrangle` to uniform points from `generate`.
+
+```
+jitnodesCli examples/graphs/dnaWave.json --png dnaWave.png
+```
+
+![The dnaWave graph rendered by jitnodesCli](images/dnaWave.png)
+
+The world window is 36 x 20 units (`viewWidth 36`), centred on the point where the wave meets the helix at x = 0. The wave
+lies to the left (x from -18 to 1.5), the helix to the right (x from -1 to 20, cut off by the window). Every layer is
+`generate` (or two nodes) + `wrangle`, merged into one additive `render` (`exposure 1`, `bloom 0.45`, background `#000000`).
+
+| Layer | Nodes | How it works |
+|---|---|---|
+| strands | `generate` 260k (rect, height 1), `wrangle` shape, `noise` (`tx`), `wrangle` look | `rand > 0.5` picks strand `s` = +1 or -1. The strand's centre is `y = s * amp * sin(0.5 * x)` with `amp = 0.7 + 0.11 * clamp(x, 0, 14)` (the helix widens away from the core) plus a slight tilt; the old `y`, uniform in -0.5..0.5, becomes the position across the tube (`q`). The depth is `z = s * cos(0.5 * x)`: where it is positive the strand is in front |
+| shading | in the strand look wrangle | `n = 2q` is the position across the tube, -1..1. A diffuse term `lit` is brightest slightly above the middle (`n = 0.3`) and darker at the edges, a specular term `spec` adds a soft white highlight at `n = 0.4`, and front strands (`front = 0.5 + 0.5 z`) are brighter, a little bigger and a little warmer than back strands. A `noise` value `tx` at scale 5 breaks the tube up into a speckled, scanned texture. `fade` dims the first 3 units so the helix emerges from the core. The colour goes from blue to green with `g = clamp((x - 6) / 12)` |
+| base pairs | `generate` 90k (rect, height 2), `wrangle` shape, `wrangle` look | `x` is quantised to one rung every unit (`floor(x) + 0.5`, jittered a little by `rand`) and the old `y` (-1..1) becomes `t`, the position along the rung from one strand to the other (`y = amp * sin(0.5 x) * t`, the same formula as the strands, so the ends sit exactly on them). The depth along the rung is `0.5 + 0.5 * t * cos(0.5 x)`, which fades the rung from its front end to its back end |
+| wave | `generate` 800k, `wrangle` shape, `wrangle` look | A hash of the curve index picks one of 36 sine curves per point: `ci = floor(rand * 36)`, then `sin(ci * k1 + k2) * 43758.5453` minus its floor gives four stable pseudo-random numbers `h1..h4` per curve (the wrangle language has no random of its own). They set the frequency (`2 + 10 h1^2`), amplitude (`0.25 + 0.75 h2`), phase and a slow beat envelope `0.5 + 0.5 cos(...)` that makes the curve swell and vanish like a wave packet. All curves share the overall envelope `env`, a Gaussian centred 7 units left of the core (width 7 on the far side, 3.8 towards the helix) on top of a small floor, so the wave narrows to a thin line at the left and at the core. 7 % of the points (`rand2 > 0.93`) are drawn larger and brighter, which gives the dotted outline |
+| colour | in the wave look wrangle | The base colour is cyan, going teal-green at the far left (`gr`). The curve's `h3` picks its tint: `og` turns the curves with high `h3` orange and `vi` turns the lowest ones violet. Because the colour is a function of the curve, each curve keeps its colour along its whole length |
+| axis and core | two `generate` + `wrangle` | A Gaussian-distributed band of 200k points squeezed to 0.03 units high draws the bright line along the axis (white-cyan at the core, green at the far left, radius and alpha falling off with distance from x = -0.5); 60k Gaussian points of larger radius make the soft flare around the core |
+| lens flare | `generate` 120k tall Gaussian, `generate` 160k `disc` + two `wrangle` | A narrow, tall Gaussian column of points draws the vertical spike through the core (`spikeLook`). Five faint ghost rings lie on a diagonal through the core: the disc point `(x, y)` is scaled by a per-ghost radius and moved to the ghost's position along the line (`gi = floor(rand * 5)` picks the ghost; its offset, radius and colour come from nested `?:`). Points near the rim of the unit disc (`rho^3`) get most of the alpha, which makes the rings. Both layers use very low alpha so the flare stays subtle |
+| glass | `generate` 240k (rect, the whole view) + `wrangle` | A faint layer laid over everything: a curved sheen across the top (`sheen`), two diagonal reflection streaks (`exp(-s * s)` of a distance to a slanted line) and a rim glow along the frame (`exp(-de * 1.2)`, `de` the distance to the nearest edge), all in a cool blue-white, sprites of radius 0.6 with alpha about 6e-5 |
+| backdrop, bokeh, sparkle | three `generate` + `wrangle` | 3,000 huge, extremely faint navy sprites (radius 3 to 7) give the deep-blue glow, 18 soft discs of radius 0.5 to 1.6 are the bokeh, and 6,000 tiny bright points near the axis are the sparkle dust |
+
+Tuning notes:
+
+- **Names**: `a`, `b`, `c`, `d` are the wrangle's runtime parameters and cannot be assigned, so the wave code uses `ci`, `dx`, `wa`.
+- **Brightness** is the number of overlapping sprites times `alpha`, and the additive render brightens it by `1 / gamma`
+  (2.2), so tiny alphas still show: the glass layer's sum is about 0.02 and is visible. When you change a count, change its alpha
+  the other way by the same factor.
+- **Smoothness**: a wide, faint layer needs many points or a large radius. With 70,000 points of radius 0.5 the glass
+  layer looked grainy; 240,000 points of radius 0.6 is smooth.
+- **Colour per curve** works only because the hash depends on the curve index alone. Use a per-point random (`rand2`) for variation inside a curve.
+- Every colour, count and strength is a plain number in a wrangle string or a `generate` parameter, so the picture is
+  easy to adjust in the editor. Animate `x` offsets in the wave phase (add `time` to the `sin` argument in `waveShape`) and the wave moves.
 
 ## Writing your own look
 
