@@ -318,7 +318,7 @@ void replicateAttributes(const Geometry& in, Geometry& out, const std::vector<si
     const size_t n = in.pointCount();
     for (const auto& entry : in.attribs(AttribClass::point)) {
         const AttribArray& source = entry.second;
-        AttribArray& target = out.attrib(AttribClass::point, entry.first, source.type());
+        AttribArray& target = out.attribLike(AttribClass::point, entry.first, source);
         if (source.type() == AttribType::float32) {
             float* dst = target.floats().data();
             const float* src = source.floats().data();

@@ -84,6 +84,7 @@ std::vector<uint8_t> saveGeometry(const Geometry& geo) {
     uint64_t payloadBytes = 0;
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
         for (const auto& [name, array] : geo.attribs(cls)) {
+            if (array.type() == AttribType::string) throw std::runtime_error("string attribute '" + name + "' cannot be saved yet");
             dir.push_back({intern(name), cls, &array, payloadBytes});
             payloadBytes += static_cast<uint64_t>(array.paddedSize()) * 4;
         }

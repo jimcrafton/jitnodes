@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
         for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
             for (const auto& [name, array] : geo->attribs(cls))
                 std::printf("  %s attribute %s (%s)\n", cls == AttribClass::point ? "point" : "primitive", name.c_str(),
-                            array.type() == AttribType::int32 ? "int" : "float");
+                            array.type() == AttribType::string ? "string" : array.type() == AttribType::int32 ? "int" : "float");
         }
 
         if (!svgPath.empty()) {

@@ -192,7 +192,10 @@ uint64_t digest(const Geometry& g) {
             for (char c : name) mix(static_cast<uint8_t>(c));
             mix(static_cast<uint64_t>(arr.type()));
             for (size_t i = 0; i < arr.size(); ++i) {
-                if (arr.type() == AttribType::int32) {
+                if (arr.type() == AttribType::string) {
+                    for (char c : arr.stringAt(i)) mix(static_cast<uint8_t>(c));
+                    mix(0x100);
+                } else if (arr.type() == AttribType::int32) {
                     mix(static_cast<uint32_t>(arr.ints()[i]));
                 } else {
                     float f = arr.floats()[i];

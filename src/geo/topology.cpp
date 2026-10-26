@@ -29,7 +29,7 @@ Geometry gatherPoints(const Geometry& src, const std::vector<PointSample>& sampl
     Geometry dst;
     dst.resizePoints(samples.size());
     for (const auto& [name, array] : src.attribs(AttribClass::point)) {
-        AttribArray& out = dst.attrib(AttribClass::point, name, array.type());
+        AttribArray& out = dst.attribLike(AttribClass::point, name, array);
         if (array.type() == AttribType::float32) {
             const float* s = array.floats().data();
             float* o = out.floats().data();
@@ -44,13 +44,13 @@ Geometry gatherPoints(const Geometry& src, const std::vector<PointSample>& sampl
         }
     }
     for (const auto& [name, value] : src.details()) dst.setDetail(name, value);
-    for (const auto& [name, array] : src.attribs(AttribClass::primitive)) dst.attrib(AttribClass::primitive, name, array.type());
+    for (const auto& [name, array] : src.attribs(AttribClass::primitive)) dst.attribLike(AttribClass::primitive, name, array);
     return dst;
 }
 
 void transferPrimAttribs(const Geometry& src, Geometry& dst, const std::vector<uint32_t>& srcIndex) {
     for (const auto& [name, array] : src.attribs(AttribClass::primitive)) {
-        AttribArray& out = dst.attrib(AttribClass::primitive, name, array.type());
+        AttribArray& out = dst.attribLike(AttribClass::primitive, name, array);
         for (size_t i = 0; i < srcIndex.size(); ++i) {
             if (array.type() == AttribType::float32) out.floats()[i] = array.floats()[srcIndex[i]];
             else out.ints()[i] = array.ints()[srcIndex[i]];

@@ -297,9 +297,89 @@ chains running one level after another behind it. With a dependency counter they
 take about 530 ms: the gain is the length of the cheap critical path (here 48 ms, 8%), and it grows only when the cheap branches
 are long. Worth doing when a real graph has a slow node beside long branches; not urgent.
 
-**Step 6, string attributes (separate project).** A string attribute as `int32` ids into a per-geometry string table, written to
-section 1 of the file and readable in wrangles through hashed comparison. Needs a new `AttribType`, so it touches the
-kernel cache key, `merge` (table union and remapping) and `attribCreate`; plan it on its own.
+**Step 6, string attributes (separate project, planned, not started).**
+
+*Representation.* `AttribType::string`: the data are `int32` ids into a string table that belongs to the attribute (a
+`shared_ptr<const std::vector<std::string>>` inside `AttribArray`, copied with it, so sharing and copy on write keep working).
+Id 0 is always the empty string. `ints()` accepts both `int32` and `string`, so the many `if float32 ... else ints()` copy sites
+keep working on the ids; what they must add is the table. Each table holds at most 2^24 - 1 strings, so an id is exact as the
+float a kernel converts it to.
+
+*Kernels need no new machinery for reading.* A kernel loads and stores a string channel exactly like an `int32` one (the type
+digit in `KernelSpec::signature()` already separates types, so the cache key needs only the new value `2`). Three rules keep it
+safe:
+- **Read-only in wrangles.** A store to a string channel is a compile error ("string attribute 'label' cannot be assigned"),
+  checked in `compileFor` where channel types become known. That closes the one way an id could leave its table.
+- **Comparison with a literal.** The wrangle lexer accepts a string literal only as an operand of `==` / `!=` whose other
+  operand is an attribute name: `if (label == "tree") ...`. It lowers to a comparison with a *parameter*, so the kernel is the
+  same for every geometry. `KernelSpec` gets `stringParams {paramIndex, channel, text}`; when a kernel is about to run, the id
+  of `text` in that channel's table (`-1`, never equal, when it is absent; `0` for `""`) is written into `params`.
+  `appendKernel` rebases `paramIndex` like it rebases the other params, so fused chains work, and the one helper that resolves
+  them is called from both the fused path in `Network::runTask` and the wrangle node's own cook.
+- **Other expressions treat the id as an integer** (it is one), so `label` in arithmetic is allowed and meaningless but harmless.
+
+*Where the table must travel* (the real cost, and a silent failure if one site is missed):
+- `Geometry::append` / `concat`: when the tables are the same object, copy as now; otherwise build the union table (new strings
+  appended in part order) and remap each part's ids while copying, on the pool like the other copies.
+- Sites that create an attribute from another's with `dst.attrib(cls, name, array.type())`: `topology.cpp` (two gathers),
+  `curveNodes.cpp` (`gatherPointAttribs`, ribbon/trail replication), `patternNodes.cpp` (`replicateAttributes`), `fileNodes.cpp`
+  (`fileTrail`), `scatter`/`copyToPoints` and the particle nodes that carry attributes. They switch to a new
+  `Geometry::attribLike(cls, name, src)` that creates the array with the same type and table. A `grep` for `array.type()` finds them.
+- A debug invariant, `Geometry::checkStrings()`: every id is below its table size. The stress test calls it on every node's
+  result, and a new test runs every registered node type over a geometry with a string attribute, so a missed site fails loudly.
+- `sameGeometry` compares string attributes by text, not by id (two geometries whose tables are ordered differently are the same
+  geometry), and the stress digests hash the text.
+
+*Producers and consumers.*
+- `attribCreate` gets `type = string` and a `text` parameter (constant fill, like `value`). Table: `["", text]`.
+- New node `attribString` (point or primitive class): sets a string attribute from a group, from the value of an int attribute
+  (`names = "rock, tree, bush"`, id i selects the i-th name), or from a pattern with `$P` (the point index): `"pt$P"`. These are
+  the cases a graph author needs; arbitrary text processing is out of scope.
+- `groupByString`: puts elements whose string equals, starts with or contains a text into a group (the wrangle comparison covers
+  equality, groups cover the rest).
+- SVG export writes a string attribute named `id` or `class` on a primitive as the element's attribute (escaped), which is the
+  first visible use and the reason to do this at all. The CLI attribute listing prints `string`.
+
+*Persistence.*
+- `.jngeo`: the attribute entry's `type` byte becomes 2, and a new section 7 (`stringTables`) holds, per string attribute, the
+  attribute entry index, a count, `u32 offsets[count + 1]` and the UTF-8 bytes. The loader checks that the first string is empty,
+  offsets ascend inside the section, the text is valid UTF-8, the count is below 2^24, and every id in the payload is below its
+  count (so a checksum-valid mutation cannot give an out-of-range id; the mutation test already covers this class). Version
+  becomes 1.1; an old reader rejects type 2 with its existing "bad attribute class or type", which is the right answer for data it
+  cannot represent. A file without string attributes is byte-identical to a 1.0 file except the minor version.
+- Inline geometry in graph JSON (`writeGeometry`): a `"strings"` / `"primStrings"` list of `{name, values: ["..."]}` with the text
+  itself, rebuilt into a table on load (first-use order, so the round trip is stable).
+
+*Order of work (about two days, mostly the sites and tests).*
+1. `AttribType::string`, the table in `AttribArray`, `attribLike`, `append`/`concat` remap, `checkStrings`, `sameGeometry`.
+   Tests: copy-on-write keeps the table, union and remap of unlike tables, a table-less string attribute is rejected.
+   *Done* (the open questions were taken as planned: one table per attribute, wrangles compare with literals only). Details: `StringTable`
+   (strings plus a hash index) is shared like the data and cloned before it changes; `AttribArray::mergeTable` returns the id remap and
+   `copyIds` applies it, so `concat` merges the tables sequentially and copies in parallel; kernels treat `string` as `int32` through
+   `isIntegerStorage`, and `compileFor` rejects a store to a string channel. Until steps 4 and 5, saving a string attribute to `.jngeo`
+   or graph JSON throws instead of dropping it silently. Tests: `stringAttributeTablesCopyOnWriteAndStartWithTheEmptyString`,
+   `stringAttributesKeepTheirTextWhenGeometriesAreMerged`, `stringAttributesAreReadOnlyInKernels`,
+   `stringAttributesAreNotSavedUntilTheFormatsKnowThem`.
+2. Update every site in the list above; stress test calls `checkStrings`; the every-node-type test.
+   *Done, with one deviation:* the seven sites (`gatherPoints` and `transferPrimAttribs` in `topology.cpp`, two in `curveNodes.cpp`,
+   `replicateAttributes`, springs output, `fileTrail`) use `attribLike`; the other nodes copy whole geometries, which keep their
+   tables. `everyNodeTypeKeepsStringAttributesConsistent` feeds a geometry with a point and a primitive string attribute through
+   every registered node type (default parameters; nodes that cannot cook that way are skipped) and checks `checkStrings` plus that
+   every text is one of the input's. Putting one site back to `attrib(..., array.type())` makes it fail. The stress test only gained
+   string support in its digest: its graphs have no string source yet, so it calls `checkStrings` once step 5 adds `attribCreate string`.
+   A node that reads a string attribute as a float (for example `colorRamp` on `label`) fails with the generic "attribute type mismatch".
+3. Wrangle: literal comparison, `stringParams`, read-only check, fusion rebasing, interpreter parity. Tests in the style of
+   `docs/wrangle.md` (fused and unfused agree; a literal missing from the table matches nothing; `""` matches id 0).
+4. `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
+5. `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,
+   `geometryFiles.md`, `fx.md` or a new `strings.md`).
+
+*Decisions for the user:*
+- Is the SVG `id`/`class` use enough to justify it, or is there another consumer (labels in the viewport, group names from files)?
+- Wrangle may only compare with literals, never assign or concatenate. Is that the right limit? (Assignment would need a table
+  that can grow while a kernel runs, which breaks the "kernel is the same for every geometry" property.)
+- Keep the table per attribute (above) or one table per geometry shared by all string attributes? Per attribute is simpler to
+  copy and remap; per geometry saves memory only when several attributes repeat the same strings.
 
 **Order and effort.** 0 and 1 first (a day, mostly tests), then 2 (a day with palette and docs), 4 (half a day), 3 (half a day on
 top of 2), 5 and 6 only on evidence. Nothing here changes the JSON graph format, existing graphs or existing node behaviour.

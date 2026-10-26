@@ -68,7 +68,7 @@ void appendKernel(KernelSpec& acc, const KernelSpec& next, const std::function<A
     for (size_t c = 0; c < next.channels.size(); ++c) {
         auto it = produced.find(nextChannels[c]);
         if (it == produced.end()) continue;
-        const bool isInt = channelType ? channelType(next.channels[c]) == AttribType::int32 : next.channelTypes[c] == AttribType::int32;
+        const bool isInt = isIntegerStorage(channelType ? channelType(next.channels[c]) : next.channelTypes[c]);
         override[static_cast<int>(c)] = isInt ? storedAsInt(acc.graph, it->second) : it->second;
     }
     std::vector<int> nextMap = copyGraph(acc.graph, next, nextChannels, paramOffset, override);

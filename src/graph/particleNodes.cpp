@@ -884,7 +884,7 @@ public:
         lines->resizePoints(2 * springCount);
         for (const auto& entry : geo->attribs(AttribClass::point)) {
             const AttribArray& source = entry.second;
-            AttribArray& destination = lines->attrib(AttribClass::point, entry.first, source.type());
+            AttribArray& destination = lines->attribLike(AttribClass::point, entry.first, source);
             if (source.type() == AttribType::float32) {
                 float* dst = destination.floats().data();
                 const float* src = source.floats().data();

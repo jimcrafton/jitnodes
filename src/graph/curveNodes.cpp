@@ -289,7 +289,7 @@ public:
         geo->resizePoints(total);
         for (const auto& entry : shape->attribs(AttribClass::point)) {
             const AttribArray& source = entry.second;
-            AttribArray& target = geo->attrib(AttribClass::point, entry.first, source.type());
+            AttribArray& target = geo->attribLike(AttribClass::point, entry.first, source);
             if (source.type() == AttribType::float32) {
                 float* dst = target.floats().data();
                 const float* src = source.floats().data();
@@ -337,7 +337,7 @@ void gatherPointAttribs(const Geometry& src, Geometry& dst, const std::vector<ui
     for (const auto& entry : src.attribs(AttribClass::point)) {
         if (entry.first == "x" || entry.first == "y") continue;
         const AttribArray& source = entry.second;
-        AttribArray& target = dst.attrib(AttribClass::point, entry.first, source.type());
+        AttribArray& target = dst.attribLike(AttribClass::point, entry.first, source);
         if (source.type() == AttribType::float32) {
             float* out = target.floats().data();
             const float* in = source.floats().data();

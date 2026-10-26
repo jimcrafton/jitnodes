@@ -138,6 +138,8 @@ json5::value writeGeometry(json5::builder& b, const Geometry& g) {
     b["prims"] = b.pop();
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
         const bool point = cls == AttribClass::point;
+        for (const auto& [name, array] : g.attribs(cls))
+            if (array.type() == AttribType::string) throw std::runtime_error("string attribute '" + name + "' cannot be saved yet");
         for (AttribType type : {AttribType::float32, AttribType::int32}) {
             bool any = false;
             for (const auto& entry : g.attribs(cls)) any |= entry.second.type() == type;

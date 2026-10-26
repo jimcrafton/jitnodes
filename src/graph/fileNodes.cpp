@@ -162,7 +162,7 @@ public:
         geo->resizePoints(n * per);
         for (const auto& entry : head.attribs(AttribClass::point)) {
             if (entry.first == "x" || entry.first == "y") continue;
-            AttribArray& target = geo->attrib(AttribClass::point, entry.first, entry.second.type());
+            AttribArray& target = geo->attribLike(AttribClass::point, entry.first, entry.second);
             for (size_t p = 0; p < n; ++p)
                 for (size_t k = 0; k < per; ++k) {
                     const size_t i = p * per + k;

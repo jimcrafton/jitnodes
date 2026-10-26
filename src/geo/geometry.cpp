@@ -27,6 +27,27 @@ AttribArray& Geometry::attrib(AttribClass cls, const std::string& name, AttribTy
     return it->second;
 }
 
+AttribArray& Geometry::attribLike(AttribClass cls, const std::string& name, const AttribArray& like) {
+    auto& map = attribMap(cls);
+    const bool existed = map.count(name) != 0;
+    AttribArray& a = attrib(cls, name, like.type());
+    if (!existed && like.type() == AttribType::string) a.setTable(like.tableHandle());
+    return a;
+}
+
+void Geometry::checkStrings() const {
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        for (const auto& [name, array] : attribMap(cls)) {
+            if (array.type() != AttribType::string) continue;
+            const size_t tableSize = array.table().strings.size();
+            const int32_t* ids = array.ints().data();
+            for (size_t i = 0; i < array.size(); ++i)
+                if (ids[i] < 0 || static_cast<size_t>(ids[i]) >= tableSize)
+                    throw std::runtime_error("string attribute '" + name + "' has an id outside its table at element " + std::to_string(i));
+        }
+    }
+}
+
 const AttribArray* Geometry::findAttrib(AttribClass cls, const std::string& name) const {
     const auto& map = attribMap(cls);
     auto it = map.find(name);
@@ -65,7 +86,7 @@ void Geometry::append(const Geometry& other) {
     const size_t primBase = primitives_.size();
 
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
-        for (const auto& [name, array] : other.attribMap(cls)) attrib(cls, name, array.type());
+        for (const auto& [name, array] : other.attribMap(cls)) attribLike(cls, name, array);
 
     resizePoints(pointBase + other.pointCount_);
     for (Primitive p : other.primitives_) {
@@ -101,25 +122,36 @@ Geometry Geometry::concat(const std::vector<const Geometry*>& parts, ThreadPool*
 
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
         for (const Geometry* g : parts)
-            for (const auto& [name, array] : g->attribMap(cls)) out.attrib(cls, name, array.type());
+            for (const auto& [name, array] : g->attribMap(cls)) out.attribLike(cls, name, array);
 
+    // The tables are merged here, one part after another, so the parallel copies below never change a table.
     struct Copy {
         AttribArray* dst;
         size_t offset;
         const AttribArray* src;
+        std::vector<int32_t> remap;
     };
     std::vector<Copy> copies;
+    auto addCopy = [&](AttribArray& dst, size_t offset, const AttribArray& src) {
+        Copy c{&dst, offset, &src, {}};
+        if (src.type() == AttribType::string) c.remap = dst.mergeTable(src);
+        copies.push_back(std::move(c));
+    };
     size_t pointOffset = 0;
     size_t primOffset = 0;
     for (const Geometry* g : parts) {
-        for (const auto& [name, array] : g->pointAttribs_) copies.push_back({&out.pointAttribs_.at(name), pointOffset, &array});
-        for (const auto& [name, array] : g->primAttribs_) copies.push_back({&out.primAttribs_.at(name), primOffset, &array});
+        for (const auto& [name, array] : g->pointAttribs_) addCopy(out.pointAttribs_.at(name), pointOffset, array);
+        for (const auto& [name, array] : g->primAttribs_) addCopy(out.primAttribs_.at(name), primOffset, array);
         for (const auto& [name, value] : g->detail_) out.detail_.try_emplace(name, value);
         pointOffset += g->pointCount_;
         primOffset += g->primitives_.size();
     }
 
-    auto run = [&](size_t i) { copies[i].dst->copyFrom(copies[i].offset, *copies[i].src); };
+    auto run = [&](size_t i) {
+        Copy& c = copies[i];
+        if (c.src->type() == AttribType::string) c.dst->copyIds(c.offset, *c.src, c.remap);
+        else c.dst->copyFrom(c.offset, *c.src);
+    };
     if (pool && copies.size() > 1) pool->parallelFor(copies.size(), run);
     else
         for (size_t i = 0; i < copies.size(); ++i) run(i);
@@ -140,6 +172,11 @@ bool sameGeometry(const Geometry& a, const Geometry& b) {
         for (auto l = left.begin(), r = right.begin(); l != left.end(); ++l, ++r) {
             if (l->first != r->first || l->second.type() != r->second.type() || l->second.size() != r->second.size()) return false;
             if (l->second.sharesStorageWith(r->second)) continue;
+            if (l->second.type() == AttribType::string) {
+                for (size_t i = 0; i < l->second.size(); ++i)
+                    if (l->second.stringAt(i) != r->second.stringAt(i)) return false;
+                continue;
+            }
             for (size_t i = 0; i < l->second.size(); ++i)
                 if (l->second.at(i) != r->second.at(i)) return false;
         }

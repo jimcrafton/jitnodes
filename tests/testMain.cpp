@@ -4175,6 +4175,178 @@ TEST(fileTrailFollowsPointsThroughRecordedFrames) {
     std::filesystem::remove_all(dir);
 }
 
+namespace {
+
+Geometry labelled(const std::vector<std::string>& texts, const std::vector<std::string>& tableOrder) {
+    Geometry g;
+    g.resizePoints(texts.size());
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    for (const std::string& t : tableOrder) label.intern(t);
+    for (size_t i = 0; i < texts.size(); ++i) label.ints()[i] = label.intern(texts[i]);
+    for (size_t i = 0; i < texts.size(); ++i) g.x()[i] = static_cast<float>(i);
+    return g;
+}
+
+std::vector<std::string> labelsOf(const Geometry& g) {
+    std::vector<std::string> out;
+    const AttribArray* a = g.findAttrib(AttribClass::point, "label");
+    for (size_t i = 0; i < g.pointCount(); ++i) out.push_back(a->stringAt(i));
+    return out;
+}
+
+}  // namespace
+
+TEST(stringAttributeTablesCopyOnWriteAndStartWithTheEmptyString) {
+    AttribArray a(AttribType::string);
+    CHECK(a.table().strings.size() == 1 && a.table().strings[0].empty());
+    CHECK(a.intern("") == 0);
+    const int32_t tree = a.intern("tree");
+    CHECK(tree == 1 && a.intern("tree") == tree);
+    a.resize(3);
+    a.ints()[0] = tree;
+
+    AttribArray b = a;
+    CHECK(b.tableHandle() == a.tableHandle());
+    CHECK(b.intern("rock") == 2);
+    CHECK(a.table().strings.size() == 2 && b.table().strings.size() == 3);
+    CHECK(a.stringAt(0) == "tree" && a.stringAt(1).empty());
+    a.ints()[2] = 9;
+    bool threw = false;
+    try {
+        a.stringAt(2);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    Geometry g;
+    g.resizePoints(3);
+    g.attrib(AttribClass::point, "label", AttribType::string).ints()[1] = 5;
+    threw = false;
+    try {
+        g.checkStrings();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(!g.hasAttrib(AttribClass::point, "label.x"));
+}
+
+TEST(stringAttributesKeepTheirTextWhenGeometriesAreMerged) {
+    const Geometry a = labelled({"tree", "rock", "", "tree"}, {"tree", "rock"});
+    const Geometry b = labelled({"rock", "bush", "tree", "bush", "moss"}, {"moss", "bush", "rock", "tree"});
+    const Geometry same = labelled({"rock", "tree"}, {"tree", "rock"});
+    Geometry plain;
+    plain.resizePoints(2);
+
+    ThreadPool pool(3);
+    const Geometry merged = Geometry::concat({&a, &plain, &b, &a}, &pool);
+    CHECK(merged.pointCount() == 4 + 2 + 5 + 4);
+    merged.checkStrings();
+    const std::vector<std::string> expected = {"tree", "rock", "", "tree", "", "", "rock", "bush", "tree", "bush", "moss", "tree", "rock", "", "tree"};
+    CHECK(labelsOf(merged) == expected);
+    CHECK(a.findAttrib(AttribClass::point, "label")->table().strings.size() == 3);
+
+    const Geometry serial = Geometry::concat({&a, &plain, &b, &a}, nullptr);
+    CHECK(sameGeometry(merged, serial));
+
+    Geometry appended = a;
+    appended.append(b);
+    appended.append(plain);
+    appended.checkStrings();
+    CHECK(labelsOf(appended) == std::vector<std::string>({"tree", "rock", "", "tree", "rock", "bush", "tree", "bush", "moss", "", ""}));
+
+    // Equal tables are shared, not rebuilt.
+    const Geometry twice = Geometry::concat({&same, &same}, nullptr);
+    CHECK(twice.findAttrib(AttribClass::point, "label")->tableHandle() == same.findAttrib(AttribClass::point, "label")->tableHandle());
+
+    // The same text is the same geometry, whatever order the table is in.
+    const Geometry reordered = labelled({"tree", "rock", "", "tree"}, {"rock", "tree"});
+    CHECK(sameGeometry(a, reordered));
+    CHECK(!sameGeometry(a, labelled({"tree", "rock", "", "rock"}, {"rock", "tree"})));
+}
+
+TEST(stringAttributesAreReadOnlyInKernels) {
+    Geometry g = labelled({"tree", "rock", "tree"}, {"tree", "rock"});
+    g.attrib(AttribClass::point, "mark");
+    KernelCompiler compiler;
+
+    auto kernel = compiler.compileFor(parseWrangle("mark = label * 10;", {}), g, AttribClass::point);
+    kernel->run(g, {}, AttribClass::point, nullptr);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(0) == 10.0f);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(1) == 20.0f);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(2) == 10.0f);
+
+    bool threw = false;
+    try {
+        compiler.compileFor(parseWrangle("label = 1;", {}), g, AttribClass::point);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("cannot be assigned") != std::string::npos;
+    }
+    CHECK(threw);
+}
+
+// Every node type that cooks must leave string attributes consistent: all ids inside their table, and the text one of the input's.
+TEST(everyNodeTypeKeepsStringAttributesConsistent) {
+    const std::vector<std::string> words = {"tree", "rock", "bush", ""};
+    Geometry input;
+    input.resizePoints(24);
+    AttribArray& label = input.attrib(AttribClass::point, "label", AttribType::string);
+    label.intern("tree");
+    label.intern("rock");
+    label.intern("bush");
+    for (size_t i = 0; i < 24; ++i) {
+        input.x()[i] = static_cast<float>(i % 6) * 0.7f;
+        input.y()[i] = static_cast<float>(i / 6) * 0.9f;
+        label.ints()[i] = static_cast<int32_t>(i % 4);
+    }
+    for (uint32_t p = 0; p < 4; ++p) input.addPrimitive({p * 6, 6, p % 2 == 0, PrimKind::polyline});
+    AttribArray& kind = input.attrib(AttribClass::primitive, "kind", AttribType::string);
+    kind.ints()[0] = kind.intern("tree");
+    kind.ints()[1] = kind.intern("rock");
+    kind.ints()[2] = kind.intern("bush");
+    input.checkStrings();
+
+    size_t cooked = 0, kept = 0;
+    for (const std::string& type : NodeRegistry::instance().typeNames()) {
+        if (type == "subnetInput" || type == "subnet") continue;
+        Network net(1);
+        net.setExternalInputs({std::make_shared<Geometry>(input)});
+        const NodeId in = net.addNode("subnetInput", "in");
+        const NodeId node = net.addNode(type, "under");
+        const int inputs = net.node(node).inputCount();  // a node with variable inputs grows one with each connection
+        for (int i = 0; i < inputs; ++i) net.connect(in, node, i);
+        GeometryHandle out;
+        try {
+            out = net.cook(node);
+        } catch (const std::exception&) {
+            continue;
+        }
+        ++cooked;
+        out->checkStrings();
+        for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+            for (const auto& [name, array] : out->attribs(cls)) {
+                if (array.type() != AttribType::string) continue;
+                ++kept;
+                for (size_t i = 0; i < array.size(); ++i) CHECK(std::find(words.begin(), words.end(), array.stringAt(i)) != words.end());
+            }
+        }
+    }
+    CHECK(cooked > 20);
+    CHECK(kept > 5);
+}
+
+TEST(stringAttributesAreNotSavedUntilTheFormatsKnowThem) {
+    const Geometry g = labelled({"tree"}, {});
+    bool threw = false;
+    try {
+        saveGeometry(g);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 TEST(traceRecordsEveryCookedTaskOnceAndChangesNothing) {
     Branches plain(4, 4, 2000.0f), traced(4, 4, 2000.0f);
     traced.net.setTraceEnabled(true);
