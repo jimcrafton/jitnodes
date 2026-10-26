@@ -1,0 +1,25 @@
+// Two Gray-Scott grids after 30 seconds (12,000 steps of 110 x 110 cells each), same seed and the same chemistry except feed and kill.
+// Left: feed 0.055, kill 0.062, which grows coral-like branches. Right: feed 0.037, kill 0.065, which splits into spots. colorRamp turns
+// the catalyst v into colour; each cell is drawn as a soft dot.
+//   jitnodesCli examples/graphs/fx/fxReaction.json --png fxReaction.png --time 30
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "reactionDiffusion", name: "coral", floats: { width: 110, height: 110, cellSize: 0.14, cx: -8.5, feed: 0.055, kill: 0.062, seed: 4, seedCount: 14, stepsPerSecond: 400 }, inputs: [] },
+    { id: 2, type: "colorRamp", name: "coralColor", floats: { min: 0, max: 0.45 }, strings: { attribute: "v", ramp: "0 #04081a, 0.35 #1b4f9c, 0.7 #38d6c4, 1 #f4ffd6" }, inputs: [1] },
+    { id: 3, type: "reactionDiffusion", name: "spots", floats: { width: 110, height: 110, cellSize: 0.14, cx: 8.5, feed: 0.037, kill: 0.065, seed: 4, seedCount: 14, stepsPerSecond: 400 }, inputs: [] },
+    { id: 4, type: "colorRamp", name: "spotsColor", floats: { min: 0, max: 0.45 }, strings: { attribute: "v", ramp: "0 #1a0420, 0.35 #8a1c6a, 0.7 #ff6a5a, 1 #ffe9a8" }, inputs: [3] },
+    { id: 5, type: "merge", name: "all", inputs: [2, 4] },
+    { id: 6, type: "wrangle", name: "look", strings: { code: "radius = 0.2; alpha = 1; softness = 1;" }, inputs: [5] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, exposure: 1.0, gamma: 1.0, width: 840, height: 420, viewCx: 0, viewCy: 0, viewWidth: 34 },
+      strings: { background: "#000000" },
+      inputs: [6]
+    }
+  ]
+}

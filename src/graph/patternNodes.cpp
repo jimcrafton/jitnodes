@@ -471,8 +471,69 @@ void clipToBisector(std::vector<float>& poly, std::vector<float>& scratch, float
     poly.swap(scratch);
 }
 
+struct Bounds {
+    float minX, maxX, minY, maxY;
+};
+
+Bounds boundsOf(const float* xs, const float* ys, size_t n, float margin, const char* who) {
+    Bounds b{xs[0], xs[0], ys[0], ys[0]};
+    for (size_t i = 1; i < n; ++i) {
+        b.minX = std::min(b.minX, xs[i]);
+        b.maxX = std::max(b.maxX, xs[i]);
+        b.minY = std::min(b.minY, ys[i]);
+        b.maxY = std::max(b.maxY, ys[i]);
+    }
+    if (!std::isfinite(b.minX + b.maxX + b.minY + b.maxY)) throw std::runtime_error(std::string(who) + ": point positions are not finite");
+    b.minX -= margin;
+    b.maxX += margin;
+    b.minY -= margin;
+    b.maxY += margin;
+    if (b.maxX - b.minX < 1e-6f) {
+        b.minX -= 1.0f;
+        b.maxX += 1.0f;
+    }
+    if (b.maxY - b.minY < 1e-6f) {
+        b.minY -= 1.0f;
+        b.maxY += 1.0f;
+    }
+    return b;
+}
+
+// One convex polygon (interleaved x, y) per point, clipped to `b`. Each cell is built by cutting the rectangle with the bisectors of the nearest
+// neighbours, found ring by ring in a grid. A cell that is cut away entirely (a duplicate point) is empty.
+std::vector<std::vector<float>> voronoiCells(const float* xs, const float* ys, size_t n, const Bounds& b, ThreadPool* pool) {
+    PointGrid grid;
+    grid.build(xs, ys, n, std::max(1.5f * std::sqrt((b.maxX - b.minX) * (b.maxY - b.minY) / static_cast<float>(n)), 1e-6f));
+    const float cell = grid.cellSize();
+    std::vector<std::vector<float>> cells(n);
+    parallelChunks(pool, n, [&](size_t begin, size_t end) {
+        std::vector<float> scratch;
+        for (size_t i = begin; i < end; ++i) {
+            std::vector<float>& poly = cells[i];
+            poly = {b.minX, b.minY, b.maxX, b.minY, b.maxX, b.maxY, b.minX, b.maxY};
+            const float sx = xs[i], sy = ys[i];
+            for (int ring = 0; ring <= grid.maxRing(); ++ring) {
+                grid.forEachInRing(sx, sy, ring, [&](uint32_t j) {
+                    if (j == i || poly.empty()) return;
+                    const float dx = xs[j] - sx, dy = ys[j] - sy;
+                    if (dx * dx + dy * dy < 1e-18f) return;
+                    clipToBisector(poly, scratch, sx, sy, dx, dy);
+                });
+                if (poly.size() < 6) {
+                    poly.clear();
+                    break;
+                }
+                float reach2 = 0.0f;
+                for (size_t k = 0; k < poly.size(); k += 2) reach2 = std::max(reach2, (poly[k] - sx) * (poly[k] - sx) + (poly[k + 1] - sy) * (poly[k + 1] - sy));
+                if (2.0f * std::sqrt(reach2) <= static_cast<float>(ring) * cell) break;
+            }
+        }
+    });
+    return cells;
+}
+
 // The Voronoi diagram of the input points: one polygon per point, the region closer to it than to any other point, clipped to the bounding box of
-// the points plus `margin`. Each cell is built by cutting a rectangle with the bisectors of the nearest neighbours, found ring by ring in a grid.
+// the points plus `margin`.
 class VoronoiNode : public Node {
 public:
     VoronoiNode() : Node("voronoi", 1) {
@@ -490,54 +551,7 @@ public:
         const float* xs = std::as_const(sites).x();
         const float* ys = std::as_const(sites).y();
 
-        float minX = xs[0], maxX = xs[0], minY = ys[0], maxY = ys[0];
-        for (size_t i = 1; i < n; ++i) {
-            minX = std::min(minX, xs[i]);
-            maxX = std::max(maxX, xs[i]);
-            minY = std::min(minY, ys[i]);
-            maxY = std::max(maxY, ys[i]);
-        }
-        if (!std::isfinite(minX + maxX + minY + maxY)) throw std::runtime_error("voronoi: point positions are not finite");
-        minX -= margin;
-        maxX += margin;
-        minY -= margin;
-        maxY += margin;
-        if (maxX - minX < 1e-6f) {
-            minX -= 1.0f;
-            maxX += 1.0f;
-        }
-        if (maxY - minY < 1e-6f) {
-            minY -= 1.0f;
-            maxY += 1.0f;
-        }
-
-        PointGrid grid;
-        grid.build(xs, ys, n, std::max(1.5f * std::sqrt((maxX - minX) * (maxY - minY) / static_cast<float>(n)), 1e-6f));
-        const float cell = grid.cellSize();
-        std::vector<std::vector<float>> cells(n);
-        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
-            std::vector<float> scratch;
-            for (size_t i = begin; i < end; ++i) {
-                std::vector<float>& poly = cells[i];
-                poly = {minX, minY, maxX, minY, maxX, maxY, minX, maxY};
-                const float sx = xs[i], sy = ys[i];
-                for (int ring = 0; ring <= grid.maxRing(); ++ring) {
-                    grid.forEachInRing(sx, sy, ring, [&](uint32_t j) {
-                        if (j == i || poly.empty()) return;
-                        const float dx = xs[j] - sx, dy = ys[j] - sy;
-                        if (dx * dx + dy * dy < 1e-18f) return;
-                        clipToBisector(poly, scratch, sx, sy, dx, dy);
-                    });
-                    if (poly.size() < 6) {
-                        poly.clear();
-                        break;
-                    }
-                    float reach2 = 0.0f;
-                    for (size_t k = 0; k < poly.size(); k += 2) reach2 = std::max(reach2, (poly[k] - sx) * (poly[k] - sx) + (poly[k + 1] - sy) * (poly[k + 1] - sy));
-                    if (2.0f * std::sqrt(reach2) <= static_cast<float>(ring) * cell) break;
-                }
-            }
-        });
+        const std::vector<std::vector<float>> cells = voronoiCells(xs, ys, n, boundsOf(xs, ys, n, margin, "voronoi"), ctx.pool);
 
         std::vector<size_t> first(n);
         std::vector<uint32_t> count(n);
@@ -574,6 +588,53 @@ public:
     }
 };
 
+// Lloyd relaxation: moves every point towards the centroid of its Voronoi cell, repeated `iterations` times. The cells are clipped to the bounding
+// box of the input points (plus `margin`), which stays fixed, so the points spread out evenly inside it.
+class LloydNode : public Node {
+public:
+    LloydNode() : Node("lloyd", 1) {
+        declareFloat("iterations", 5.0f);
+        declareFloat("strength", 1.0f);
+        declareFloat("margin", 0.0f);
+    }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const int iterations = std::clamp(static_cast<int>(getFloat("iterations")), 1, 200);
+        const float strength = std::clamp(getFloat("strength"), 0.0f, 1.0f);
+        const float margin = std::max(getFloat("margin"), 0.0f);
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const size_t n = geo->pointCount();
+        if (n == 0) return geo;
+        float* xs = geo->x();
+        float* ys = geo->y();
+        const Bounds bounds = boundsOf(xs, ys, n, margin, "lloyd");
+
+        for (int it = 0; it < iterations; ++it) {
+            const std::vector<std::vector<float>> cells = voronoiCells(xs, ys, n, bounds, ctx.pool);
+            parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) {
+                    const std::vector<float>& poly = cells[i];
+                    const size_t m = poly.size() / 2;
+                    if (m < 3) continue;
+                    double twice = 0.0, cx = 0.0, cy = 0.0;
+                    for (size_t k = 0, prev = m - 1; k < m; prev = k++) {
+                        const double cross = static_cast<double>(poly[2 * prev]) * poly[2 * k + 1] - static_cast<double>(poly[2 * k]) * poly[2 * prev + 1];
+                        twice += cross;
+                        cx += (poly[2 * prev] + poly[2 * k]) * cross;
+                        cy += (poly[2 * prev + 1] + poly[2 * k + 1]) * cross;
+                    }
+                    if (std::fabs(twice) < 1e-20) continue;
+                    cx /= 3.0 * twice;
+                    cy /= 3.0 * twice;
+                    xs[i] += static_cast<float>(cx - xs[i]) * strength;
+                    ys[i] += static_cast<float>(cy - ys[i]) * strength;
+                }
+            });
+        }
+        return geo;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -588,6 +649,7 @@ void registerPatternNodes() {
     add<AttractorNode>("attractor");
     add<FlowNode>("flow");
     add<VoronoiNode>("voronoi");
+    add<LloydNode>("lloyd");
 }
 
 }  // namespace jitnodes

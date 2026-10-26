@@ -147,6 +147,105 @@ void putChunk(std::string& out, const char* type, const std::string& body) {
     putU32(out, crc32(typed.data(), typed.size()));
 }
 
+// Deflate with LZ77 (hash chains) and the fixed Huffman code: far smaller than stored blocks for rendered images, which are mostly flat or smooth.
+class BitWriter {
+public:
+    explicit BitWriter(std::string& out) : out_(out) {}
+    void bits(uint32_t value, int count) {
+        acc_ |= static_cast<uint64_t>(value) << used_;
+        used_ += count;
+        while (used_ >= 8) {
+            out_.push_back(static_cast<char>(acc_ & 255u));
+            acc_ >>= 8;
+            used_ -= 8;
+        }
+    }
+    void code(uint32_t value, int count) {
+        uint32_t reversed = 0;
+        for (int i = 0; i < count; ++i) reversed |= ((value >> i) & 1u) << (count - 1 - i);
+        bits(reversed, count);
+    }
+    void flush() {
+        if (used_ > 0) bits(0, 8 - used_);
+    }
+
+private:
+    std::string& out_;
+    uint64_t acc_ = 0;
+    int used_ = 0;
+};
+
+void putLiteralOrLength(BitWriter& w, uint32_t symbol) {
+    if (symbol < 144) w.code(0x30u + symbol, 8);
+    else if (symbol < 256) w.code(0x190u + symbol - 144, 9);
+    else if (symbol < 280) w.code(symbol - 256, 7);
+    else w.code(0xC0u + symbol - 280, 8);
+}
+
+std::string deflateFixed(const std::string& raw) {
+    static const uint16_t lengthBase[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static const uint8_t lengthExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    static const uint16_t distBase[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    static const uint8_t distExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+    constexpr size_t window = 32768, maxLength = 258;
+    constexpr uint32_t hashSize = 1u << 15;
+    constexpr int maxChain = 32;
+
+    std::string out;
+    BitWriter w(out);
+    w.bits(1, 1);
+    w.bits(1, 2);
+    const size_t n = raw.size();
+    const auto* data = reinterpret_cast<const uint8_t*>(raw.data());
+    std::vector<int32_t> head(hashSize, -1), prev(n, -1);
+    auto hashAt = [&](size_t i) { return ((static_cast<uint32_t>(data[i]) << 10) ^ (static_cast<uint32_t>(data[i + 1]) << 5) ^ data[i + 2]) & (hashSize - 1); };
+    auto insert = [&](size_t i) {
+        if (i + 2 >= n) return;
+        const uint32_t h = hashAt(i);
+        prev[i] = head[h];
+        head[h] = static_cast<int32_t>(i);
+    };
+
+    size_t i = 0;
+    while (i < n) {
+        size_t bestLen = 0, bestDist = 0;
+        if (i + 2 < n) {
+            int32_t cand = head[hashAt(i)];
+            const size_t limit = std::min(maxLength, n - i);
+            for (int chain = 0; cand >= 0 && chain < maxChain; ++chain, cand = prev[static_cast<size_t>(cand)]) {
+                const size_t dist = i - static_cast<size_t>(cand);
+                if (dist > window) break;
+                size_t len = 0;
+                while (len < limit && data[static_cast<size_t>(cand) + len] == data[i + len]) ++len;
+                if (len > bestLen) {
+                    bestLen = len;
+                    bestDist = dist;
+                    if (len == limit) break;
+                }
+            }
+        }
+        if (bestLen >= 3) {
+            int lc = 28;
+            while (lengthBase[lc] > bestLen) --lc;
+            putLiteralOrLength(w, 257u + static_cast<uint32_t>(lc));
+            if (lengthExtra[lc]) w.bits(static_cast<uint32_t>(bestLen - lengthBase[lc]), lengthExtra[lc]);
+            int dc = 29;
+            while (distBase[dc] > bestDist) --dc;
+            w.code(static_cast<uint32_t>(dc), 5);
+            if (distExtra[dc]) w.bits(static_cast<uint32_t>(bestDist - distBase[dc]), distExtra[dc]);
+            for (size_t k = 0; k < bestLen; ++k) insert(i + k);
+            i += bestLen;
+        } else {
+            putLiteralOrLength(w, data[i]);
+            insert(i);
+            ++i;
+        }
+    }
+    putLiteralOrLength(w, 256);
+    w.flush();
+    return out;
+}
+
 }  // namespace
 
 bool hasRenderSettings(const Geometry& geo) { return geo.details().count("render.enabled") != 0; }
@@ -298,33 +397,25 @@ void writePng(const std::string& path, const Image& image) {
     std::string raw;
     raw.reserve(static_cast<size_t>(image.height) * (static_cast<size_t>(image.width) * 3 + 1));
     for (int y = 0; y < image.height; ++y) {
-        raw.push_back(0);
+        raw.push_back(1);  // Sub filter: each byte minus the one a pixel to the left
+        uint8_t left[3] = {0, 0, 0};
         for (int x = 0; x < image.width; ++x) {
             const uint32_t px = image.pixels[static_cast<size_t>(y) * static_cast<size_t>(image.width) + static_cast<size_t>(x)];
-            raw.push_back(static_cast<char>((px >> 16) & 255u));
-            raw.push_back(static_cast<char>((px >> 8) & 255u));
-            raw.push_back(static_cast<char>(px & 255u));
+            const uint8_t cur[3] = {static_cast<uint8_t>((px >> 16) & 255u), static_cast<uint8_t>((px >> 8) & 255u), static_cast<uint8_t>(px & 255u)};
+            for (int c = 0; c < 3; ++c) {
+                raw.push_back(static_cast<char>(static_cast<uint8_t>(cur[c] - left[c])));
+                left[c] = cur[c];
+            }
         }
     }
 
-    // zlib stream of stored (uncompressed) deflate blocks.
     std::string z = {0x78, 0x01};
     uint32_t s1 = 1, s2 = 0;
     for (char c : raw) {
         s1 = (s1 + static_cast<uint8_t>(c)) % 65521u;
         s2 = (s2 + s1) % 65521u;
     }
-    for (size_t pos = 0; pos < raw.size() || pos == 0;) {
-        const size_t n = std::min<size_t>(65535, raw.size() - pos);
-        z.push_back(pos + n >= raw.size() ? 1 : 0);
-        z.push_back(static_cast<char>(n & 255u));
-        z.push_back(static_cast<char>(n >> 8));
-        z.push_back(static_cast<char>(~n & 255u));
-        z.push_back(static_cast<char>((~n >> 8) & 255u));
-        z.append(raw, pos, n);
-        pos += n;
-        if (n == 0) break;
-    }
+    z += deflateFixed(raw);
     putU32(z, (s2 << 16) | s1);
 
     std::string out = "\x89PNG\r\n\x1a\n";

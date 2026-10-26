@@ -129,6 +129,15 @@ class Palette(EditorCase):
         self.add("addLine", "addTransform")
         self.assertTrue(self.status().startswith("2 nodes"), self.status())
 
+    def test_every_fx_palette_button_adds_its_node(self):
+        buttons = ["addGenerate", "addScatter", "addNoise", "addWarp", "addColorRamp", "addRelax", "addAttribBlur",
+                   "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addRender"]
+        for count, button in enumerate(buttons, 1):
+            with self.subTest(button=button):
+                self.app.click(button)
+                expected = "%d node%s" % (count, "" if count == 1 else "s")
+                self.assertTrue(self.status().startswith(expected), self.status())
+
     def test_undo_and_redo(self):
         self.add("addLine", "addTransform", "undoButton")
         self.assertTrue(self.status().startswith("1 node"), self.status())

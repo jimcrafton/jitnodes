@@ -312,6 +312,494 @@ private:
     State state_;
 };
 
+int64_t targetStep(const char* who, double time, float startTime, float stepsPerSecond) {
+    const double elapsed = time - static_cast<double>(startTime);
+    const int64_t target = elapsed <= 0.0 ? 0 : static_cast<int64_t>(std::floor(elapsed * stepsPerSecond + 1e-4));
+    if (target > maxSimulationSteps) throw std::runtime_error(std::string(who) + ": " + std::to_string(target) + " steps to simulate; the limit is " + std::to_string(maxSimulationSteps));
+    return target;
+}
+
+void limitLength(float& x, float& y, float maxLength) {
+    const float l2 = x * x + y * y;
+    if (l2 > maxLength * maxLength) {
+        const float k = maxLength / std::sqrt(l2);
+        x *= k;
+        y *= k;
+    }
+}
+
+// Reynolds' steering: the force that turns velocity (vx, vy) towards the desired direction, at most `maxForce` strong.
+void steer(float dirX, float dirY, float vx, float vy, float maxSpeed, float maxForce, float& outX, float& outY) {
+    const float l = std::hypot(dirX, dirY);
+    if (l < 1e-9f) {
+        outX = outY = 0.0f;
+        return;
+    }
+    outX = dirX / l * maxSpeed - vx;
+    outY = dirY / l * maxSpeed - vy;
+    limitLength(outX, outY, maxForce);
+}
+
+struct BoidsSettings {
+    float dt = 1.0f / 60.0f;
+    float radius = 1.0f, separationRadius = 0.4f;
+    float separation = 1.5f, alignment = 1.0f, cohesion = 1.0f;
+    float minSpeed = 1.0f, maxSpeed = 3.0f, maxForce = 6.0f;
+    float goalX = 0.0f, goalY = 0.0f, goal = 0.0f;
+    float wander = 0.0f, wanderScale = 0.2f, wanderSpeed = 0.2f;
+    Boundary boundary = Boundary::wrap;
+    float minX = -10.0f, maxX = 10.0f, minY = -6.0f, maxY = 6.0f;
+    uint32_t seed = 1;
+    Fractal field;
+};
+
+struct BoidsState {
+    GeometryHandle source;
+    std::vector<float> signature;
+    std::string boundary;
+    int64_t step = -1;
+    std::vector<float> x, y, vx, vy, nx, ny, nvx, nvy, neighbors;
+};
+
+void initialiseBoids(BoidsState& st, const Geometry& in, const BoidsSettings& s) {
+    const size_t n = in.pointCount();
+    st.x.assign(std::as_const(in).x(), std::as_const(in).x() + n);
+    st.y.assign(std::as_const(in).y(), std::as_const(in).y() + n);
+    st.vx.assign(n, 0.0f);
+    st.vy.assign(n, 0.0f);
+    const AttribArray* avx = in.findAttrib(AttribClass::point, "vx");
+    const AttribArray* avy = in.findAttrib(AttribClass::point, "vy");
+    const float speed = 0.5f * (s.minSpeed + s.maxSpeed);
+    for (size_t i = 0; i < n; ++i) {
+        if (avx || avy) {
+            st.vx[i] = avx ? avx->at(i) : 0.0f;
+            st.vy[i] = avy ? avy->at(i) : 0.0f;
+        } else {
+            const float a = twoPi * random01(s.seed, static_cast<uint32_t>(i), 1);
+            st.vx[i] = std::cos(a) * speed;
+            st.vy[i] = std::sin(a) * speed;
+        }
+    }
+    st.nx = st.x;
+    st.ny = st.y;
+    st.nvx = st.vx;
+    st.nvy = st.vy;
+    st.neighbors.assign(n, 0.0f);
+    st.step = 0;
+}
+
+void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPool* pool) {
+    const size_t n = st.x.size();
+    const float simTime = static_cast<float>(step) * s.dt;
+    PointGrid grid;
+    grid.build(st.x.data(), st.y.data(), n, s.radius);
+    const float r2 = s.radius * s.radius, sr2 = s.separationRadius * s.separationRadius;
+    const float width = s.maxX - s.minX, height = s.maxY - s.minY;
+    parallelChunks(pool, n, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            const float px = st.x[i], py = st.y[i];
+            float vx = st.vx[i], vy = st.vy[i];
+            float sepX = 0.0f, sepY = 0.0f, aliX = 0.0f, aliY = 0.0f, cohX = 0.0f, cohY = 0.0f;
+            int count = 0;
+            grid.forEachNear(px, py, [&](uint32_t j) {
+                if (j == i) return;
+                const float dx = px - st.x[j], dy = py - st.y[j];
+                const float d2 = dx * dx + dy * dy;
+                if (!(d2 < r2)) return;
+                ++count;
+                aliX += st.vx[j];
+                aliY += st.vy[j];
+                cohX += st.x[j];
+                cohY += st.y[j];
+                if (d2 < sr2 && d2 > 1e-12f) {
+                    sepX += dx / d2;
+                    sepY += dy / d2;
+                }
+            });
+            float ax = 0.0f, ay = 0.0f, fx, fy;
+            if (count > 0) {
+                const float inv = 1.0f / static_cast<float>(count);
+                steer(sepX, sepY, vx, vy, s.maxSpeed, s.maxForce, fx, fy);
+                ax += fx * s.separation;
+                ay += fy * s.separation;
+                steer(aliX * inv, aliY * inv, vx, vy, s.maxSpeed, s.maxForce, fx, fy);
+                ax += fx * s.alignment;
+                ay += fy * s.alignment;
+                steer(cohX * inv - px, cohY * inv - py, vx, vy, s.maxSpeed, s.maxForce, fx, fy);
+                ax += fx * s.cohesion;
+                ay += fy * s.cohesion;
+            }
+            if (s.goal != 0.0f) {
+                steer(s.goalX - px, s.goalY - py, vx, vy, s.maxSpeed, s.maxForce, fx, fy);
+                ax += fx * s.goal;
+                ay += fy * s.goal;
+            }
+            if (s.wander != 0.0f) {
+                float cx, cy;
+                curlOf(s.field, px * s.wanderScale, py * s.wanderScale, simTime * s.wanderSpeed, 0.02f, cx, cy);
+                ax += cx * s.wander;
+                ay += cy * s.wander;
+            }
+            vx += ax * s.dt;
+            vy += ay * s.dt;
+            const float speed = std::hypot(vx, vy);
+            if (speed > s.maxSpeed) {
+                vx *= s.maxSpeed / speed;
+                vy *= s.maxSpeed / speed;
+            } else if (speed < s.minSpeed) {
+                if (speed > 1e-9f) {
+                    vx *= s.minSpeed / speed;
+                    vy *= s.minSpeed / speed;
+                } else {
+                    vx = s.minSpeed;
+                }
+            }
+            float x = px + vx * s.dt, y = py + vy * s.dt;
+            if (s.boundary == Boundary::bounce) {
+                if (x < s.minX || x > s.maxX) {
+                    vx = -vx;
+                    x = std::clamp(x < s.minX ? 2.0f * s.minX - x : 2.0f * s.maxX - x, s.minX, s.maxX);
+                }
+                if (y < s.minY || y > s.maxY) {
+                    vy = -vy;
+                    y = std::clamp(y < s.minY ? 2.0f * s.minY - y : 2.0f * s.maxY - y, s.minY, s.maxY);
+                }
+            } else if (s.boundary == Boundary::wrap) {
+                x = s.minX + (x - s.minX) - std::floor((x - s.minX) / width) * width;
+                y = s.minY + (y - s.minY) - std::floor((y - s.minY) / height) * height;
+            }
+            st.nx[i] = x;
+            st.ny[i] = y;
+            st.nvx[i] = vx;
+            st.nvy[i] = vy;
+            st.neighbors[i] = static_cast<float>(count);
+        }
+    }, 256);
+    st.x.swap(st.nx);
+    st.y.swap(st.ny);
+    st.vx.swap(st.nvx);
+    st.vy.swap(st.nvy);
+}
+
+// A flock: every input point is a boid that steers by three rules (keep apart, match the neighbours' heading, move towards their centre)
+// plus an optional goal and wander noise, between `minSpeed` and `maxSpeed`. Cached and stepped like `particles`: a pure function of time.
+class BoidsNode : public Node {
+public:
+    BoidsNode() : Node("boids", 1) {
+        declareFloat("startTime", 0.0f);
+        declareFloat("stepsPerSecond", 60.0f);
+        declareFloat("seed", 1.0f);
+        declareFloat("radius", 1.0f);
+        declareFloat("separationRadius", 0.4f);
+        declareFloat("separation", 1.5f);
+        declareFloat("alignment", 1.0f);
+        declareFloat("cohesion", 1.0f);
+        declareFloat("minSpeed", 1.0f);
+        declareFloat("maxSpeed", 3.0f);
+        declareFloat("maxForce", 6.0f);
+        declareFloat("goalX", 0.0f);
+        declareFloat("goalY", 0.0f);
+        declareFloat("goal", 0.0f);
+        declareFloat("wander", 0.0f);
+        declareFloat("wanderScale", 0.2f);
+        declareFloat("wanderSpeed", 0.2f);
+        declareString("boundary", "wrap");
+        declareFloat("boundsMinX", -10.0f);
+        declareFloat("boundsMaxX", 10.0f);
+        declareFloat("boundsMinY", -6.0f);
+        declareFloat("boundsMaxY", 6.0f);
+    }
+
+    bool dependsOnPlayhead() const override { return true; }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const std::string& boundary = getString("boundary");
+        if (boundary != "none" && boundary != "bounce" && boundary != "wrap")
+            throw std::runtime_error("boids: boundary must be 'none', 'bounce' or 'wrap', got '" + boundary + "'");
+        BoidsSettings s;
+        const float stepsPerSecond = std::clamp(getFloat("stepsPerSecond"), 10.0f, 1000.0f);
+        s.dt = 1.0f / stepsPerSecond;
+        s.seed = seedOf(getFloat("seed"));
+        s.radius = getFloat("radius");
+        if (!(s.radius > 0.0f)) throw std::runtime_error("boids: radius must be greater than 0");
+        s.separationRadius = std::max(getFloat("separationRadius"), 0.0f);
+        s.separation = getFloat("separation");
+        s.alignment = getFloat("alignment");
+        s.cohesion = getFloat("cohesion");
+        s.maxSpeed = std::max(getFloat("maxSpeed"), 1e-3f);
+        s.minSpeed = std::clamp(getFloat("minSpeed"), 0.0f, s.maxSpeed);
+        s.maxForce = std::max(getFloat("maxForce"), 0.0f);
+        s.goalX = getFloat("goalX");
+        s.goalY = getFloat("goalY");
+        s.goal = getFloat("goal");
+        s.wander = getFloat("wander");
+        s.wanderScale = getFloat("wanderScale");
+        s.wanderSpeed = getFloat("wanderSpeed");
+        s.boundary = boundary == "bounce" ? Boundary::bounce : boundary == "wrap" ? Boundary::wrap : Boundary::none;
+        s.minX = getFloat("boundsMinX");
+        s.maxX = getFloat("boundsMaxX");
+        s.minY = getFloat("boundsMinY");
+        s.maxY = getFloat("boundsMaxY");
+        if (s.boundary != Boundary::none && (!(s.maxX > s.minX) || !(s.maxY > s.minY))) throw std::runtime_error("boids: the bounds must have a positive width and height");
+        s.field.octaves = 2;
+        s.field.seed = s.seed;
+
+        const int64_t target = targetStep("boids", ctx.time, getFloat("startTime"), stepsPerSecond);
+        std::vector<float> signature;
+        for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
+        BoidsState& st = state_;
+        if (st.step < 0 || st.source != in[0] || st.signature != signature || st.boundary != boundary || target < st.step) {
+            st = BoidsState();
+            st.source = in[0];
+            st.signature = std::move(signature);
+            st.boundary = boundary;
+            initialiseBoids(st, *in[0], s);
+        }
+        for (int64_t step = st.step + 1; step <= target; ++step) advanceBoids(st, s, step, ctx.pool);
+        st.step = target;
+
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const size_t n = geo->pointCount();
+        float* xs = geo->x();
+        float* ys = geo->y();
+        float* vx = geo->attrib(AttribClass::point, "vx").floats().data();
+        float* vy = geo->attrib(AttribClass::point, "vy").floats().data();
+        float* speed = geo->attrib(AttribClass::point, "speed").floats().data();
+        float* angle = geo->attrib(AttribClass::point, "angle").floats().data();
+        float* neighbors = geo->attrib(AttribClass::point, "neighbors").floats().data();
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                xs[i] = st.x[i];
+                ys[i] = st.y[i];
+                vx[i] = st.vx[i];
+                vy[i] = st.vy[i];
+                speed[i] = std::hypot(st.vx[i], st.vy[i]);
+                angle[i] = std::atan2(st.vy[i], st.vx[i]);
+                neighbors[i] = st.neighbors[i];
+            }
+        });
+        return geo;
+    }
+
+private:
+    BoidsState state_;
+};
+
+struct Spring {
+    uint32_t a, b;
+    float rest;
+};
+
+struct SpringSettings {
+    float dt = 1.0f / 120.0f;
+    float gravityX = 0.0f, gravityY = -4.0f;
+    float dampFactor = 1.0f;
+    float stiffness = 1.0f;
+    int iterations = 8;
+    float windForce = 0.0f, windScale = 0.2f, windSpeed = 0.3f;
+    bool bounds = false;
+    float minX = -10.0f, maxX = 10.0f, minY = -6.0f, maxY = 6.0f;
+    uint32_t seed = 1;
+    Fractal field;
+};
+
+struct SpringState {
+    GeometryHandle source;
+    std::vector<float> signature;
+    int64_t step = -1;
+    std::vector<float> x, y, px, py;
+    std::vector<uint8_t> pinned;
+    std::vector<Spring> springs;
+};
+
+void initialiseSprings(SpringState& st, const Geometry& in, const SpringSettings& s, float restScale, float neighborRadius, bool pinEnds) {
+    const size_t n = in.pointCount();
+    st.x.assign(std::as_const(in).x(), std::as_const(in).x() + n);
+    st.y.assign(std::as_const(in).y(), std::as_const(in).y() + n);
+    st.px = st.x;
+    st.py = st.y;
+    const AttribArray* avx = in.findAttrib(AttribClass::point, "vx");
+    const AttribArray* avy = in.findAttrib(AttribClass::point, "vy");
+    for (size_t i = 0; i < n; ++i) {
+        if (avx) st.px[i] -= avx->at(i) * s.dt;
+        if (avy) st.py[i] -= avy->at(i) * s.dt;
+    }
+    st.pinned.assign(n, 0);
+    if (const AttribArray* pin = in.findAttrib(AttribClass::point, "pin"))
+        for (size_t i = 0; i < n; ++i) st.pinned[i] = pin->at(i) != 0.0f ? 1 : 0;
+
+    auto addSpring = [&](uint32_t a, uint32_t b) {
+        if (a == b) return;
+        const float d = std::hypot(st.x[a] - st.x[b], st.y[a] - st.y[b]);
+        st.springs.push_back({a, b, d * restScale});
+    };
+    for (const Primitive& p : in.primitives()) {
+        for (uint32_t k = 0; k + 1 < p.count; ++k) addSpring(p.start + k, p.start + k + 1);
+        if (p.closed && p.count > 2) addSpring(p.start + p.count - 1, p.start);
+        if (pinEnds && !p.closed && p.count > 0) st.pinned[p.start] = 1;
+    }
+    if (neighborRadius > 0.0f && n > 1) {
+        PointGrid grid;
+        grid.build(st.x.data(), st.y.data(), n, neighborRadius);
+        const float r2 = neighborRadius * neighborRadius;
+        for (uint32_t i = 0; i < n; ++i) {
+            grid.forEachNear(st.x[i], st.y[i], [&](uint32_t j) {
+                if (j <= i) return;
+                const float dx = st.x[i] - st.x[j], dy = st.y[i] - st.y[j];
+                if (dx * dx + dy * dy < r2) addSpring(i, j);
+                if (st.springs.size() > 20'000'000) throw std::runtime_error("springs: more than 20 million springs; lower neighborRadius");
+            });
+        }
+    }
+    st.step = 0;
+}
+
+void advanceSprings(SpringState& st, const SpringSettings& s, int64_t step, ThreadPool* pool) {
+    const size_t n = st.x.size();
+    const float simTime = static_cast<float>(step) * s.dt;
+    const float dt2 = s.dt * s.dt;
+    parallelChunks(pool, n, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            if (st.pinned[i]) continue;
+            float ax = s.gravityX, ay = s.gravityY;
+            if (s.windForce != 0.0f) {
+                float cx, cy;
+                curlOf(s.field, st.x[i] * s.windScale, st.y[i] * s.windScale, simTime * s.windSpeed, 0.02f, cx, cy);
+                ax += cx * s.windForce;
+                ay += cy * s.windForce;
+            }
+            const float x = st.x[i], y = st.y[i];
+            st.x[i] = x + (x - st.px[i]) * s.dampFactor + ax * dt2;
+            st.y[i] = y + (y - st.py[i]) * s.dampFactor + ay * dt2;
+            st.px[i] = x;
+            st.py[i] = y;
+        }
+    });
+    // Position-based dynamics: each spring moves its two ends towards its rest length. Done in order, so the result does not depend on threads.
+    for (int it = 0; it < s.iterations; ++it) {
+        for (const Spring& sp : st.springs) {
+            const float wa = st.pinned[sp.a] ? 0.0f : 1.0f, wb = st.pinned[sp.b] ? 0.0f : 1.0f;
+            if (wa + wb == 0.0f) continue;
+            const float dx = st.x[sp.b] - st.x[sp.a], dy = st.y[sp.b] - st.y[sp.a];
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < 1e-9f) continue;
+            const float k = (d - sp.rest) / d * s.stiffness / (wa + wb);
+            st.x[sp.a] += dx * k * wa;
+            st.y[sp.a] += dy * k * wa;
+            st.x[sp.b] -= dx * k * wb;
+            st.y[sp.b] -= dy * k * wb;
+        }
+    }
+    if (s.bounds) {
+        for (size_t i = 0; i < n; ++i) {
+            if (st.pinned[i]) continue;
+            st.x[i] = std::clamp(st.x[i], s.minX, s.maxX);
+            st.y[i] = std::clamp(st.y[i], s.minY, s.maxY);
+        }
+    }
+}
+
+// Ropes, chains, cloth and soft blobs: the points of every input primitive are joined by springs (and, with `neighborRadius`, so are points that
+// start close together). Verlet integration with position-based springs, which stay stable however stiff. Points with a nonzero `pin` attribute
+// stay where they are. Cached and stepped like `particles`: a pure function of time.
+class SpringsNode : public Node {
+public:
+    SpringsNode() : Node("springs", 1) {
+        declareFloat("startTime", 0.0f);
+        declareFloat("stepsPerSecond", 120.0f);
+        declareFloat("seed", 1.0f);
+        declareFloat("gravityX", 0.0f);
+        declareFloat("gravityY", -4.0f);
+        declareFloat("damping", 0.2f);
+        declareFloat("stiffness", 1.0f);
+        declareFloat("iterations", 8.0f);
+        declareFloat("restScale", 1.0f);
+        declareFloat("neighborRadius", 0.0f);
+        declareFloat("pinEnds", 0.0f);
+        declareFloat("windForce", 0.0f);
+        declareFloat("windScale", 0.2f);
+        declareFloat("windSpeed", 0.3f);
+        declareFloat("useBounds", 0.0f);
+        declareFloat("boundsMinX", -10.0f);
+        declareFloat("boundsMaxX", 10.0f);
+        declareFloat("boundsMinY", -6.0f);
+        declareFloat("boundsMaxY", 6.0f);
+    }
+
+    bool dependsOnPlayhead() const override { return true; }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        SpringSettings s;
+        const float stepsPerSecond = std::clamp(getFloat("stepsPerSecond"), 10.0f, 2000.0f);
+        s.dt = 1.0f / stepsPerSecond;
+        s.seed = seedOf(getFloat("seed"));
+        s.gravityX = getFloat("gravityX");
+        s.gravityY = getFloat("gravityY");
+        s.dampFactor = std::exp(-std::max(getFloat("damping"), 0.0f) * s.dt);
+        s.stiffness = std::clamp(getFloat("stiffness"), 0.0f, 1.0f);
+        s.iterations = std::clamp(static_cast<int>(getFloat("iterations")), 1, 100);
+        s.windForce = getFloat("windForce");
+        s.windScale = getFloat("windScale");
+        s.windSpeed = getFloat("windSpeed");
+        s.bounds = getFloat("useBounds") != 0.0f;
+        s.minX = getFloat("boundsMinX");
+        s.maxX = getFloat("boundsMaxX");
+        s.minY = getFloat("boundsMinY");
+        s.maxY = getFloat("boundsMaxY");
+        if (s.bounds && (!(s.maxX > s.minX) || !(s.maxY > s.minY))) throw std::runtime_error("springs: the bounds must have a positive width and height");
+        const float restScale = getFloat("restScale");
+        if (!(restScale > 0.0f)) throw std::runtime_error("springs: restScale must be greater than 0");
+        const float neighborRadius = std::max(getFloat("neighborRadius"), 0.0f);
+        s.field.octaves = 2;
+        s.field.seed = s.seed;
+
+        const int64_t target = targetStep("springs", ctx.time, getFloat("startTime"), stepsPerSecond);
+        std::vector<float> signature;
+        for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
+        SpringState& st = state_;
+        if (st.step < 0 || st.source != in[0] || st.signature != signature || target < st.step) {
+            st = SpringState();
+            st.source = in[0];
+            st.signature = std::move(signature);
+            initialiseSprings(st, *in[0], s, restScale, neighborRadius, getFloat("pinEnds") != 0.0f);
+        }
+        for (int64_t step = st.step + 1; step <= target; ++step) advanceSprings(st, s, step, ctx.pool);
+        st.step = target;
+
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const size_t n = geo->pointCount();
+        float* xs = geo->x();
+        float* ys = geo->y();
+        float* vx = geo->attrib(AttribClass::point, "vx").floats().data();
+        float* vy = geo->attrib(AttribClass::point, "vy").floats().data();
+        float* speed = geo->attrib(AttribClass::point, "speed").floats().data();
+        float* strain = geo->attrib(AttribClass::point, "strain").floats().data();
+        std::vector<float> sum(n, 0.0f), count(n, 0.0f);
+        for (const Spring& sp : st.springs) {
+            if (!(sp.rest > 1e-9f)) continue;
+            const float e = (std::hypot(st.x[sp.b] - st.x[sp.a], st.y[sp.b] - st.y[sp.a]) - sp.rest) / sp.rest;
+            sum[sp.a] += e;
+            sum[sp.b] += e;
+            count[sp.a] += 1.0f;
+            count[sp.b] += 1.0f;
+        }
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                xs[i] = st.x[i];
+                ys[i] = st.y[i];
+                vx[i] = st.pinned[i] ? 0.0f : (st.x[i] - st.px[i]) / s.dt;
+                vy[i] = st.pinned[i] ? 0.0f : (st.y[i] - st.py[i]) / s.dt;
+                speed[i] = std::hypot(vx[i], vy[i]);
+                strain[i] = count[i] > 0.0f ? sum[i] / count[i] : 0.0f;
+            }
+        });
+        return geo;
+    }
+
+private:
+    SpringState state_;
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -319,6 +807,10 @@ void add(const char* typeName) {
 
 }  // namespace
 
-void registerParticleNodes() { add<ParticlesNode>("particles"); }
+void registerParticleNodes() {
+    add<ParticlesNode>("particles");
+    add<BoidsNode>("boids");
+    add<SpringsNode>("springs");
+}
 
 }  // namespace jitnodes

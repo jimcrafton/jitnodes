@@ -1,7 +1,8 @@
 # Generating points and drawing pictures with them
 
-Thirteen nodes turn jitnodes into a small particle-image tool: two make points, ten shape them (noise, warp, colour,
-spacing, smoothing, waves, strange attractors, flow lines, Voronoi cells and a particle simulation), and one (`render`) says
+Seventeen nodes turn jitnodes into a small particle-image tool: three make points (`reactionDiffusion` makes a grid), thirteen shape
+them (noise, warp, colour, spacing, smoothing, waves, strange attractors, flow lines, Voronoi cells, Lloyd relaxation, and four
+simulations: particles, boids, springs), and one (`render`) says
 how the points become an image. Together they draw pictures such as the nebula in
 `examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
 
@@ -12,8 +13,8 @@ jitnodesEditor examples/graphs/nebula.json
 
 ![The nebula graph rendered by jitnodesCli](images/nebula.png)
 
-In the editor the thirteen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
-attribBlur, wave, attractor, flow, voronoi, particles, render): select a
+In the editor the seventeen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
+attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, render): select a
 node, click a button and the new node is wired to the selected one. Each example below is a small graph in
 `examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
 parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
@@ -295,6 +296,29 @@ attributes are replaced by the cell corners; there is no per-site point output, 
 by `srcPrim` (the cell's index) in a wrangle; right, the sites spread by `relax` first, outlines walked by `scatter lineCount`.
 Cells of relaxed sites are close to hexagons; those of random sites are the usual mix of tiny and huge.
 
+### lloyd (one input)
+
+Lloyd relaxation: every point moves to the centroid (centre of mass) of its Voronoi cell, `iterations` times. Random points
+become evenly spread ones with cells of nearly equal size. The cells are clipped to the bounding box of the input points (plus
+`margin`), and that box stays fixed during the iterations, so the points spread out to fill it. Unlike `relax`, which only
+pushes apart points that are closer than a radius, `lloyd` needs no radius and gives a more regular, hexagon-like pattern.
+Each iteration builds the diagram as `voronoi` does: 5,000 points take roughly 8 ms per iteration.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `iterations` | 5 | number of relaxation steps (1 to 200); the pattern converges slowly, most of the change happens in the first few |
+| `strength` | 1 | fraction of the way to the centroid that each point moves (0 leaves the points alone, 1 jumps to the centroid) |
+| `margin` | 0 | grows the clipping box on every side |
+
+All point attributes are kept; only `x` and `y` change. Points whose cell is empty (coincident duplicates) stay where they are.
+Feed the result to `voronoi` to draw the cells.
+
+![lloyd relaxation: random, 2 iterations, 30 iterations](images/fxLloyd.png)
+
+`examples/graphs/fx/fxLloyd.json`: the same 60 random sites three times, left untouched, after 2 iterations and after 30, each
+with its Voronoi outlines (`voronoi` with `closed` 0, walked by `scatter lineCount`). The cells go from a mix of tiny and huge to
+nearly uniform.
+
 ### particles (one input)
 
 A particle simulation. The input points are the particles at `startTime`; the result is where they are at the playhead, after
@@ -337,6 +361,109 @@ the nozzle, `initialSpeed` 11 in a 50 degree cone, gravity -9.8, a bouncing floo
 particles on a disc around an attractor of strength 30, each given 55% of the circular speed by a wrangle (`vx`, `vy`); by t = 6 the
 disc has wound up into concentric shells, coloured by `speed`. In the editor, press play and both move.
 
+### boids (one input)
+
+A flock. Every input point is a boid that steers by Reynolds' three rules, looking only at the boids within `radius`: **separation**
+(move away from those closer than `separationRadius`), **alignment** (match their heading) and **cohesion** (move towards their
+centre). A boid's speed always stays between `minSpeed` and `maxSpeed`. It is simulated like `particles`: fixed steps, the state of
+the latest cook is cached, and the result is a pure function of input, parameters and playhead (every boid reads the previous step's
+state, so the thread count does not matter).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond`, `seed` | 0, 60, 1 | as in `particles` (10 to 1000 steps per second); the seed picks the initial headings |
+| `radius` | 1 | how far a boid sees; must be greater than 0 |
+| `separationRadius` | 0.4 | boids closer than this repel each other (push is stronger the closer they are) |
+| `separation`, `alignment`, `cohesion` | 1.5, 1, 1 | weight of each rule; 0 switches a rule off |
+| `minSpeed`, `maxSpeed`, `maxForce` | 1, 3, 6 | speed limits and the strongest steering acceleration of a single rule |
+| `goal`, `goalX`, `goalY` | 0, 0, 0 | weight of a steering force towards a point (0: none) |
+| `wander`, `wanderScale`, `wanderSpeed` | 0, 0.2, 0.2 | a curl-noise acceleration that keeps the flock from settling: strength, feature size and evolution speed |
+| `boundary` | `wrap` | `wrap` (leave one side, return on the other), `bounce` (reflect at the box) or `none` |
+| `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box for `wrap` and `bounce` |
+
+Input attributes `vx` and `vy` give the initial velocities; without them every boid starts at a random heading with the mean of
+`minSpeed` and `maxSpeed`. The output has `vx`, `vy`, `speed`, `angle` (heading in radians, -pi to pi: colour by it with
+`colorRamp`) and `neighbors` (how many boids it sees), and keeps every other attribute. Cost is boids times the boids within
+`radius`, per step: the two flocks below (900 boids, 14 s, 840 steps) take 290 ms for the clustered flock and 150 ms for the sparse one.
+
+![two flocks: swarms and a gas](images/fxBoids.png)
+
+`examples/graphs/fx/fxBoids.json` at `--time 14`. Left, `alignment` 3 and `cohesion` 1.2 gather the boids into several swarms
+that circle together (colour is the heading, so a swarm shows the whole colour wheel while it turns). Right, `alignment` and
+`cohesion` 0 and `separation` 2.5 keep the boids evenly spread with random headings, like a gas.
+
+### springs (one input)
+
+Ropes, chains, cloth and soft bodies. The points of every input primitive are joined to the next point by a spring whose rest
+length is the initial distance (closed primitives also join the last point to the first). With `neighborRadius` greater than 0
+every pair of points that start closer than that is joined too, which turns any point cloud into a soft mesh. The solver is
+position-based dynamics: Verlet integration, then `iterations` passes that move each pair of points towards its rest length, so it
+stays stable however stiff the springs are and never explodes. Cached and stepped like `particles`, and a pure function of time.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond` | 0, 120 | as in `particles` (10 to 2000 steps per second) |
+| `gravityX`, `gravityY` | 0, -4 | constant acceleration |
+| `damping` | 0.2 | velocity decays by `exp(-damping * dt)` each step |
+| `stiffness`, `iterations` | 1, 8 | `stiffness` is the fraction (0 to 1) of a spring's error removed per pass; more `iterations` (1 to 100) make the whole body stiffer and cost proportionally more |
+| `restScale` | 1 | rest length as a fraction of the initial length (below 1 the springs are tense, above 1 the body sags) |
+| `neighborRadius` | 0 | also join points that start closer than this (limit: 20 million springs) |
+| `pinEnds` | 0 | 1: the first point of every open primitive stays where it is |
+| `windForce`, `windScale`, `windSpeed` | 0, 0.2, 0.3 | a curl-noise acceleration (flutter): strength, feature size and evolution speed |
+| `useBounds`, `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | 0, -10, 10, -6, 6 | 1 keeps the points inside the box (a floor and walls) |
+
+Points whose `pin` attribute is not 0 never move (a wrangle can set it, for example `pin = y > 3;` for the top edge of a cloth).
+Input attributes `vx` and `vy` give the initial velocities. The output keeps the input geometry, so open primitives still draw as
+lines, and has `vx`, `vy`, `speed` and `strain` (the average of the relative stretch `(length - rest) / rest` of the springs at a
+point: positive stretched, negative squeezed). Springs are not output as geometry: to draw a chain, run `scatter lineCount` on it
+(`scatter` does not carry `vx`, `speed` or `strain`, so colour with `colorRamp` on `u`, or `colorRamp` the points before and draw them
+as points).
+
+Springs are solved in order on one thread, so the cost is springs times `iterations` times steps, about 10 ns per spring per pass:
+3,000 points joined to their neighbours within 0.5 (45,000 springs) at 8 iterations cost 0.48 s per animated second. Scrubbing
+backwards re-simulates from the start, so a body with tens of thousands of springs is better baked than scrubbed.
+
+![a swinging chain and a jelly hitting the floor](images/fxSprings.png)
+
+`examples/graphs/fx/fxSprings.json` at `--time 1.1`. Left, an 80-point `line` pinned at one end with `pinEnds`, released horizontal
+under gravity -9 and drawn with `scatter lineCount`, coloured along its length by `u`. Right, a disc of 500 random points joined
+with `neighborRadius` 0.45 (about 16 neighbours per point, 4,000 springs) and `stiffness` 0.35, falling at gravity -24 onto a floor at y = -6
+(`useBounds`), just after impact: the bottom is squeezed (red) and the top stretched (green), coloured by `strain`.
+
+### reactionDiffusion (no input)
+
+The Gray-Scott reaction-diffusion model on a grid. Two chemicals diffuse and react: `u` is fed in at rate `feed`, and the catalyst
+`v` consumes it (`u + 2v -> 3v`) and is removed at rate `feed + kill`. Depending on `feed` and `kill` the grid grows spots, stripes,
+mazes, coral or solitons, the patterns of animal skins. The node makes a grid of `width` x `height` points with the attributes `u` and
+`v` (both 0 to 1); colour them with `colorRamp` on `v` and give them a `radius` slightly larger than `cellSize`. It starts with `u` = 1
+everywhere and `seedCount` squares of catalyst, then runs `stepsPerSecond` explicit steps per second of playhead time. It is cached
+and stepped like `particles` and a pure function of time, on any thread count.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond` | 0, 400 | before `startTime` the grid is the initial state; steps per second (1 to 20,000) |
+| `width`, `height` | 160, 90 | grid size in cells (8 to 2048, at most 4 million cells) |
+| `cellSize`, `cx`, `cy` | 0.1, 0, 0 | distance between points and the centre of the grid in the plane |
+| `feed`, `kill` | 0.055, 0.062 | the two rates that choose the pattern (see below) |
+| `diffuseU`, `diffuseV` | 1, 0.5 | diffusion rates in cells per step; keep `diffuseV` below `diffuseU` or nothing forms |
+| `stepSize` | 1 | time step; it is capped at `1.2 / max(diffuseU, diffuseV)` to keep the scheme stable |
+| `periodic` | 1 | 1: the grid wraps around (it tiles); 0: the edges reflect |
+| `seed`, `seedCount`, `seedSize` | 1, 12, 3 | random catalyst squares to start from: how many and their half-size in cells |
+
+`feed` / `kill` pairs worth trying (after Pearson's classification of the model): 0.055 / 0.062 coral (the default); 0.029 / 0.057
+mazes; 0.078 / 0.061 worms; 0.030 / 0.062 solitons; 0.037 / 0.065 spots that divide like cells ("mitosis"). Small changes make a
+different pattern or none at all, so change them in steps of 0.001. Patterns take thousands of steps to form: with the default 400
+steps per second, 10 s of playhead time is 4,000 steps. Raise `stepsPerSecond` to see the pattern sooner.
+
+The output points are a regular grid in row order (the first row has the lowest `y`), and `u` and `v` are the only attributes, so the
+result can be fed to `scatter`, `warp` or `render` like any other points. Cost is cells times steps: 12,100 cells and 12,000 steps (the
+example) take about 480 ms, and a 512 x 512 grid costs about 35 ms per 100 steps (0.35 ms per step, including the output points). The step count is limited to 2,000,000.
+
+![coral and spots from the Gray-Scott model](images/fxReaction.png)
+
+`examples/graphs/fx/fxReaction.json` at `--time 30` (12,000 steps of two 110 x 110 grids), the same seed and the same chemistry
+except `feed` and `kill`. Left, 0.055 / 0.062 grows branching coral; right, 0.037 / 0.065 gives evenly spaced spots.
+
 ### render (one input)
 
 Passes the geometry through unchanged and records how to draw it, as detail values named `render.*`. The editor's
@@ -376,7 +503,7 @@ draws a box). See [wrangle.md](wrangle.md#attribute-names-other-nodes-understand
   (`alpha * area`), so tiny stars stay visible but dim, and do not flicker when the view moves.
 - The picture is drawn for the **current view** in the editor (zoom in and the sprites get bigger and sharper) and is
   cached while nothing changes. Rendering runs on a thread pool, in horizontal bands.
-- `writePng` (in `jitnodes/geo/raster.h`) writes the result as an uncompressed PNG.
+- `writePng` (in `jitnodes/geo/raster.h`) writes the result as a PNG (Sub filter, LZ77 with the fixed Huffman code: about 2 to 6 times smaller than raw pixels, no zlib needed).
 
 ## The nebula graph
 

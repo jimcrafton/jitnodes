@@ -1,0 +1,41 @@
+// Two flocks of 900 boids after 14 seconds, in boxes that wrap around. Left: strong alignment and cohesion, so the boids gather into
+// swarms that circle together, coloured by heading. Right: no alignment or cohesion, only separation and wander, which leaves an even,
+// gas-like scatter whose headings stay random. The simulation is deterministic: the same time always gives the same picture.
+//   jitnodesCli examples/graphs/fx/fxBoids.json --png fxBoids.png --time 14
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "startLeft", floats: { count: 900, seed: 1, cx: -11, width: 20, height: 14 }, inputs: [] },
+    {
+      id: 2, type: "boids", name: "flock",
+      floats: {
+        radius: 1.6, separationRadius: 0.5, separation: 1.2, alignment: 3, cohesion: 1.2, minSpeed: 1.5, maxSpeed: 4, maxForce: 8,
+        wander: 0.3, boundsMinX: -21, boundsMaxX: -1, boundsMinY: -7, boundsMaxY: 7, seed: 5
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "colorRamp", name: "headingColor", floats: { min: -3.1416, max: 3.1416 }, strings: { attribute: "angle", ramp: "0 #ff5a7a, 0.25 #ffd36a, 0.5 #5affb0, 0.75 #4aa8ff, 1 #ff5a7a" }, inputs: [2] },
+    { id: 4, type: "generate", name: "startRight", floats: { count: 900, seed: 2, cx: 11, width: 20, height: 14 }, inputs: [] },
+    {
+      id: 5, type: "boids", name: "gas",
+      floats: {
+        radius: 1.3, separationRadius: 1.1, separation: 2.5, alignment: 0, cohesion: 0, minSpeed: 1.5, maxSpeed: 4, maxForce: 8,
+        wander: 1.5, boundsMinX: 1, boundsMaxX: 21, boundsMinY: -7, boundsMaxY: 7, seed: 6
+      },
+      inputs: [4]
+    },
+    { id: 6, type: "colorRamp", name: "gasColor", floats: { min: -3.1416, max: 3.1416 }, strings: { attribute: "angle", ramp: "0 #6a3cff, 0.5 #ff6ab0, 1 #6a3cff" }, inputs: [5] },
+    { id: 7, type: "merge", name: "all", inputs: [3, 6] },
+    { id: 8, type: "wrangle", name: "look", strings: { code: "radius = 0.14; alpha = 1; softness = 0.6;" }, inputs: [7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 840, height: 300, viewCx: 0, viewCy: 0, viewWidth: 44 },
+      strings: { background: "#000000" },
+      inputs: [8]
+    }
+  ]
+}

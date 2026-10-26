@@ -53,6 +53,7 @@ add_library(jitnodes STATIC
   src/graph/fxNodes.cpp
   src/graph/patternNodes.cpp
   src/graph/particleNodes.cpp
+  src/graph/fieldNodes.cpp
   src/graph/subnet.cpp
   src/graph/serialize.cpp
   src/graph/history.cpp

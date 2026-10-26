@@ -345,7 +345,7 @@
                 bounds: {
                   type: "Rect",
                   pos: { type: "Point", x: 8, y: 28 },
-                  size: { type: "Size", width: 174, height: 310 }
+                  size: { type: "Size", width: 174, height: 328 }
                 },
                 visible: true,
                 layout: { type: "FlexLayout", orientation: "Vertical", spacing: 2 },
@@ -355,7 +355,7 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 0, y: 0 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -366,7 +366,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 77, height: 22 }
+                          size: { type: "Size", width: 77, height: 20 }
                         },
                         name: "addLine",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -374,7 +374,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 77, height: 22 },
+                        desiredSize: { type: "Size", width: 77, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -383,7 +383,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 81, y: 0 },
-                          size: { type: "Size", width: 93, height: 22 }
+                          size: { type: "Size", width: 93, height: 20 }
                         },
                         name: "addTransform",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -391,7 +391,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 93, height: 22 },
+                        desiredSize: { type: "Size", width: 93, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -400,8 +400,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 24 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 22 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -412,7 +412,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 86, height: 22 }
+                          size: { type: "Size", width: 86, height: 20 }
                         },
                         name: "addWrangle",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -420,7 +420,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 86, height: 22 },
+                        desiredSize: { type: "Size", width: 86, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -429,7 +429,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 90, y: 0 },
-                          size: { type: "Size", width: 84, height: 22 }
+                          size: { type: "Size", width: 84, height: 20 }
                         },
                         name: "addMerge",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -437,7 +437,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 84, height: 22 },
+                        desiredSize: { type: "Size", width: 84, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -446,8 +446,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 48 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 44 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -458,7 +458,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 97, height: 22 }
+                          size: { type: "Size", width: 97, height: 20 }
                         },
                         name: "addAttribCreate",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -466,7 +466,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 97, height: 22 },
+                        desiredSize: { type: "Size", width: 97, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -475,7 +475,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 101, y: 0 },
-                          size: { type: "Size", width: 73, height: 22 }
+                          size: { type: "Size", width: 73, height: 20 }
                         },
                         name: "addResample",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -483,7 +483,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 73, height: 22 },
+                        desiredSize: { type: "Size", width: 73, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -492,8 +492,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 72 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 66 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -504,7 +504,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 76, height: 22 }
+                          size: { type: "Size", width: 76, height: 20 }
                         },
                         name: "addSubdivide",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -512,7 +512,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 76, height: 22 },
+                        desiredSize: { type: "Size", width: 76, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -521,7 +521,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 80, y: 0 },
-                          size: { type: "Size", width: 94, height: 22 }
+                          size: { type: "Size", width: 94, height: 20 }
                         },
                         name: "addCopyToPoints",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -529,7 +529,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 94, height: 22 },
+                        desiredSize: { type: "Size", width: 94, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -538,8 +538,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 96 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 88 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -550,7 +550,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 85, height: 22 }
+                          size: { type: "Size", width: 85, height: 20 }
                         },
                         name: "addBlast",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -558,7 +558,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 85, height: 22 },
+                        desiredSize: { type: "Size", width: 85, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -567,7 +567,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 89, y: 0 },
-                          size: { type: "Size", width: 85, height: 22 }
+                          size: { type: "Size", width: 85, height: 20 }
                         },
                         name: "addSubnet",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -575,7 +575,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 85, height: 22 },
+                        desiredSize: { type: "Size", width: 85, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -584,8 +584,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 120 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 110 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -596,7 +596,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 99, height: 22 }
+                          size: { type: "Size", width: 99, height: 20 }
                         },
                         name: "addSubnetInput",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -604,7 +604,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 99, height: 22 },
+                        desiredSize: { type: "Size", width: 99, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -613,7 +613,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 103, y: 0 },
-                          size: { type: "Size", width: 71, height: 22 }
+                          size: { type: "Size", width: 71, height: 20 }
                         },
                         name: "addNull",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -621,7 +621,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 71, height: 22 },
+                        desiredSize: { type: "Size", width: 71, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -630,8 +630,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 144 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 132 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -642,7 +642,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 88, height: 22 }
+                          size: { type: "Size", width: 88, height: 20 }
                         },
                         name: "addGenerate",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -650,7 +650,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 88, height: 22 },
+                        desiredSize: { type: "Size", width: 88, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -659,7 +659,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 92, y: 0 },
-                          size: { type: "Size", width: 82, height: 22 }
+                          size: { type: "Size", width: 82, height: 20 }
                         },
                         name: "addScatter",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -667,7 +667,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 82, height: 22 },
+                        desiredSize: { type: "Size", width: 82, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -676,8 +676,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 168 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 154 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -688,7 +688,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 85, height: 22 }
+                          size: { type: "Size", width: 85, height: 20 }
                         },
                         name: "addNoise",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -696,7 +696,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 85, height: 22 },
+                        desiredSize: { type: "Size", width: 85, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -705,7 +705,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 89, y: 0 },
-                          size: { type: "Size", width: 85, height: 22 }
+                          size: { type: "Size", width: 85, height: 20 }
                         },
                         name: "addWarp",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -713,7 +713,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 85, height: 22 },
+                        desiredSize: { type: "Size", width: 85, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -722,8 +722,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 192 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 176 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -734,7 +734,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 93, height: 22 }
+                          size: { type: "Size", width: 93, height: 20 }
                         },
                         name: "addColorRamp",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -742,7 +742,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 93, height: 22 },
+                        desiredSize: { type: "Size", width: 93, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -751,7 +751,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 97, y: 0 },
-                          size: { type: "Size", width: 77, height: 22 }
+                          size: { type: "Size", width: 77, height: 20 }
                         },
                         name: "addRelax",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -759,7 +759,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 77, height: 22 },
+                        desiredSize: { type: "Size", width: 77, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -768,8 +768,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 216 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 198 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -780,7 +780,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 96, height: 22 }
+                          size: { type: "Size", width: 96, height: 20 }
                         },
                         name: "addAttribBlur",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -788,7 +788,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 96, height: 22 },
+                        desiredSize: { type: "Size", width: 96, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -797,7 +797,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 100, y: 0 },
-                          size: { type: "Size", width: 74, height: 22 }
+                          size: { type: "Size", width: 74, height: 20 }
                         },
                         name: "addWave",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -805,7 +805,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 74, height: 22 },
+                        desiredSize: { type: "Size", width: 74, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -814,8 +814,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 240 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 220 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -826,7 +826,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 93, height: 22 }
+                          size: { type: "Size", width: 93, height: 20 }
                         },
                         name: "addAttractor",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -834,7 +834,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 93, height: 22 },
+                        desiredSize: { type: "Size", width: 93, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
@@ -843,7 +843,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 97, y: 0 },
-                          size: { type: "Size", width: 77, height: 22 }
+                          size: { type: "Size", width: 77, height: 20 }
                         },
                         name: "addFlow",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -851,7 +851,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 77, height: 22 },
+                        desiredSize: { type: "Size", width: 77, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -860,8 +860,8 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 264 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 242 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -872,7 +872,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 78, height: 22 }
+                          size: { type: "Size", width: 86, height: 20 }
                         },
                         name: "addVoronoi",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -880,24 +880,24 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 78, height: 22 },
+                        desiredSize: { type: "Size", width: 86, height: 20 },
                         desiredSizeOverride: true
                       },
                       {
                         type: "Button",
-                        text: "particles",
+                        text: "lloyd",
                         bounds: {
                           type: "Rect",
-                          pos: { type: "Point", x: 82, y: 0 },
-                          size: { type: "Size", width: 92, height: 22 }
+                          pos: { type: "Point", x: 90, y: 0 },
+                          size: { type: "Size", width: 84, height: 20 }
                         },
-                        name: "addParticles",
+                        name: "addLloyd",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
                         style: {
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 92, height: 22 },
+                        desiredSize: { type: "Size", width: 84, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -906,8 +906,100 @@
                     type: "SubView",
                     bounds: {
                       type: "Rect",
-                      pos: { type: "Point", x: 0, y: 288 },
-                      size: { type: "Size", width: 174, height: 22 }
+                      pos: { type: "Point", x: 0, y: 264 },
+                      size: { type: "Size", width: 174, height: 20 }
+                    },
+                    visible: true,
+                    layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
+                    childViews: [
+                      {
+                        type: "Button",
+                        text: "particles",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 0, y: 0 },
+                          size: { type: "Size", width: 93, height: 20 }
+                        },
+                        name: "addParticles",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 93, height: 20 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "Button",
+                        text: "boids",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 97, y: 0 },
+                          size: { type: "Size", width: 77, height: 20 }
+                        },
+                        name: "addBoids",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 77, height: 20 },
+                        desiredSizeOverride: true
+                      }
+                    ]
+                  },
+                  {
+                    type: "SubView",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 0, y: 286 },
+                      size: { type: "Size", width: 174, height: 20 }
+                    },
+                    visible: true,
+                    layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
+                    childViews: [
+                      {
+                        type: "Button",
+                        text: "springs",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 0, y: 0 },
+                          size: { type: "Size", width: 82, height: 20 }
+                        },
+                        name: "addSprings",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 82, height: 20 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "Button",
+                        text: "reaction",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 86, y: 0 },
+                          size: { type: "Size", width: 88, height: 20 }
+                        },
+                        name: "addReaction",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 88, height: 20 },
+                        desiredSizeOverride: true
+                      }
+                    ]
+                  },
+                  {
+                    type: "SubView",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 0, y: 308 },
+                      size: { type: "Size", width: 174, height: 20 }
                     },
                     visible: true,
                     layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -918,7 +1010,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 174, height: 22 }
+                          size: { type: "Size", width: 174, height: 20 }
                         },
                         name: "addRender",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -926,7 +1018,7 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 174, height: 22 },
+                        desiredSize: { type: "Size", width: 174, height: 20 },
                         desiredSizeOverride: true
                       }
                     ]
@@ -937,7 +1029,7 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 341 },
+                  pos: { type: "Point", x: 8, y: 359 },
                   size: { type: "Size", width: 174, height: 1 }
                 },
                 visible: true,
@@ -955,7 +1047,7 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 345 },
+                  pos: { type: "Point", x: 8, y: 363 },
                   size: { type: "Size", width: 174, height: 17 }
                 },
                 style: {
@@ -971,8 +1063,8 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 366 },
-                  size: { type: "Size", width: 174, height: 48 }
+                  pos: { type: "Point", x: 8, y: 384 },
+                  size: { type: "Size", width: 174, height: 36 }
                 },
                 visible: true,
                 name: "assetListHost",
@@ -980,7 +1072,7 @@
                   type: "ViewStyle",
                   backgroundFill: { type: "Fill", kind: "Color", color: "#8080801a" }
                 },
-                desiredSize: { type: "Size", width: 174, height: 48 },
+                desiredSize: { type: "Size", width: 174, height: 36 },
                 desiredSizeOverride: true,
                 childViews: []
               },
@@ -990,8 +1082,8 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 417 },
-                  size: { type: "Size", width: 174, height: 48 }
+                  pos: { type: "Point", x: 8, y: 423 },
+                  size: { type: "Size", width: 174, height: 42 }
                 },
                 name: "assetDetails",
                 style: {
@@ -1002,7 +1094,7 @@
                   textColor: "#9a9ca3",
                   textAlignment: "Left"
                 },
-                desiredSize: { type: "Size", width: 174, height: 48 },
+                desiredSize: { type: "Size", width: 174, height: 42 },
                 desiredSizeOverride: true
               },
               {
@@ -1010,7 +1102,7 @@
                 bounds: {
                   type: "Rect",
                   pos: { type: "Point", x: 8, y: 468 },
-                  size: { type: "Size", width: 174, height: 22 }
+                  size: { type: "Size", width: 174, height: 20 }
                 },
                 visible: true,
                 layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
@@ -1021,7 +1113,7 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 0, y: 0 },
-                      size: { type: "Size", width: 76, height: 22 }
+                      size: { type: "Size", width: 76, height: 20 }
                     },
                     name: "addAssetButton",
                     layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -1029,7 +1121,7 @@
                       type: "ThemedButtonStyle",
                       font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                     },
-                    desiredSize: { type: "Size", width: 76, height: 22 },
+                    desiredSize: { type: "Size", width: 76, height: 20 },
                     desiredSizeOverride: true
                   },
                   {
@@ -1038,7 +1130,7 @@
                     bounds: {
                       type: "Rect",
                       pos: { type: "Point", x: 80, y: 0 },
-                      size: { type: "Size", width: 94, height: 22 }
+                      size: { type: "Size", width: 94, height: 20 }
                     },
                     name: "reloadAssetButton",
                     layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -1046,7 +1138,7 @@
                       type: "ThemedButtonStyle",
                       font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                     },
-                    desiredSize: { type: "Size", width: 94, height: 22 },
+                    desiredSize: { type: "Size", width: 94, height: 20 },
                     desiredSizeOverride: true
                   }
                 ]
@@ -1056,7 +1148,7 @@
                 text: "Load asset...",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 493 },
+                  pos: { type: "Point", x: 8, y: 491 },
                   size: { type: "Size", width: 174, height: 24 }
                 },
                 name: "loadAssetButton",

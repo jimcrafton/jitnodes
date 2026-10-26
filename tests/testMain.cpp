@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -2897,7 +2898,14 @@ TEST(renderNodeAndSplatRendererDrawAdditiveSprites) {
 
     const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_render.png").string();
     writePng(path, image);
-    CHECK(std::filesystem::file_size(path) > 5000 * 3);
+    const size_t pngSize = static_cast<size_t>(std::filesystem::file_size(path));
+    {
+        std::ifstream f(path, std::ios::binary);
+        char signature[4] = {};
+        f.read(signature, 4);
+        CHECK(signature[1] == 'P' && signature[2] == 'N' && signature[3] == 'G');
+    }
+    CHECK(pngSize > 60 && pngSize < image.pixels.size() * 3 / 4);
     std::filesystem::remove(path);
 }
 
@@ -3159,6 +3167,62 @@ TEST(voronoiCellsPartitionTheBoundsAndBelongToTheirSites) {
     CHECK(net.cook(vor)->primitiveCount() >= 1);
 }
 
+double cellAreaSpread(Network& net, NodeId points) {
+    NodeId vor = net.addNode("voronoi");
+    net.connect(points, vor);
+    auto geo = net.cook(vor);
+    double sum = 0.0, sumSq = 0.0;
+    for (const Primitive& p : geo->primitives()) {
+        const double a = geo->findAttrib(AttribClass::point, "area")->at(p.start);
+        sum += a;
+        sumSq += a * a;
+    }
+    const double n = static_cast<double>(geo->primitiveCount()), mean = sum / n;
+    return std::sqrt(std::max(sumSq / n - mean * mean, 0.0)) / mean;
+}
+
+TEST(lloydEvensOutTheVoronoiCellsAndKeepsPointsInside) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 6.0f);
+    NodeId lloyd = net.addNode("lloyd");
+    net.connect(gen, lloyd);
+    net.node(lloyd).setFloat("iterations", 8.0f);
+    auto before = net.cook(gen);
+    auto after = net.cook(lloyd);
+    CHECK(after->pointCount() == 300 && after->hasAttrib(AttribClass::point, "rand"));
+    CHECK(cellAreaSpread(net, lloyd) < 0.5 * cellAreaSpread(net, gen));
+    CHECK(minPairDistance(*after) > minPairDistance(*before));
+
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+    for (size_t i = 0; i < before->pointCount(); ++i) {
+        minX = std::min(minX, before->x()[i]);
+        maxX = std::max(maxX, before->x()[i]);
+        minY = std::min(minY, before->y()[i]);
+        maxY = std::max(maxY, before->y()[i]);
+    }
+    for (size_t i = 0; i < after->pointCount(); ++i) CHECK(after->x()[i] >= minX && after->x()[i] <= maxX && after->y()[i] >= minY && after->y()[i] <= maxY);
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), l2 = threaded.addNode("lloyd");
+    threaded.connect(g2, l2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    threaded.node(l2).setFloat("iterations", 8.0f);
+    CHECK(sameGeometry(*after, *threaded.cook(l2)));
+
+    net.node(lloyd).setFloat("strength", 0.0f);
+    CHECK(sameGeometry(*net.cook(lloyd), *before));
+
+    net.node(gen).setFloat("count", 0.0f);
+    CHECK(net.cook(lloyd)->pointCount() == 0);
+    net.node(gen).setFloat("count", 3.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    CHECK(net.cook(lloyd)->pointCount() == 3);
+}
+
 TEST(flowFollowsAFieldAndCarriesTheSeedAttributes) {
     Network net(2);
     NodeId gen = net.addNode("generate");
@@ -3309,6 +3373,195 @@ TEST(particlesSimulateDeterministicallyAndFollowThePlayhead) {
     CHECK(cookThrows(net, sim));
     net.node(sim).setString("boundary", "bounce");
     net.node(sim).setFloat("boundsMaxX", -20.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+double alignmentOf(const Geometry& geo) {
+    double sx = 0.0, sy = 0.0, total = 0.0;
+    for (size_t i = 0; i < geo.pointCount(); ++i) {
+        const double vx = geo.findAttrib(AttribClass::point, "vx")->at(i), vy = geo.findAttrib(AttribClass::point, "vy")->at(i);
+        sx += vx;
+        sy += vy;
+        total += std::hypot(vx, vy);
+    }
+    return std::hypot(sx, sy) / total;
+}
+
+TEST(boidsFlockAlignAndStayWithinTheirSpeedLimits) {
+    auto build = [](Network& net, NodeId& gen, NodeId& sim) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 200.0f);
+        net.node(gen).setFloat("width", 6.0f);
+        net.node(gen).setFloat("height", 6.0f);
+        sim = net.addNode("boids");
+        net.connect(gen, sim);
+        net.node(sim).setFloat("radius", 2.0f);
+    };
+    Network net(2);
+    NodeId gen, sim;
+    build(net, gen, sim);
+    CHECK(net.dependsOnTime(sim));
+    auto start = net.cook(sim);
+    CHECK(start->pointCount() == 200 && start->hasAttrib(AttribClass::point, "neighbors") && start->hasAttrib(AttribClass::point, "angle"));
+    const double before = alignmentOf(*start);
+    net.setTime(6.0);
+    auto later = net.cook(sim);
+    CHECK(alignmentOf(*later) > before + 0.3);
+    for (size_t i = 0; i < later->pointCount(); ++i) {
+        const float speed = later->findAttrib(AttribClass::point, "speed")->at(i);
+        CHECK(speed >= 1.0f - 1e-3f && speed <= 3.0f + 1e-3f);
+        CHECK(later->x()[i] >= -10.0f && later->x()[i] <= 10.0f && later->y()[i] >= -6.0f && later->y()[i] <= 6.0f);
+    }
+
+    // Incremental, restarted and threaded runs agree with a fresh network.
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId g, s;
+        build(other, g, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    CHECK(sameGeometry(*later, *fresh(6.0, 1)));
+    CHECK(sameGeometry(*later, *fresh(6.0, 4)));
+    net.setTime(2.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(2.0, 3)));
+
+    // Without any rule the boids just fly straight at their initial speed.
+    net.node(sim).setFloat("separation", 0.0f);
+    net.node(sim).setFloat("alignment", 0.0f);
+    net.node(sim).setFloat("cohesion", 0.0f);
+    net.node(sim).setString("boundary", "none");
+    net.setTime(0.0);
+    auto s0 = net.cook(sim);
+    net.setTime(1.0);
+    auto s1 = net.cook(sim);
+    CHECK_NEAR(s1->x()[5] - s0->x()[5], s1->findAttrib(AttribClass::point, "vx")->at(5));
+
+    // A goal pulls the flock towards it.
+    net.node(sim).setFloat("goal", 4.0f);
+    net.node(sim).setFloat("goalX", 100.0f);
+    net.node(sim).setFloat("goalY", 0.0f);
+    net.setTime(8.0);
+    double meanVx = 0.0;
+    auto goalGeo = net.cook(sim);
+    for (size_t i = 0; i < goalGeo->pointCount(); ++i) meanVx += goalGeo->findAttrib(AttribClass::point, "vx")->at(i);
+    CHECK(meanVx / static_cast<double>(goalGeo->pointCount()) > 1.5);
+
+    net.node(sim).setString("boundary", "teleport");
+    CHECK(cookThrows(net, sim));
+    net.node(sim).setString("boundary", "bounce");
+    net.node(sim).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(springsHangAChainThatKeepsItsLengthAndHonoursPins) {
+    auto build = [](Network& net, NodeId& line, NodeId& sim) {
+        line = net.addNode("line");
+        net.node(line).setFloat("count", 20.0f);
+        sim = net.addNode("springs");
+        net.connect(line, sim);
+        net.node(sim).setFloat("pinEnds", 1.0f);
+    };
+    Network net(2);
+    NodeId line, sim;
+    build(net, line, sim);
+    auto rest = net.cook(line);
+    CHECK(net.dependsOnTime(sim));
+    CHECK(sameGeometry(*net.cook(sim), *rest) == false);
+    CHECK_NEAR(net.cook(sim)->x()[7], rest->x()[7]);
+
+    net.setTime(4.0);
+    auto swung = net.cook(sim);
+    CHECK(swung->primitiveCount() == rest->primitiveCount());
+    CHECK_NEAR(swung->x()[0], rest->x()[0]);  // the pinned end does not move
+    CHECK_NEAR(swung->y()[0], rest->y()[0]);
+    CHECK(swung->y()[19] < rest->y()[19] - 1.0f);
+    double restLength = 0.0, length = 0.0;
+    for (size_t i = 1; i < rest->pointCount(); ++i) {
+        restLength += std::hypot(static_cast<double>(rest->x()[i] - rest->x()[i - 1]), static_cast<double>(rest->y()[i] - rest->y()[i - 1]));
+        length += std::hypot(static_cast<double>(swung->x()[i] - swung->x()[i - 1]), static_cast<double>(swung->y()[i] - swung->y()[i - 1]));
+    }
+    CHECK(std::fabs(length - restLength) < 0.05 * restLength);
+    CHECK(swung->hasAttrib(AttribClass::point, "strain") && swung->hasAttrib(AttribClass::point, "speed"));
+
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId l, s;
+        build(other, l, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    net.setTime(1.5);
+    net.cook(sim);
+    net.setTime(3.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(3.0, 1)));
+    CHECK(sameGeometry(*net.cook(sim), *fresh(3.0, 4)));
+    net.setTime(0.7);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(0.7, 2)));
+
+    // Without pins everything falls, and a stiffer or looser rest length changes the shape.
+    net.node(sim).setFloat("pinEnds", 0.0f);
+    net.setTime(1.0);
+    CHECK(net.cook(sim)->y()[0] < rest->y()[0] - 1.0f);
+    net.node(sim).setFloat("neighborRadius", 1.5f);
+    CHECK(net.cook(sim)->pointCount() == 20);
+
+    net.node(sim).setFloat("restScale", 0.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(reactionDiffusionGrowsPatternsDeterministicallyAndStaysBounded) {
+    auto build = [](Network& net, NodeId& sim) {
+        sim = net.addNode("reactionDiffusion");
+        net.node(sim).setFloat("width", 48.0f);
+        net.node(sim).setFloat("height", 32.0f);
+        net.node(sim).setFloat("stepsPerSecond", 200.0f);
+    };
+    Network net(2);
+    NodeId sim;
+    build(net, sim);
+    CHECK(net.dependsOnTime(sim));
+    auto start = net.cook(sim);
+    CHECK(start->pointCount() == 48 * 32);
+    size_t seeded = 0;
+    for (size_t i = 0; i < start->pointCount(); ++i) seeded += start->findAttrib(AttribClass::point, "v")->at(i) > 0.0f ? 1 : 0;
+    CHECK(seeded > 0 && seeded < start->pointCount() / 2);
+
+    net.setTime(5.0);
+    auto grown = net.cook(sim);
+    size_t active = 0;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        const float u = grown->findAttrib(AttribClass::point, "u")->at(i), v = grown->findAttrib(AttribClass::point, "v")->at(i);
+        CHECK(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f);
+        active += v > 0.05f ? 1 : 0;
+    }
+    CHECK(active > seeded);
+
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId s;
+        build(other, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    CHECK(sameGeometry(*grown, *fresh(5.0, 1)));
+    CHECK(sameGeometry(*grown, *fresh(5.0, 4)));
+    net.setTime(2.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(2.0, 3)));
+
+    // The grid is centred on (cx, cy) with cellSize spacing, and a pattern-free setting (no feed) dies out.
+    net.node(sim).setFloat("cx", 10.0f);
+    net.node(sim).setFloat("cellSize", 0.5f);
+    auto moved = net.cook(sim);
+    CHECK_NEAR(moved->x()[1] - moved->x()[0], 0.5f);
+    CHECK_NEAR(moved->x()[0] + moved->x()[47], 20.0f);
+    net.node(sim).setFloat("feed", 0.0f);
+    net.node(sim).setFloat("kill", 0.1f);
+    net.setTime(20.0);
+    auto dead = net.cook(sim);
+    for (size_t i = 0; i < dead->pointCount(); ++i) CHECK(dead->findAttrib(AttribClass::point, "v")->at(i) < 0.05f);
+
+    net.node(sim).setFloat("cellSize", 0.0f);
     CHECK(cookThrows(net, sim));
 }
 

@@ -103,7 +103,7 @@ it may do with the node:
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
 `merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, the point and image nodes
-`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `particles` and `render` (see
+`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `boids`, `springs`, `reactionDiffusion` and `render` (see
 [fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`
 and `subnetInput`; assets register more.
 

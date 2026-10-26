@@ -101,6 +101,7 @@ void registerGenerateNodes();
 void registerFxNodes();
 void registerPatternNodes();
 void registerParticleNodes();
+void registerFieldNodes();
 void registerSubnetNodes();
 
 class Network {
