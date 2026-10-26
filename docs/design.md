@@ -290,6 +290,12 @@ event, only the task. Test: `traceRecordsEveryCookedTaskOnceAndChangesNothing`.
 slow node in a level holds back unrelated branches in the next. Replace the level barriers by a dependency counter per task: a
 task becomes runnable when its last input finishes. Results do not depend on scheduling, so the existing thread-count tests
 keep working; compare traces before and after on an uneven graph (one slow `reactionDiffusion` branch next to many cheap nodes).
+*Measured before changing anything:* a graph with a 160 x 160 `reactionDiffusion` at 30 s (528 ms) next to two cheap
+`generate` -> `noise` -> `warp` -> `noise` -> `colorRamp` chains (200,000 points each, 8 threads) cooks in 576 ms. The trace shows
+`n1` and `n3`, the second level of the cheap chains, starting at 527 ms, the moment the slow node ends, and the rest of the
+chains running one level after another behind it. With a dependency counter they would overlap the slow node, so the cook would
+take about 530 ms: the gain is the length of the cheap critical path (here 48 ms, 8%), and it grows only when the cheap branches
+are long. Worth doing when a real graph has a slow node beside long branches; not urgent.
 
 **Step 6, string attributes (separate project).** A string attribute as `int32` ids into a per-geometry string table, written to
 section 1 of the file and readable in wrangles through hashed comparison. Needs a new `AttribType`, so it touches the
