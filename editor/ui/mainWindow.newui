@@ -1270,7 +1270,7 @@
                         bounds: {
                           type: "Rect",
                           pos: { type: "Point", x: 0, y: 0 },
-                          size: { type: "Size", width: 174, height: 16 }
+                          size: { type: "Size", width: 81, height: 16 }
                         },
                         name: "addRender",
                         layoutParams: { type: "FlexLayoutParams", weight: 1 },
@@ -1278,7 +1278,24 @@
                           type: "ThemedButtonStyle",
                           font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
                         },
-                        desiredSize: { type: "Size", width: 174, height: 16 },
+                        desiredSize: { type: "Size", width: 81, height: 16 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "Button",
+                        text: "gasField",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 85, y: 0 },
+                          size: { type: "Size", width: 89, height: 16 }
+                        },
+                        name: "addGasField",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 89, height: 16 },
                         desiredSizeOverride: true
                       }
                     ]

@@ -397,6 +397,60 @@ the nozzle, `initialSpeed` 11 in a 50 degree cone, gravity -9.8, a bouncing floo
 particles on a disc around an attractor of strength 30, each given 55% of the circular speed by a wrangle (`vx`, `vy`); by t = 6 the
 disc has wound up into concentric shells, coloured by `speed`. In the editor, press play and both move.
 
+### gasField (any number of source inputs, or none)
+
+A 2D gas on a grid: smoke that is blown, rises, curls and fills a box. It follows Stam's *Stable Fluids*: semi-Lagrangian
+advection, optional viscosity, and a pressure projection (Gauss-Seidel) that keeps the velocity divergence free, plus Fedkiw's
+vorticity confinement, which puts back the swirls that advection smooths away. Hot gas rises (`buoyancy`), dense gas can sink
+(`weight`). The result is the grid at the playhead, one point per cell centre with `density`, `temperature`, `vx`, `vy` and `speed`,
+so `colorRamp` and `render` show it directly (set the point `radius` to the cell size, `bounds width / resolution`, for a continuous
+look) and any node can read its velocities. It is stepped from `startTime` and cached like `particles`: a pure function of time on any
+thread count (the solver is serial), scrubbing back restarts it.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond` | 0, 60 | as in `particles` (10 to 500 steps per second; at most 100,000 steps) |
+| `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box; cells are square, `resolution` of them across, so the grid is `resolution` by `round(height / cell)` |
+| `resolution` | 64 | cells across (8 to 512). Cost per step is cells times (`iterations` * 2 + about 40) operations |
+| `iterations` | 20 | Gauss-Seidel sweeps for the pressure and the viscosity. More means a more divergence free field |
+| `open` | 0 | 0: closed walls, gas piles up and rolls along them. 1: gas flows out through the walls |
+| `viscosity` | 0 | diffusion of the velocity (world units squared per second) |
+| `dissipation`, `cooling` | 0.2, 0.5 | density and temperature fade by `exp(-rate * dt)` |
+| `buoyancy`, `weight` | 0, 0 | acceleration up per unit temperature, and down per unit density |
+| `vorticity` | 5 | confinement strength (0 turns it off) |
+| `density`, `heat`, `radius` | 1, 0, 0.5 | what a source point injects per second, and its disc radius, when the point has no `density`, `heat` or `radius` attribute of its own |
+| `nozzleX`, `nozzleY`, `nozzleRadius`, `nozzleDensity`, `nozzleHeat`, `nozzleSpeed`, `nozzleAngle` | 0, 0, 0.5, 0, 0, 0, 90 | a built-in injector so a gas needs no input: it adds `nozzleDensity` and `nozzleHeat` per second over a disc and blends the gas there towards a velocity of `nozzleSpeed` along `nozzleAngle` degrees. A nozzle with only a speed blows without adding smoke |
+
+**Sources.** Every point of the inputs injects like the nozzle: density and heat per second with a smooth falloff to its `radius`, and
+the point's `vx`, `vy` as the velocity to blend the gas towards. Sources are read when the run starts; a run restarts when their
+content changes (not when a re-cook only makes new geometry objects). A source that moves with the playhead, or an animated nozzle
+parameter, therefore restarts the run at every frame; moving injectors are not supported yet (`boids` has `obstacleTime = sampled`
+for the same problem). With no input at all the node uses the nozzle.
+
+**Gas in `particles`: blowing a gas into a particle simulation.** Set `gas` to 1 and `particles` runs its own gas, stepped together with
+the particles from the same state, so the coupling is a pure function of time too. The solver parameters are the ones above with a `gas`
+prefix (`gasResolution`, `gasBuoyancy`, `gasVorticity`, `gasOpen`, `gasNozzleX`, `gasNozzleSpeed`, ...; the box is the node's
+`boundsMin/Max`). The coupling:
+- `gasInfluence` (3 per second): each particle is accelerated towards the gas velocity at its position, `(gas - v) * gasInfluence`, which is
+  how Houdini's Field Force drag and Advect by Volume behave; 0 leaves the particles alone.
+- `gasEmit` (0, density per particle per second) and `gasPush` (5, per second): particles deposit smoke into the cell they are in and drag
+  the gas there towards their own velocity, so a dense fountain stirs the air around it. The default push of 5 applies as soon as `gas` is
+  on (particles then stir the gas even without `gasEmit`); set `gasPush` to 0 for a gas that only acts on the particles.
+- The output gains `gas`, the smoke density at each particle, for colouring.
+It is a separate gas from any `gasField` node (nothing is shared between nodes); give both the same parameters to draw the grid under
+the particles.
+
+![smoke rising in a box, and particles blown into a vortex ring by a jet](images/fxGas.png)
+
+`examples/graphs/fx/fxGas.json` at t = 4: left a `gasField` with a hot nozzle at the bottom (the plume rolls up, spreads along the lid and
+curls into two vortices); right `particles` with `gas` on and a nozzle firing right, which the dust is swept into a ring. Cost: the left
+64 by 77 grid for 240 steps and the right 48 by 58 for 240 steps render in about half a second together. The solver is serial, so it
+does not use the thread pool; big grids (256 and up) are the place to look for speed first.
+
+Limits: the solver is first order (semi-Lagrangian advection is dissipative, vorticity confinement compensates), the grid is
+collocated, so a few cells of the velocity can show a checkerboard when `iterations` is low, there are no obstacles inside the box, and
+density is not strictly conserved.
+
 ### boids (a flock input and any number of obstacle inputs)
 
 A flock. Every input point is a boid that steers by Reynolds' three rules, looking only at the boids within `radius`: **separation**

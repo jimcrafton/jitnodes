@@ -3523,6 +3523,201 @@ TEST(particlesFollowAndCollideWithGuideCurves) {
     CHECK(sameGeometry(*played, *h.at(1.5)));
 }
 
+namespace {
+
+struct Smoke {
+    Network net;
+    NodeId gas;
+
+    explicit Smoke(size_t threads = 1) : net(threads) {
+        gas = net.addNode("gasField");
+        net.node(gas).setFloat("boundsMinX", -4.0f);
+        net.node(gas).setFloat("boundsMaxX", 4.0f);
+        net.node(gas).setFloat("boundsMinY", -4.0f);
+        net.node(gas).setFloat("boundsMaxY", 4.0f);
+        net.node(gas).setFloat("resolution", 32.0f);
+        net.node(gas).setFloat("nozzleY", -3.0f);
+        net.node(gas).setFloat("nozzleDensity", 20.0f);
+        net.node(gas).setFloat("nozzleHeat", 20.0f);
+        net.node(gas).setFloat("buoyancy", 3.0f);
+    }
+
+    GeometryHandle at(double t) {
+        net.setTime(t);
+        return net.cook(gas);
+    }
+};
+
+float densityCentreY(const Geometry& g) {
+    const AttribArray* d = g.findAttrib(AttribClass::point, "density");
+    double sum = 0.0, weighted = 0.0;
+    for (size_t i = 0; i < g.pointCount(); ++i) {
+        sum += d->at(i);
+        weighted += static_cast<double>(d->at(i)) * g.y()[i];
+    }
+    return sum > 0.0 ? static_cast<float>(weighted / sum) : 0.0f;
+}
+
+}  // namespace
+
+TEST(gasFieldCarriesSmokeUpwardsAndIsAPureFunctionOfTime) {
+    Smoke smoke;
+    CHECK(smoke.net.dependsOnTime(smoke.gas));
+    auto start = smoke.at(0.0);
+    CHECK(start->pointCount() == 32u * 32u);
+    for (size_t i = 0; i < start->pointCount(); ++i) CHECK(start->findAttrib(AttribClass::point, "density")->at(i) == 0.0f);
+
+    auto early = smoke.at(0.5);
+    auto later = smoke.at(2.0);
+    const float lowCentre = densityCentreY(*early), highCentre = densityCentreY(*later);
+    CHECK(lowCentre < -2.0f && lowCentre > -3.6f);
+    CHECK(highCentre > lowCentre + 0.5f);  // hot gas climbs
+    float fastest = 0.0f;
+    for (size_t i = 0; i < later->pointCount(); ++i) fastest = std::max(fastest, later->findAttrib(AttribClass::point, "speed")->at(i));
+    CHECK(fastest > 0.5f);
+
+    // Scrubbing back and forth, and any thread count, give what a fresh run gives.
+    smoke.at(1.0);
+    auto again = smoke.at(2.0);
+    CHECK(sameGeometry(*again, *later));
+    Smoke fresh(4);
+    CHECK(sameGeometry(*fresh.at(2.0), *later));
+
+    // No heat and no weight: the nozzle only adds smoke that stays near it.
+    smoke.net.node(smoke.gas).setFloat("buoyancy", 0.0f);
+    smoke.net.node(smoke.gas).setFloat("nozzleHeat", 0.0f);
+    CHECK(densityCentreY(*smoke.at(2.0)) < -2.5f);
+
+    smoke.net.node(smoke.gas).setFloat("resolution", 2.0f);
+    CHECK(cookThrows(smoke.net, smoke.gas));
+    smoke.net.node(smoke.gas).setFloat("resolution", 32.0f);
+    smoke.net.node(smoke.gas).setFloat("boundsMaxX", -9.0f);
+    CHECK(cookThrows(smoke.net, smoke.gas));
+}
+
+TEST(gasFieldBlowsAndKeepsTheVelocityFieldDivergenceFree) {
+    Smoke blow;
+    blow.net.node(blow.gas).setFloat("nozzleHeat", 0.0f);
+    blow.net.node(blow.gas).setFloat("buoyancy", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleY", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleX", -3.0f);
+    blow.net.node(blow.gas).setFloat("nozzleAngle", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleSpeed", 6.0f);
+    blow.net.node(blow.gas).setFloat("iterations", 100.0f);
+    auto g = blow.at(1.0);
+    const AttribArray* vx = g->findAttrib(AttribClass::point, "vx");
+    const AttribArray* vy = g->findAttrib(AttribClass::point, "vy");
+    // The jet reaches across the box: positive vx on the axis downstream of the nozzle.
+    const size_t row = 16, w = 32;
+    CHECK(vx->at(row * w + 12) > 0.3f);
+
+    // Mean divergence relative to the speed scale is small away from the walls.
+    const float h = 8.0f / 32.0f;
+    double div = 0.0, mag = 0.0;
+    for (size_t j = 3; j < w - 3; ++j) {
+        for (size_t i = 3; i < w - 3; ++i) {
+            div += std::fabs((vx->at(j * w + i + 1) - vx->at(j * w + i - 1) + vy->at((j + 1) * w + i) - vy->at((j - 1) * w + i)) / (2.0f * h));
+            mag += std::hypot(vx->at(j * w + i), vy->at(j * w + i)) / h;
+        }
+    }
+    CHECK(mag > 0.0 && div < 0.15 * mag);
+
+    // Closed walls: no flow through the left and right edge cells' outer faces (mirror), so the edge cell speed is below the interior's.
+    float edge = 0.0f, inner = 0.0f;
+    for (size_t j = 0; j < w; ++j) {
+        edge = std::max(edge, std::fabs(vx->at(j * w + w - 1)));
+        inner = std::max(inner, std::fabs(vx->at(j * w + w / 2)));
+    }
+    CHECK(edge < inner);
+}
+
+TEST(gasFieldInjectsFromSourcePointsAndWorksWithoutAnyInput) {
+    Smoke s;
+    s.net.node(s.gas).setFloat("nozzleDensity", 0.0f);
+    s.net.node(s.gas).setFloat("nozzleHeat", 0.0f);
+    CHECK(cookThrows(s.net, s.gas) == false);
+    NodeId src = s.net.addNode("generate");
+    s.net.node(src).setFloat("count", 1.0f);
+    s.net.node(src).setFloat("cx", 2.0f);
+    s.net.node(src).setFloat("cy", 2.0f);
+    s.net.node(src).setFloat("width", 0.0f);
+    s.net.node(src).setFloat("height", 0.0f);
+    s.net.connect(src, s.gas);
+    s.net.node(s.gas).setFloat("density", 10.0f);
+    s.net.node(s.gas).setFloat("buoyancy", 0.0f);
+    auto g = s.at(0.5);
+    float best = 0.0f, bx = 0.0f, by = 0.0f;
+    for (size_t i = 0; i < g->pointCount(); ++i) {
+        const float d = g->findAttrib(AttribClass::point, "density")->at(i);
+        if (d > best) {
+            best = d;
+            bx = g->x()[i];
+            by = g->y()[i];
+        }
+    }
+    CHECK(best > 0.1f);
+    CHECK(std::hypot(bx - 2.0f, by - 2.0f) < 0.6f);
+}
+
+TEST(particlesAreBlownByGasAndCanStirIt) {
+    auto make = [](size_t threads, float gasOn) {
+        auto net = std::make_unique<Network>(threads);
+        NodeId gen = net->addNode("generate");
+        net->node(gen).setFloat("count", 200.0f);
+        net->node(gen).setFloat("cx", -2.0f);
+        net->node(gen).setFloat("cy", 0.0f);
+        net->node(gen).setFloat("width", 1.0f);
+        net->node(gen).setFloat("height", 1.0f);
+        NodeId sim = net->addNode("particles");
+        net->connect(gen, sim);
+        Node& n = net->node(sim);
+        n.setFloat("gravityY", 0.0f);
+        n.setFloat("drag", 0.0f);
+        n.setFloat("gas", gasOn);
+        n.setFloat("gasNozzleX", -3.5f);
+        n.setFloat("gasNozzleAngle", 0.0f);
+        n.setFloat("gasNozzleSpeed", 6.0f);
+        n.setFloat("gasNozzleRadius", 1.5f);
+        n.setFloat("gasResolution", 32.0f);
+        n.setFloat("gasInfluence", 4.0f);
+        n.setFloat("boundsMinX", -4.0f);
+        n.setFloat("boundsMaxX", 8.0f);
+        n.setFloat("boundsMinY", -4.0f);
+        n.setFloat("boundsMaxY", 4.0f);
+        return std::pair{std::move(net), sim};
+    };
+    auto meanVx = [](const Geometry& g) {
+        double sum = 0.0;
+        for (size_t i = 0; i < g.pointCount(); ++i) sum += g.findAttrib(AttribClass::point, "vx")->at(i);
+        return static_cast<float>(sum / static_cast<double>(g.pointCount()));
+    };
+
+    auto [off, offSim] = make(1, 0.0f);
+    off->setTime(1.0);
+    CHECK(std::fabs(meanVx(*off->cook(offSim))) < 1e-4f);
+    CHECK(off->cook(offSim)->findAttrib(AttribClass::point, "gas") == nullptr);
+
+    auto [on, onSim] = make(1, 1.0f);
+    on->setTime(1.0);
+    auto blown = on->cook(onSim);
+    CHECK(meanVx(*blown) > 0.5f);
+    CHECK(blown->findAttrib(AttribClass::point, "gas") != nullptr);
+
+    auto [many, manySim] = make(4, 1.0f);
+    many->setTime(1.0);
+    CHECK(sameGeometry(*blown, *many->cook(manySim)));
+
+    // Particles that emit and push put smoke into the gas, which shows in their `gas` attribute.
+    on->node(onSim).setFloat("gasNozzleSpeed", 0.0f);
+    on->node(onSim).setFloat("gasEmit", 5.0f);
+    float total = 0.0f;
+    for (size_t i = 0; i < 200; ++i) total += on->cook(onSim)->findAttrib(AttribClass::point, "gas")->at(i);
+    CHECK(total > 1.0f);
+
+    on->node(onSim).setFloat("gasResolution", 1.0f);
+    CHECK(cookThrows(*on, onSim));
+}
+
 double alignmentOf(const Geometry& geo) {
     double sx = 0.0, sy = 0.0, total = 0.0;
     for (size_t i = 0; i < geo.pointCount(); ++i) {

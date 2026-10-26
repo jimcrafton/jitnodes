@@ -182,6 +182,7 @@ void registerBuiltinNodes() {
     registerFxNodes();
     registerPatternNodes();
     registerParticleNodes();
+    registerGasNodes();
     registerFieldNodes();
     registerCurveNodes();
     registerFileNodes();

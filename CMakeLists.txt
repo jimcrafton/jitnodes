@@ -54,6 +54,8 @@ add_library(jitnodes STATIC
   src/graph/fxNodes.cpp
   src/graph/patternNodes.cpp
   src/graph/particleNodes.cpp
+  src/graph/gasSolver.cpp
+  src/graph/gasNodes.cpp
   src/graph/fieldNodes.cpp
   src/graph/curveNodes.cpp
   src/graph/fileNodes.cpp

@@ -104,7 +104,7 @@ it may do with the node:
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
 `merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, `mirror` (reflections and n-fold copies, `symmetry()` in `src/geo/topology.cpp`), `attribString` and `groupByString` ([strings.md](strings.md)), the point and image nodes
-`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `boids`, `springs`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail` and `render` (see
+`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `gasField`, `boids`, `springs`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail` and `render` (see
 [fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`,
 `fileRead` and `fileCache` ([geometryFiles.md](geometryFiles.md), `src/graph/fileNodes.cpp`; `fileCache` reads without cooking its input through `Node::needsInputs()`),
 and `subnetInput`; assets register more.

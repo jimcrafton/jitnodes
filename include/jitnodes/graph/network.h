@@ -102,6 +102,7 @@ void registerGenerateNodes();
 void registerFxNodes();
 void registerPatternNodes();
 void registerParticleNodes();
+void registerGasNodes();
 void registerFieldNodes();
 void registerCurveNodes();
 void registerFileNodes();

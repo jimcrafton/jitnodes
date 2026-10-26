@@ -8,6 +8,7 @@
 
 #include "jitnodes/graph/network.h"
 #include "jitnodes/graph/serialize.h"
+#include "gasSolver.h"
 #include "noise.h"
 #include "nodeUtil.h"
 #include "pointGrid.h"
@@ -33,6 +34,11 @@ struct Settings {
     float windX = 0.0f, windY = 0.0f, windDrag = 0.0f;
     float follow = 0.0f, followPull = 0.0f, followRadius = 1.0f;
     bool collide = false;
+    bool gas = false;
+    float gasInfluence = 0.0f, gasEmit = 0.0f, gasPush = 0.0f;
+    GasConfig gasConfig;
+    GasSource nozzle;
+    bool nozzleOn = false;
     float lifetime = 0.0f;
     float initialSpeed = 0.0f, speedVariation = 0.0f, direction = 0.0f, spread = 360.0f;
     Boundary boundary = Boundary::none;
@@ -147,6 +153,7 @@ void collideGuides(const Guides& g, float ox, float oy, float& x, float& y, floa
 struct State {
     GeometryHandle source;
     Guides guides;
+    GasSolver gas;
     std::vector<float> guideSnapshot;  // content of the guides when the run started: equal content keeps the run
     std::vector<float> signature;
     std::string boundary;
@@ -186,6 +193,7 @@ void initialise(State& st, const Geometry& in, const Settings& s) {
         emission(s, st, i, 0, st.vx[i], st.vy[i]);
         if (s.lifetime > 0.0f) st.age[i] = s.lifetime * random01(s.seed, static_cast<uint32_t>(i), 50);
     }
+    if (s.gas) st.gas.reset(s.gasConfig);
     st.step = 0;
 }
 
@@ -227,11 +235,25 @@ void advance(State& st, const Settings& s, int64_t step, ThreadPool* pool, std::
         });
     }
 
+    if (s.gas) {
+        if (s.nozzleOn) st.gas.addSource(s.nozzle, dt);
+        if (s.gasEmit != 0.0f || s.gasPush != 0.0f)
+            for (size_t i = 0; i < n; ++i) st.gas.addBody(st.x[i], st.y[i], st.vx[i], st.vy[i], s.gasEmit, s.gasPush, dt);
+        st.gas.step(dt);
+    }
+
     const float width = s.maxX - s.minX, height = s.maxY - s.minY;
     parallelChunks(pool, n, [&](size_t begin, size_t end) {
         for (size_t i = begin; i < end; ++i) {
             float x = st.x[i], y = st.y[i], vx = st.vx[i], vy = st.vy[i];
             float ax = s.gravityX, ay = s.gravityY;
+            if (s.gas && s.gasInfluence != 0.0f) {
+                float gx, gy, gd;
+                st.gas.sample(x, y, gx, gy, gd);
+                const float k = std::clamp(s.gasInfluence * dt, 0.0f, 1.0f) / dt;
+                ax += (gx - vx) * k;
+                ay += (gy - vy) * k;
+            }
             if (s.attract != 0.0f || s.swirl != 0.0f) {
                 const float dx = s.attractX - x, dy = s.attractY - y;
                 const float r2 = dx * dx + dy * dy + s.softening * s.softening;
@@ -370,6 +392,11 @@ public:
         declareFloat("followPull", 0.0f);
         declareFloat("followRadius", 1.0f);
         declareFloat("collide", 0.0f);
+        declareFloat("gas", 0.0f);
+        declareFloat("gasInfluence", 3.0f);
+        declareFloat("gasEmit", 0.0f);
+        declareFloat("gasPush", 5.0f);
+        forEachGasParam("gas", [&](const std::string& name, float value) { declareFloat(name, value); });
         declareFloat("lifetime", 0.0f);
         declareFloat("initialSpeed", 0.0f);
         declareFloat("speedVariation", 0.0f);
@@ -427,6 +454,14 @@ public:
         s.followPull = getFloat("followPull");
         s.followRadius = std::max(getFloat("followRadius"), 1e-3f);
         s.collide = getFloat("collide") != 0.0f;
+        s.gas = getFloat("gas") != 0.0f;
+        if (s.gas) {
+            s.gasConfig = readGasConfig(*this, "gas", "particles");
+            s.gasInfluence = getFloat("gasInfluence");
+            s.gasEmit = getFloat("gasEmit");
+            s.gasPush = std::max(getFloat("gasPush"), 0.0f);
+            s.nozzleOn = readGasNozzle(*this, "gas", s.nozzle);
+        }
         s.lifetime = std::max(getFloat("lifetime"), 0.0f);
         s.initialSpeed = getFloat("initialSpeed");
         s.speedVariation = getFloat("speedVariation");
@@ -474,8 +509,13 @@ public:
         float* age = geo->attrib(AttribClass::point, "age").floats().data();
         float* life = geo->attrib(AttribClass::point, "life").floats().data();
         float* speed = geo->attrib(AttribClass::point, "speed").floats().data();
+        float* gasDensity = s.gas ? geo->attrib(AttribClass::point, "gas").floats().data() : nullptr;
         parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
             for (size_t i = begin; i < end; ++i) {
+                if (gasDensity) {
+                    float gx, gy;
+                    st.gas.sample(st.x[i], st.y[i], gx, gy, gasDensity[i]);
+                }
                 xs[i] = st.x[i];
                 ys[i] = st.y[i];
                 vx[i] = st.vx[i];

@@ -118,6 +118,8 @@ public:
     // Nodes with variable inputs start with inputCount() inputs and the network keeps exactly one unconnected input after
     // the last connected one; unconnected inputs are skipped when cooking.
     virtual bool hasVariableInputs() const { return false; }
+    // For variable-input nodes: cook() also works with no input connected.
+    virtual bool inputsOptional() const { return false; }
 
     // Container nodes (subnets, assets) own a child network.
     virtual Network* childNetwork() { return nullptr; }

@@ -457,14 +457,19 @@ choosing option 2.
 **D. Research pass: further nodes** (web, standard search, 2026-10-26; sources listed at the end). Existing coverage is generate, scatter, noise,
 warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles (gravity, drag, noise, attract, swirl, repel), boids, springs,
 reactionDiffusion, lsystem, curveSample, ribbon, trail, file nodes, string nodes. Candidates, ranked by value for the effort, with the missing piece:
-1. **Gas / velocity field (`gasField`)**, the "blow gas into a particle sim" request. A 2D grid solver after Stam's *Stable Fluids* with
+1. **Gas / velocity field (`gasField`)** (*done with 2, 156 tests, ASan clean, uncommitted:* `src/graph/gasSolver.{h,cpp}` (Stam + vorticity confinement + buoyancy, serial, deterministic), node
+   `gasField` in `gasNodes.cpp` (sources from input points or a built-in nozzle, grid output with `density`, `temperature`, `vx`, `vy`, `speed`), palette button, `Node::inputsOptional()`
+   so a variable-input node can cook with nothing connected; example `fxGas.json`; details in `fx.md`. Not done: obstacles inside the grid, moving sources (needs the
+   sampling of item C), a separate "field only" output mode, 3D). Original: the "blow gas into a particle sim" request. A 2D grid solver after Stam's *Stable Fluids* with
    Fedkiw's vorticity confinement: semi-Lagrangian advection, implicit diffusion, pressure projection (Jacobi or red-black Gauss-Seidel, 20-40
    iterations), sources from input points (`density`, `temperature`, velocity from `vx/vy`), buoyancy from temperature, vorticity confinement strength
    to restore the curl that semi-Lagrangian damping removes, dissipation, optional obstacle points. Stateful and cached like `reactionDiffusion`
    (a pure function of time via stepping). Outputs: a point grid with `density`, `temperature`, `vx`, `vy` (so `colorRamp`/`render` show smoke),
    and a second mode that outputs nothing but the field for the next node. Houdini's equivalent is the gas microsolver family (Gas External Forces,
    Gas Advect, Gas Turbulence, Gas Vortex Confinement, Gas Disturb).
-2. **Field force on particles (`fieldForce`, or an optional second input on `particles` and `boids`)**: samples the gas grid's velocity at each
+2. **Field force on particles** (*done as the single-node version the text below recommends as the first one:* `particles` with `gas = 1` runs its own gas in the same stepped
+   state: `gasInfluence` drag to the gas velocity, `gasEmit`/`gasPush` for the reverse coupling, `gas` output attribute; `boids` has no gas coupling yet, and a gas shared between a
+   `gasField` node and `particles` needs the time-sampling answer of item C). Original: **`fieldForce`, or an optional second input on `particles` and `boids`**: samples the gas grid's velocity at each
    particle (bilinear) and applies it as a force or drag-to-velocity (`influence`, `drag`), which is how Houdini couples POP and gas (Field Force,
    Advect by Volume). The reverse coupling (particles inject velocity into the grid) as an option `emit`. This is the piece that makes "blow gas into
    a particle sim" work; it needs the same time-sampling answer as item C for a grid that is itself time-stepped, so do C's sampler or let `particles`

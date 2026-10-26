@@ -567,7 +567,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             }
             task.inputs.push_back(s.inputs[i]);
         }
-        if (task.inputs.empty() && n.hasVariableInputs()) throw std::runtime_error(n.name() + ": no input is connected");
+        if (task.inputs.empty() && n.hasVariableInputs() && !n.inputsOptional()) throw std::runtime_error(n.name() + ": no input is connected");
     }
 
     return task;

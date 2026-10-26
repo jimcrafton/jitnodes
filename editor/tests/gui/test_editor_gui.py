@@ -132,7 +132,7 @@ class Palette(EditorCase):
     def test_every_fx_palette_button_adds_its_node(self):
         buttons = ["addGenerate", "addScatter", "addNoise", "addWarp", "addColorRamp", "addRelax", "addAttribBlur",
                    "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addLsystem", "addCurveSample", "addRibbon", "addTrail", "addFileRead", "addFileCache", "addRender",
-                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail"]
+                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail", "addGasField"]
         for count, button in enumerate(buttons, 1):
             with self.subTest(button=button):
                 self.app.click(button)
@@ -145,7 +145,7 @@ class Palette(EditorCase):
         self.assertEqual("mirror1", self.title())
         self.setField("addByName", "groupbys")      # any case, unique prefix
         self.assertTrue(self.status().startswith("2 nodes"), self.status())
-        self.assertEqual("groupByString1", self.title())
+        self.assertEqual("groupByString2", self.title())
         self.setField("addByName", "nonesuch")
         self.assertTrue(self.status().startswith("2 nodes"), self.status())
         self.assertIn("no node type matches", self.label("statusText"))

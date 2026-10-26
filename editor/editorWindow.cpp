@@ -37,7 +37,7 @@ const std::vector<PaletteEntry> palette = {
     {"addVoronoi", "voronoi"}, {"addLloyd", "lloyd"}, {"addParticles", "particles"}, {"addBoids", "boids"},
     {"addSprings", "springs"}, {"addReaction", "reactionDiffusion"},
     {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
-    {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"},
+    {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"}, {"addGasField", "gasField"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
