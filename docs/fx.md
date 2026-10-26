@@ -1,7 +1,7 @@
 # Generating points and drawing pictures with them
 
-Six nodes turn jitnodes into a small particle-image tool: two make points, three shape them with noise and colour, and
-one (`render`) says how the points become an image. Together they draw pictures such as the nebula in
+Ten nodes turn jitnodes into a small particle-image tool: two make points, seven shape them (noise, warp, colour,
+spacing, smoothing, waves and strange attractors), and one (`render`) says how the points become an image. Together they draw pictures such as the nebula in
 `examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
 
 ```
@@ -11,7 +11,8 @@ jitnodesEditor examples/graphs/nebula.json
 
 ![The nebula graph rendered by jitnodesCli](images/nebula.png)
 
-In the editor the six nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, render): select a
+In the editor the ten nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
+attribBlur, wave, attractor, render): select a
 node, click a button and the new node is wired to the selected one. Each example below is a small graph in
 `examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
 parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
@@ -134,6 +135,117 @@ Maps a float attribute onto a gradient and writes `Cd.x`, `Cd.y`, `Cd.z`.
 The ramps in the pictures above are, for example, `0 #0b0630, 0.35 #3b4cc0, 0.7 #f4a582, 1 #fff7e0` (the fbm box in
 `fxNoise.json`) and `0 #101a4a, 0.5 #3aa0d8, 1 #ffd070` (the checker in `fxWarp.json`).
 
+### relax (one input)
+
+Pushes points that are closer than `radius` apart until they are not: even, blue-noise-like spacing instead of the clumps
+and gaps of random points. Each iteration every point moves away from all its neighbours within `radius` by half the
+overlap (times `strength`); all points move at once, so the result does not depend on the order or the thread count.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `radius` | 0.5 | the distance points are pushed apart to. Start a little above the average spacing, `sqrt(area / points)`; a radius far larger than that cannot be satisfied, so the points pack tight and pile up at the edges |
+| `iterations` | 20 | 1 to 500 |
+| `strength` | 0.4 | fraction of the overlap corrected per iteration; high values can overshoot in dense clusters, low ones just need more iterations |
+| `keepInside` | 1 | 1: points stay inside the bounding box of the input. 0: they may drift out; the cloud then grows slightly |
+| `seed` | 1 | only picks the direction in which two points at exactly the same place separate |
+
+Attributes are untouched and travel with the points. Points sit on a uniform grid, so the cost is the number of points times
+the number of neighbours within `radius`: 2,500 points and 60 iterations take about 20 ms.
+
+![2,500 random points, and the same points after relax](images/fxRelax.png)
+
+`examples/graphs/fx/fxRelax.json`: the same points (same `seed`, different `cx`) with and without `relax`
+(`radius` 0.3, `iterations` 60, `strength` 0.5). The right-hand side settles into a loose hexagonal packing, which is what
+the even distribution of equal discs looks like; the `scatter` node's random points are the left-hand kind.
+
+### attribBlur (one input)
+
+Replaces a point attribute with the average of its neighbours within `radius`, each weighted by distance, and repeats
+that `iterations` times. It turns the noise of a random attribute into soft regions, and it smooths colours, `alpha`, or
+any other float or int attribute (the output is always a float).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `attribute` | `rand` | the attribute to blur; several are separated by commas or spaces (`Cd.x, Cd.y, Cd.z` blurs a colour) |
+| `output` | empty | where to write the result, one name per attribute. Empty: overwrite the input attributes (they must be floats); a name that already exists as an int is an error |
+| `falloff` | `linear` | weight by distance: `linear` (1 at the point, 0 at `radius`), `box` (everyone counts the same), `gaussian` (`exp(-4 d^2 / r^2)`) |
+| `radius` | 0.5 | neighbourhood size |
+| `iterations` | 1 | 1 to 64; each pass blurs the result of the last, which behaves like a wider radius |
+
+A point always counts itself with weight 1, so an isolated point keeps its value. The blur uses the positions of the input, so
+positions are not part of it unless you name `x` or `y`. Cost is points times neighbours times iterations; `fxBlur.json` below
+has about 900 neighbours per point in the last panel and takes 0.66 s for its 20,000 points: keep `radius` a few times the point
+spacing, and use more iterations rather than a larger radius for a wide smooth blur.
+
+![raw random values, blurred once, blurred four times](images/fxBlur.png)
+
+`examples/graphs/fx/fxBlur.json`: the same `rand` values drawn through one colour ramp, raw (left), after one pass with
+`radius` 0.5 (middle) and after four passes with `radius` 1.2 (right). Blurring pulls every value towards 0.5, so the
+panels use narrower `min`/`max` on their `colorRamp` to keep the contrast; the black specks are gaps between the points.
+
+### wave (one input)
+
+Writes a travelling sine wave into an attribute, and can move the points by it.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `name` | `wave` | attribute to write, in `-amplitude..amplitude` |
+| `mode` | `radial` | `radial`: rings spreading from the sources. `plane`: straight fronts moving in the direction `angle` |
+| `cx`, `cy` | 0 | the source (`radial`), or a point on the front where the phase is zero (`plane`) |
+| `cx2`, `cy2`, `sourceCount` | 0, 0, 1 | `radial` only: with `sourceCount` above 1 the sources are spread evenly from (`cx`,`cy`) to (`cx2`,`cy2`) and their waves are averaged; 2 gives interference fringes, many gives a line source (1 to 256) |
+| `angle` | 0 | `plane` only: direction of travel in degrees from +x |
+| `wavelength` | 2 | distance between crests; must not be 0 |
+| `phase` | 0 | radians; animate it with `time * speed` and the wave travels (crests move outwards with a positive `time` coefficient) |
+| `amplitude` | 1 | the wave is `amplitude * sin(2 pi r / wavelength - phase)` |
+| `falloff` | 0 | multiplies the wave by `exp(-falloff * distance)`; use it so rings fade away from their source |
+| `displaceX`, `displaceY` | 0 | each point is also moved by `wave * displaceX` in x and `wave * displaceY` in y, in world units. A plane wave with `displaceX` bunches points into bands (a compression wave); `displaceY` gives a rippling sheet |
+
+The wave is a pure function of the point's position, so there is no state and it works at any frame; `phase` is the only time
+dependence.
+
+![two-source interference, and a plane wave that bunches the points](images/fxWave.png)
+
+`examples/graphs/fx/fxWave.json`: left, two sources 5 units apart (`cx`..`cx2`, `sourceCount` 2, `wavelength` 1.4,
+`falloff` 0.02) shown with a `colorRamp` on `wave`; right, a plane wave (`angle` 0, `wavelength` 3.5) with
+`displaceX` 0.7: the displacement is as large as the wavelength allows, so the points fold into dense bands with empty gaps
+between them.
+
+### attractor (one input)
+
+Runs every input point through a chaotic two-dimensional map a number of times and moves it to where it ends up. The input
+points are the starting positions, in the map's own units (a `generate` of `width` and `height` 4 is a good seed cloud; the
+orbit stays within `1 + |c|` for Clifford, 2 for de Jong and `1 + |d|` for Svensson, in both directions). With enough seeds the final positions trace the attractor, and drawn additively their density shows its
+structure: filaments and sheets that are brighter where the orbit passes often.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `type` | `clifford` | `clifford`: `x' = sin(a y) + c cos(a x)`, `y' = sin(b x) + d cos(b y)`. `dejong`: `x' = sin(a y) - cos(b x)`, `y' = sin(c x) - cos(d y)`. `svensson`: `x' = d sin(a x) - sin(b y)`, `y' = c cos(a x) + cos(b y)` |
+| `a`, `b`, `c`, `d` | -1.4, 1.6, 1, 0.7 | the map's constants (the defaults are a classic Clifford attractor). Small changes give very different shapes, and some sets collapse to a point or a closed loop |
+| `iterations` | 30 | how many times the map is applied (1 to 10000); the first tens of steps carry the seed onto the attractor |
+| `scale`, `cx`, `cy` | 3, 0, 0 | world position = (`cx`, `cy`) + map position * `scale` |
+
+Point attributes written: `speed` (length of the last step in map units) and `dir` (direction of the last step, 0..1 around the
+circle), both good for a `colorRamp`. Everything else is kept.
+
+Parameter sets that make good pictures:
+
+| Type | a | b | c | d |
+|---|---|---|---|---|
+| clifford | -1.4 | 1.6 | 1.0 | 0.7 |
+| clifford | -1.7 | 1.3 | -0.1 | -1.2 |
+| dejong | 1.641 | 1.902 | 0.316 | 1.525 |
+| dejong | 1.4 | -2.3 | 2.4 | -2.1 |
+| svensson | 1.5 | -1.8 | 1.6 | 0.9 |
+
+The `a`..`d` fields are parameters like any other, so animating them (`sin(time) * 0.1 + 1.5`) morphs the shape smoothly.
+
+![four attractors](images/fxAttractor.png)
+
+`examples/graphs/fx/fxAttractor.json`: four attractors of 400,000 seed points each (the first and second Clifford rows of the table,
+the first de Jong row and the Svensson row) placed in the four quarters with `cx`/`cy`, coloured by `dir`, drawn additively with
+`radius` 0.02 (under a pixel, so each point adds a faint dot) and `alpha` 0.12. The whole picture, 1.6 million points through 30
+iterations, cooks in about 0.3 s.
+
 ### render (one input)
 
 Passes the geometry through unchanged and records how to draw it, as detail values named `render.*`. The editor's
@@ -217,6 +329,9 @@ the two gas `noise` nodes 35 ms each, `scatter` of the core 16 ms and a `generat
 `jitnodesCli ... --png` run, cooking plus drawing the 646,000 sprites at 1400 x 700 plus writing the PNG, takes about
 0.35 s.
 
+- `relax` and `attribBlur` cost points times neighbours within `radius` (per iteration); keep `radius` within a few times the
+  point spacing. `attractor` costs points times `iterations` times two trig calls: 400,000 points and 30 iterations take
+  40 to 120 ms depending on the map. `wave` is as cheap as a `noise` octave.
 - Sprites larger than a few hundred pixels across are slow in the additive renderer (cost is proportional to covered
   pixels); use many small sprites rather than a few huge ones, or `bloom` for large soft glows.
 - Noise is 3D gradient noise computed in plain C++ (not JIT compiled), so `noise` and `warp` do not take part in kernel

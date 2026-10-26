@@ -175,6 +175,7 @@ void registerBuiltinNodes() {
     registerTopologyNodes();
     registerGenerateNodes();
     registerFxNodes();
+    registerPatternNodes();
     registerSubnetNodes();
 }
 

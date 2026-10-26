@@ -2901,6 +2901,195 @@ TEST(renderNodeAndSplatRendererDrawAdditiveSprites) {
     std::filesystem::remove(path);
 }
 
+double minPairDistance(const Geometry& geo) {
+    double best = 1e30;
+    for (size_t i = 0; i < geo.pointCount(); ++i)
+        for (size_t j = i + 1; j < geo.pointCount(); ++j) best = std::min(best, std::hypot(static_cast<double>(geo.x()[i] - geo.x()[j]), static_cast<double>(geo.y()[i] - geo.y()[j])));
+    return best;
+}
+
+TEST(relaxSpreadsPointsApartAndKeepsThemInside) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 400.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId relax = net.addNode("relax");
+    net.connect(gen, relax);
+    net.node(relax).setFloat("radius", 0.6f);
+    net.node(relax).setFloat("iterations", 40.0f);
+    auto before = net.cook(gen);
+    auto after = net.cook(relax);
+    CHECK(after->pointCount() == 400 && after->hasAttrib(AttribClass::point, "rand"));
+    CHECK(minPairDistance(*after) > 2.0 * minPairDistance(*before));
+    float minX = 1e9f, maxX = -1e9f;
+    for (size_t i = 0; i < after->pointCount(); ++i) {
+        minX = std::min(minX, after->x()[i]);
+        maxX = std::max(maxX, after->x()[i]);
+    }
+    CHECK(minX >= -5.0f && maxX <= 5.0f);
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), r2 = threaded.addNode("relax");
+    threaded.connect(g2, r2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"radius", "iterations"}) threaded.node(r2).setFloat(p, net.node(relax).getFloat(p));
+    CHECK(sameGeometry(*after, *threaded.cook(r2)));
+
+    // Coincident points are pushed apart too.
+    net.node(gen).setFloat("count", 2.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    net.node(relax).setFloat("keepInside", 0.0f);
+    CHECK(minPairDistance(*net.cook(relax)) > 0.1);
+
+    net.node(relax).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, relax));
+}
+
+TEST(attribBlurAveragesNeighboursAndValidatesItsParameters) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 3000.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId blur = net.addNode("attribBlur");
+    net.connect(gen, blur);
+    net.node(blur).setFloat("radius", 0.8f);
+    net.node(blur).setFloat("iterations", 2.0f);
+    auto src = net.cook(gen);
+    auto out = net.cook(blur);
+    auto variance = [](const Geometry& g, const char* name) {
+        double sum = 0.0, sum2 = 0.0;
+        const AttribArray* a = g.findAttrib(AttribClass::point, name);
+        for (size_t i = 0; i < g.pointCount(); ++i) {
+            sum += a->at(i);
+            sum2 += static_cast<double>(a->at(i)) * a->at(i);
+        }
+        const double mean = sum / static_cast<double>(g.pointCount());
+        return sum2 / static_cast<double>(g.pointCount()) - mean * mean;
+    };
+    CHECK(variance(*out, "rand") < 0.3 * variance(*src, "rand"));
+    CHECK(sameGeometry(*net.cook(blur), *out));
+
+    // output writes elsewhere and leaves the source alone; several attributes are blurred together.
+    net.node(blur).setString("attribute", "rand, rand2");
+    net.node(blur).setString("output", "a, b");
+    out = net.cook(blur);
+    CHECK(out->hasAttrib(AttribClass::point, "a") && out->hasAttrib(AttribClass::point, "b"));
+    CHECK(variance(*out, "rand") > 0.99 * variance(*src, "rand") && variance(*out, "b") < 0.3 * variance(*src, "rand2"));
+
+    net.node(blur).setString("output", "a");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("output", "");
+    net.node(blur).setString("attribute", "missing");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("attribute", "id");  // int attributes cannot be overwritten in place
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("attribute", "rand");
+    net.node(blur).setString("falloff", "bogus");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("falloff", "gaussian");
+    net.node(blur).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, blur));
+}
+
+TEST(waveWritesASineAndCanDisplacePoints) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    net.node(line).setFloat("length", 2.0f);
+    NodeId wave = net.addNode("wave");
+    net.connect(line, wave);
+    net.node(wave).setFloat("wavelength", 4.0f);
+    net.node(wave).setFloat("amplitude", 2.0f);
+    auto geo = net.cook(wave);  // radial from the origin: sin(2 pi r / 4) at r = 0, 1, 2
+    const AttribArray* w = geo->findAttrib(AttribClass::point, "wave");
+    CHECK(w && std::fabs(w->at(0)) < 1e-4f && std::fabs(w->at(1) - 2.0f) < 1e-4f && std::fabs(w->at(2)) < 1e-3f);
+
+    net.node(wave).setString("mode", "plane");
+    net.node(wave).setFloat("angle", 180.0f);  // running towards -x: the same points see the mirrored phase
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), -2.0f);
+
+    net.node(wave).setString("mode", "radial");
+    net.node(wave).setFloat("phase", 1.5707963f);
+    net.node(wave).setFloat("displaceY", 0.5f);
+    geo = net.cook(wave);
+    CHECK_NEAR(geo->findAttrib(AttribClass::point, "wave")->at(0), -2.0f);
+    CHECK_NEAR(geo->y()[0], -1.0f);
+
+    // Two sources at the same place are one source; two apart are averaged.
+    net.node(wave).setFloat("phase", 0.0f);
+    net.node(wave).setFloat("displaceY", 0.0f);
+    net.node(wave).setFloat("sourceCount", 2.0f);
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 2.0f);
+    net.node(wave).setFloat("cx2", 1.0f);  // sources at 0 and 1: the point at 1 sees sin(pi / 2) and sin(0)
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 1.0f);
+
+    net.node(wave).setFloat("falloff", 1.0f);
+    net.node(wave).setFloat("cx2", 0.0f);
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 2.0f * std::exp(-1.0f));
+    net.node(wave).setFloat("wavelength", 0.0f);
+    CHECK(cookThrows(net, wave));
+    net.node(wave).setFloat("wavelength", 1.0f);
+    net.node(wave).setString("mode", "spiral");
+    CHECK(cookThrows(net, wave));
+}
+
+TEST(attractorIteratesAMapAndStaysBounded) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 3000.0f);
+    net.node(gen).setFloat("width", 4.0f);
+    net.node(gen).setFloat("height", 4.0f);
+    NodeId att = net.addNode("attractor");
+    net.connect(gen, att);
+
+    // With a = b = 0 and c = d = 1 the Clifford map sends every point to (1, 1).
+    net.node(att).setFloat("a", 0.0f);
+    net.node(att).setFloat("b", 0.0f);
+    net.node(att).setFloat("d", 1.0f);
+    net.node(att).setFloat("iterations", 3.0f);
+    net.node(att).setFloat("scale", 2.0f);
+    net.node(att).setFloat("cx", 10.0f);
+    auto geo = net.cook(att);
+    CHECK_NEAR(geo->x()[7], 12.0f);
+    CHECK_NEAR(geo->y()[7], 2.0f);
+    CHECK_NEAR(geo->findAttrib(AttribClass::point, "speed")->at(7), 0.0f);
+
+    for (const char* type : {"clifford", "dejong", "svensson"}) {
+        net.node(att).setString("type", type);
+        net.node(att).setFloat("a", 1.5f);
+        net.node(att).setFloat("b", -1.8f);
+        net.node(att).setFloat("c", 1.6f);
+        net.node(att).setFloat("d", 0.9f);
+        net.node(att).setFloat("iterations", 25.0f);
+        net.node(att).setFloat("scale", 1.0f);
+        net.node(att).setFloat("cx", 0.0f);
+        geo = net.cook(att);
+        double spread = 0.0;
+        for (size_t i = 0; i < geo->pointCount(); ++i) {
+            CHECK(std::fabs(geo->x()[i]) <= 3.0f && std::fabs(geo->y()[i]) <= 3.0f);
+            const float d = geo->findAttrib(AttribClass::point, "dir")->at(i);
+            CHECK(d >= 0.0f && d <= 1.0f);
+            spread += std::fabs(geo->x()[i]);
+        }
+        CHECK(spread / 3000.0 > 0.2);
+        CHECK(sameGeometry(*geo, *net.cook(att)));
+    }
+
+    Network threaded(5);
+    NodeId g2 = threaded.addNode("generate"), a2 = threaded.addNode("attractor");
+    threaded.connect(g2, a2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    threaded.node(a2).setString("type", "svensson");
+    for (const char* p : {"a", "b", "c", "d", "iterations", "scale"}) threaded.node(a2).setFloat(p, net.node(att).getFloat(p));
+    CHECK(sameGeometry(*geo, *threaded.cook(a2)));
+
+    net.node(att).setString("type", "lorenz");
+    CHECK(cookThrows(net, att));
+}
+
 }  // namespace
 
 int main() {

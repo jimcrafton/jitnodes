@@ -21,12 +21,15 @@
 
   .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
 
-  .palette { display: flex; flex-direction: column; gap: 4px; width: 150px; padding: 8px; background: var(--panel); border-radius: 4px; }
+  .nodeList { display: flex; flex-direction: column; gap: 2px; }
+  .nodeRow { display: flex; flex-direction: row; gap: 4px; }
+  .nodeRow button { flex-grow: 1; height: 22px; }
+  .palette { display: flex; flex-direction: column; gap: 4px; width: 190px; padding: 8px; background: var(--panel); border-radius: 4px; }
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
-  #assetListHost { height: 84px; background: var(--panelAlt); }
-  #assetDetails { height: 66px; font-size: 11px; color: var(--muted); }
+  #assetListHost { height: 60px; background: var(--panelAlt); }
+  #assetDetails { height: 48px; font-size: 11px; color: var(--muted); }
 
   .graphArea { display: flex; flex-direction: column; flex-grow: 1; gap: 4px; padding: 6px; background: var(--panel); border-radius: 4px; }
   .graphHeader { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 20px; }
@@ -91,30 +94,24 @@
   <div class="main">
     <div id="palettePanel" class="palette">
       <h3>Nodes</h3>
-      <button id="addLine">line</button>
-      <button id="addTransform">transform</button>
-      <button id="addWrangle">wrangle</button>
-      <button id="addMerge">merge</button>
-      <button id="addAttribCreate">attribCreate</button>
-      <button id="addResample">resample</button>
-      <button id="addSubdivide">subdivide</button>
-      <button id="addCopyToPoints">copyToPoints</button>
-      <button id="addBlast">blast</button>
-      <button id="addSubnet">subnet</button>
-      <button id="addSubnetInput">subnetInput</button>
-      <button id="addNull">null</button>
-      <button id="addGenerate">generate</button>
-      <button id="addScatter">scatter</button>
-      <button id="addNoise">noise</button>
-      <button id="addWarp">warp</button>
-      <button id="addColorRamp">colorRamp</button>
-      <button id="addRender">render</button>
+      <div class="nodeList">
+      <div class="nodeRow"><button id="addLine">line</button><button id="addTransform">transform</button></div>
+      <div class="nodeRow"><button id="addWrangle">wrangle</button><button id="addMerge">merge</button></div>
+      <div class="nodeRow"><button id="addAttribCreate">attribCreate</button><button id="addResample">resample</button></div>
+      <div class="nodeRow"><button id="addSubdivide">subdivide</button><button id="addCopyToPoints">copyToPoints</button></div>
+      <div class="nodeRow"><button id="addBlast">blast</button><button id="addSubnet">subnet</button></div>
+      <div class="nodeRow"><button id="addSubnetInput">subnetInput</button><button id="addNull">null</button></div>
+      <div class="nodeRow"><button id="addGenerate">generate</button><button id="addScatter">scatter</button></div>
+      <div class="nodeRow"><button id="addNoise">noise</button><button id="addWarp">warp</button></div>
+      <div class="nodeRow"><button id="addColorRamp">colorRamp</button><button id="addRelax">relax</button></div>
+      <div class="nodeRow"><button id="addAttribBlur">attribBlur</button><button id="addWave">wave</button></div>
+      <div class="nodeRow"><button id="addAttractor">attractor</button><button id="addRender">render</button></div>
+      </div>
       <hr>
       <h3>Assets</h3>
       <canvas id="assetListHost"></canvas>
       <span id="assetDetails">wobbleAsset v1: 1 input, 2 parameters (amount, speed), 1 in the graph</span>
-      <button id="addAssetButton">Add asset</button>
-      <button id="reloadAssetButton">Reload asset</button>
+      <div class="nodeRow"><button id="addAssetButton">Add asset</button><button id="reloadAssetButton">Reload asset</button></div>
       <button id="loadAssetButton">Load asset...</button>
     </div>
 

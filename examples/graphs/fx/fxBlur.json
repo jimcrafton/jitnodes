@@ -1,0 +1,28 @@
+// attribBlur smooths a per-point attribute over its neighbours. The same random values (rand) are shown raw, blurred once (radius 0.5)
+// and blurred four times (radius 1.2); each panel is stretched to the range its values really cover so the pictures are comparable.
+//   jitnodesCli examples/graphs/fx/fxBlur.json --png fxBlur.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "rawPoints", floats: { count: 20000, seed: 1, cx: -11, width: 10, height: 10 }, inputs: [] },
+    { id: 2, type: "colorRamp", name: "rawColor", floats: { min: 0, max: 1 }, strings: { attribute: "rand", ramp: "0 #0b0630, 0.5 #d9536f, 1 #ffe9a8" }, inputs: [1] },
+    { id: 3, type: "generate", name: "onceSource", floats: { count: 20000, seed: 1, cx: 0, width: 10, height: 10 }, inputs: [] },
+    { id: 4, type: "attribBlur", name: "blurOnce", floats: { radius: 0.5, iterations: 1 }, strings: { attribute: "rand", falloff: "linear" }, inputs: [3] },
+    { id: 5, type: "colorRamp", name: "onceColor", floats: { min: 0.3, max: 0.7 }, strings: { attribute: "rand", ramp: "0 #0b0630, 0.5 #d9536f, 1 #ffe9a8" }, inputs: [4] },
+    { id: 6, type: "generate", name: "fourSource", floats: { count: 20000, seed: 1, cx: 11, width: 10, height: 10 }, inputs: [] },
+    { id: 7, type: "attribBlur", name: "blurFour", floats: { radius: 1.2, iterations: 4 }, strings: { attribute: "rand", falloff: "linear" }, inputs: [6] },
+    { id: 8, type: "colorRamp", name: "fourColor", floats: { min: 0.43, max: 0.57 }, strings: { attribute: "rand", ramp: "0 #0b0630, 0.5 #d9536f, 1 #ffe9a8" }, inputs: [7] },
+    { id: 9, type: "merge", name: "all", inputs: [2, 5, 8] },
+    { id: 10, type: "wrangle", name: "look", strings: { code: "radius = 0.1; alpha = 1; softness = 0.4;" }, inputs: [9] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, width: 700, height: 350, viewWidth: 34 },
+      strings: { background: "#05060c" },
+      inputs: [10]
+    }
+  ]
+}
