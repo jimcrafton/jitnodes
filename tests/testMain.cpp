@@ -4413,11 +4413,172 @@ TEST(wrangleComparesStringAttributesWithLiterals) {
     CHECK(!wrangleThrows("hit = label == \"quote\\\"d\";", input));
 }
 
-TEST(stringAttributesAreNotSavedUntilTheFormatsKnowThem) {
-    const Geometry g = labelled({"tree"}, {});
+namespace {
+
+Geometry stringSample() {
+    Geometry g = sampleGeometry();
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    label.intern("unused");
+    const char* words[] = {"tree", "caf\xc3\xa9", "quote\"back\\slash\n", "", "\xf0\x9f\x8c\xb3"};
+    for (size_t i = 0; i < 37; ++i) label.ints()[i] = label.intern(words[i % 5]);
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road");
+    cls.ints()[1] = cls.intern("river");
+    return g;
+}
+
+bool sameTables(const Geometry& a, const Geometry& b) {
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        for (const auto& [name, array] : a.attribs(cls)) {
+            if (array.type() != AttribType::string) continue;
+            const AttribArray* other = b.findAttrib(cls, name);
+            if (other == nullptr || other->table().strings != array.table().strings) return false;
+        }
+    }
+    return true;
+}
+
+size_t sectionAt(const std::vector<uint8_t>& bytes, uint32_t id) {
+    uint64_t offset;
+    std::memcpy(&offset, bytes.data() + 64 + 24 * (id - 1) + 8, 8);
+    return static_cast<size_t>(offset);
+}
+
+}  // namespace
+
+TEST(geoFileKeepsStringAttributesWithTheirTables) {
+    const Geometry g = stringSample();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    CHECK(bytes.size() % 64 == 0);
+    const Geometry back = loadGeometry(bytes.data(), bytes.size());
+    back.checkStrings();
+    CHECK(sameBits(g, back));
+    CHECK(sameTables(g, back));
+    CHECK(saveGeometry(back) == bytes);
+    CHECK(back.findAttrib(AttribClass::point, "label")->stringAt(2) == "quote\"back\\slash\n");
+    CHECK(back.findAttrib(AttribClass::primitive, "class")->stringAt(1) == "river");
+
+    // A file without string attributes has the same layout as 1.0 except the minor version.
+    const std::vector<uint8_t> plain = saveGeometry(sampleGeometry());
+    CHECK(plain[20] == 6 && bytes[20] == 7);
+    CHECK(plain[8] == 1 && plain[10] == 1);
+    const Geometry none = labelled({}, {});
+    const std::vector<uint8_t> noneBytes = saveGeometry(none);
+    CHECK(sameBits(none, loadGeometry(noneBytes.data(), noneBytes.size())));
+
+    // Merged geometries save and load like any other: the table is the merged one.
+    const Geometry first = labelled({"a", "b"}, {}), second = labelled({"b", "c"}, {"c"});
+    const Geometry merged = Geometry::concat({&first, &second}, nullptr);
+    const std::vector<uint8_t> mergedBytes = saveGeometry(merged);
+    CHECK(labelsOf(loadGeometry(mergedBytes.data(), mergedBytes.size())) == labelsOf(merged));
+}
+
+TEST(geoFileRejectsStringDataThatDoesNotFitItsTable) {
+    const Geometry small = labelled({"a", "b", "a"}, {});
+    const std::vector<uint8_t> bytes = saveGeometry(small);
+    const size_t tables = sectionAt(bytes, 7), payload = sectionAt(bytes, 6);
+    CHECK(!loadFails(bytes, bytes.size()));
+    const auto patched = [&](size_t at, std::vector<uint8_t> values) {
+        std::vector<uint8_t> mutated = bytes;
+        for (size_t i = 0; i < values.size(); ++i) mutated[at + i] = values[i];
+        refreshChecksum(mutated);
+        return loadFails(mutated, mutated.size());
+    };
+    // Layout: u64 table count, then u32 attribute, u32 count, u32 offsets[4], text "ab".
+    CHECK(patched(payload, {3, 0, 0, 0}));
+    CHECK(patched(payload, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(patched(payload + 8, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(!patched(payload, {2, 0, 0, 0}));
+    CHECK(patched(tables, {0, 0, 0, 0, 0, 0, 0, 0}));
+    CHECK(patched(tables, {2, 0, 0, 0, 0, 0, 0, 0}));
+    CHECK(patched(tables + 8, {1, 0, 0, 0}));
+    CHECK(patched(tables + 8, {9, 0, 0, 0}));
+    CHECK(patched(tables + 12, {0, 0, 0, 0}));
+    CHECK(patched(tables + 12, {0xff, 0xff, 0xff, 0x7f}));
+    CHECK(patched(tables + 12, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(patched(tables + 12, {4, 0, 0, 0}));
+    CHECK(patched(tables + 20, {1, 0, 0, 0}));
+    CHECK(patched(tables + 32, {0xff}));
+    CHECK(patched(tables + 32, {0xc3}));
+    CHECK(patched(tables + 33, {'a'}));
+    CHECK(!patched(tables + 33, {'c'}));
+    CHECK(!patched(tables + 32, {0}));
+}
+
+TEST(geoFileRejectsEveryTruncationAndByteFlipWithStrings) {
+    const std::vector<uint8_t> bytes = saveGeometry(stringSample());
+    for (size_t length = 0; length < bytes.size(); ++length) CHECK(loadFails(bytes, length));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 8 || i == 9) continue;
+        std::vector<uint8_t> mutated = bytes;
+        mutated[i] ^= 0x5a;
+        CHECK(loadFails(mutated, mutated.size()));
+    }
+}
+
+TEST(geoFileWithStringsSurvivesMutationsWithAValidChecksum) {
+    const std::vector<uint8_t> bytes = saveGeometry(stringSample());
+    size_t rejected = 0;
+    for (size_t i = 64; i < bytes.size(); ++i) {
+        for (uint8_t value : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x7f), uint8_t(0x80), uint8_t(0xff)}) {
+            std::vector<uint8_t> mutated = bytes;
+            if (mutated[i] == value) continue;
+            mutated[i] = value;
+            refreshChecksum(mutated);
+            try {
+                const Geometry g = loadGeometry(mutated.data(), mutated.size());
+                g.checkStrings();
+                for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+                    for (const auto& [name, array] : g.attribs(cls)) CHECK(array.size() == g.count(cls));
+            } catch (const std::runtime_error&) {
+                ++rejected;
+            }
+        }
+    }
+    CHECK(rejected > 1000);
+}
+
+TEST(stringTextThatIsNotUtf8IsNotSaved) {
+    Geometry g = labelled({"ok"}, {});
+    g.attrib(AttribClass::point, "label", AttribType::string).intern("bad\xff");
     bool threw = false;
     try {
         saveGeometry(g);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(graphJsonKeepsStringAttributesOfInlineGeometry) {
+    if (!NodeRegistry::instance().has("testGeoParam")) NodeRegistry::instance().registerType("testGeoParam", [] { return std::make_unique<GeoParamNode>(); });
+    Geometry g = labelled({"tree", "caf\xc3\xa9", "quote\"back\\slash\n", "", "tree", "\xf0\x9f\x8c\xb3"}, {"unused"});
+    g.addPrimitive({0, 3, false, PrimKind::polyline});
+    g.addPrimitive({3, 3, true, PrimKind::polyline});
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road");
+    cls.ints()[1] = cls.intern("river");
+    Network net;
+    const NodeId id = net.addNode("testGeoParam");
+    net.node(id).setGeometryParam("curve", std::make_shared<Geometry>(g));
+    const std::string text = saveNetwork(net);
+    CHECK(text.find("primStrings") != std::string::npos);
+
+    Network loaded;
+    loadNetwork(loaded, text);
+    const GeometryHandle back = loaded.node(loaded.nodeIds()[0]).geometryParam("curve");
+    back->checkStrings();
+    CHECK(sameGeometry(g, *back));
+    CHECK(back->findAttrib(AttribClass::point, "label")->stringAt(2) == "quote\"back\\slash\n");
+    CHECK(back->findAttrib(AttribClass::primitive, "class")->stringAt(1) == "river");
+    CHECK(saveNetwork(loaded) == text);
+
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    label.ints()[0] = label.intern("bad\xff");
+    net.node(id).setGeometryParam("curve", std::make_shared<Geometry>(g));
+    bool threw = false;
+    try {
+        saveNetwork(net);
     } catch (const std::runtime_error&) {
         threw = true;
     }

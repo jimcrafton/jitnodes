@@ -5,10 +5,12 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string_view>
 
+#include "jitnodes/core/utf8.h"
 #include "jitnodes/core/xxhash.h"
 
 namespace jitnodes {
@@ -19,7 +21,8 @@ static_assert(std::endian::native == std::endian::little, ".jngeo is little-endi
 
 constexpr char magic[8] = {'J', 'N', 'G', 'E', 'O', '1', 0, 0};
 constexpr uint32_t formatMajor = 1;
-constexpr uint32_t formatVersion = formatMajor << 16;
+constexpr uint32_t formatMinor = 1;
+constexpr uint32_t formatVersion = (formatMajor << 16) | formatMinor;
 constexpr uint32_t endianMarker = 0x01020304;
 constexpr size_t headerSize = 64;
 constexpr size_t sectionEntrySize = 24;
@@ -27,13 +30,21 @@ constexpr size_t alignment = 64;
 constexpr size_t maxSections = 64;
 constexpr uint64_t maxElements = 0x7fffffff;
 
-enum SectionId : uint32_t { strings = 1, counts = 2, prims = 3, attribs = 4, details = 5, payload = 6, sectionTotal = 6 };
+// stringTables (1.1) exists only when an attribute is a string attribute; the payload stays last in the file.
+enum SectionId : uint32_t { strings = 1, counts = 2, prims = 3, attribs = 4, details = 5, payload = 6, stringTables = 7, sectionTotal = 7 };
 
 constexpr size_t primEntrySize = 12;
 constexpr size_t attribEntrySize = 32;
 constexpr size_t detailEntrySize = 8;
 
 size_t alignUp(size_t n) { return (n + alignment - 1) & ~(alignment - 1); }
+
+// One table of the stringTables section: u32 attribute index, u32 count, u32 offsets[count + 1], the text, padded to 4 bytes.
+size_t tableBytes(const StringTable& table) {
+    size_t text = 0;
+    for (const std::string& s : table.strings) text += s.size();
+    return (8 + 4 * (table.strings.size() + 1) + text + 3) & ~size_t{3};
+}
 
 template <class T>
 void put(std::vector<uint8_t>& out, size_t at, T value) {
@@ -81,10 +92,17 @@ std::vector<uint8_t> saveGeometry(const Geometry& geo) {
         uint64_t offset;
     };
     std::vector<Dir> dir;
+    std::vector<size_t> stringDir;
+    size_t tablesSize = 8;
     uint64_t payloadBytes = 0;
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
         for (const auto& [name, array] : geo.attribs(cls)) {
-            if (array.type() == AttribType::string) throw std::runtime_error("string attribute '" + name + "' cannot be saved yet");
+            if (array.type() == AttribType::string) {
+                for (const std::string& s : array.table().strings)
+                    if (!isValidUtf8(s)) throw std::runtime_error("string attribute '" + name + "' holds text that is not valid UTF-8");
+                stringDir.push_back(dir.size());
+                tablesSize += tableBytes(array.table());
+            }
             dir.push_back({intern(name), cls, &array, payloadBytes});
             payloadBytes += static_cast<uint64_t>(array.paddedSize()) * 4;
         }
@@ -102,10 +120,17 @@ std::vector<uint8_t> saveGeometry(const Geometry& geo) {
     sizes[attribs] = 8 + attribEntrySize * dir.size();
     sizes[details] = 8 + detailEntrySize * geo.details().size();
     sizes[payload] = payloadBytes;
+    sizes[stringTables] = tablesSize;
+
+    const bool hasTables = !stringDir.empty();
+    const uint32_t sectionCount = hasTables ? stringTables : payload;
+    std::vector<uint32_t> layout = {strings, counts, prims, attribs, details};
+    if (hasTables) layout.push_back(stringTables);
+    layout.push_back(payload);
 
     size_t offsets[sectionTotal + 1] = {};
-    size_t cursor = alignUp(headerSize + sectionEntrySize * sectionTotal);
-    for (uint32_t id = strings; id <= payload; ++id) {
+    size_t cursor = alignUp(headerSize + sectionEntrySize * sectionCount);
+    for (uint32_t id : layout) {
         offsets[id] = cursor;
         cursor = alignUp(cursor + sizes[id]);
     }
@@ -115,9 +140,9 @@ std::vector<uint8_t> saveGeometry(const Geometry& geo) {
     std::memcpy(out.data(), magic, sizeof(magic));
     put<uint32_t>(out, 8, formatVersion);
     put<uint32_t>(out, 12, endianMarker);
-    put<uint32_t>(out, 20, sectionTotal);
+    put<uint32_t>(out, 20, sectionCount);
     put<uint64_t>(out, 24, fileSize);
-    for (uint32_t id = strings; id <= payload; ++id) {
+    for (uint32_t id = strings; id <= sectionCount; ++id) {
         const size_t entry = headerSize + sectionEntrySize * (id - 1);
         put<uint32_t>(out, entry, id);
         put<uint64_t>(out, entry + 8, offsets[id]);
@@ -174,6 +199,26 @@ std::vector<uint8_t> saveGeometry(const Geometry& geo) {
         put<float>(out, e + 4, value);
     }
 
+    if (hasTables) {
+        at = offsets[stringTables];
+        put<uint64_t>(out, at, stringDir.size());
+        at += 8;
+        for (size_t index : stringDir) {
+            const StringTable& table = dir[index].array->table();
+            put<uint32_t>(out, at, static_cast<uint32_t>(index));
+            put<uint32_t>(out, at + 4, static_cast<uint32_t>(table.strings.size()));
+            const size_t tableText = at + 8 + 4 * (table.strings.size() + 1);
+            uint32_t used = 0;
+            for (size_t i = 0; i < table.strings.size(); ++i) {
+                put<uint32_t>(out, at + 8 + 4 * i, used);
+                std::memcpy(out.data() + tableText + used, table.strings[i].data(), table.strings[i].size());
+                used += static_cast<uint32_t>(table.strings[i].size());
+            }
+            put<uint32_t>(out, at + 8 + 4 * table.strings.size(), used);
+            at += tableBytes(table);
+        }
+    }
+
     put<uint64_t>(out, 32, xxh64(out.data() + headerSize, fileSize - headerSize));
     return out;
 }
@@ -206,7 +251,7 @@ Geometry loadGeometry(const uint8_t* data, size_t size) {
         std::memcpy(&bytes, data + e + 16, 8);
         if (flags != 0) bad("unknown section flags");
         if (offset % alignment != 0 || offset < tableEnd || offset > size || bytes > size - offset) bad("section outside the file");
-        if (id < strings || id > payload) continue;
+        if (id < strings || id > stringTables) continue;
         if (sections[id].present) bad("duplicate section");
         sections[id] = {data + offset, static_cast<size_t>(bytes), true};
     }
@@ -266,7 +311,7 @@ Geometry loadGeometry(const uint8_t* data, size_t size) {
         a.offset = attribSec.get<uint64_t>(e + 16);
         const uint64_t bytes = attribSec.get<uint64_t>(e + 24);
         if (nameIdx >= nameCount || names[nameIdx].empty()) bad("bad attribute name");
-        if (cls > static_cast<uint8_t>(AttribClass::primitive) || type > static_cast<uint8_t>(AttribType::int32)) bad("bad attribute class or type");
+        if (cls > static_cast<uint8_t>(AttribClass::primitive) || type > static_cast<uint8_t>(AttribType::string)) bad("bad attribute class or type");
         a.name = names[nameIdx];
         a.cls = static_cast<AttribClass>(cls);
         a.type = static_cast<AttribType>(type);
@@ -283,6 +328,49 @@ Geometry loadGeometry(const uint8_t* data, size_t size) {
     }
     if (!hasX || !hasY) bad("missing point attributes x and y");
 
+    std::vector<std::shared_ptr<const StringTable>> tables(entries.size());
+    size_t tableCount = 0;
+    if (sections[stringTables].present) {
+        const Section& ts = sections[stringTables];
+        if (ts.size < 8) bad("string tables section too small");
+        const uint64_t declared = ts.get<uint64_t>(0);
+        if (declared > (ts.size - 8) / 16) bad("string tables larger than their section");
+        size_t at = 8;
+        for (uint64_t t = 0; t < declared; ++t) {
+            if (ts.size - at < 8) bad("string table past the end");
+            const uint32_t index = ts.get<uint32_t>(at), count = ts.get<uint32_t>(at + 4);
+            if (index >= entries.size() || entries[index].type != AttribType::string || tables[index]) bad("string table for a bad attribute");
+            if (count == 0 || count > maxStrings) bad("bad string count");
+            const size_t offsetBytes = 4 * (static_cast<size_t>(count) + 1);
+            if (offsetBytes > ts.size - at - 8) bad("string table larger than its section");
+            const size_t base = at + 8, tableText = base + offsetBytes, textLimit = ts.size - tableText;
+            auto table = std::make_shared<StringTable>();
+            table->strings.clear();
+            table->index.clear();
+            table->strings.reserve(count);
+            uint32_t from = 0;
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t start = ts.get<uint32_t>(base + 4 * static_cast<size_t>(i));
+                const uint32_t end = ts.get<uint32_t>(base + 4 * static_cast<size_t>(i) + 4);
+                if (start != from || end < start || end > textLimit) bad("string offsets out of order");
+                const std::string_view text(reinterpret_cast<const char*>(ts.data + tableText + start), end - start);
+                if (i == 0 && !text.empty()) bad("first string is not empty");
+                if (!isValidUtf8(text)) bad("string is not valid UTF-8");
+                if (!table->index.emplace(std::string(text), static_cast<int32_t>(i)).second) bad("duplicate string");
+                table->strings.emplace_back(text);
+                from = end;
+            }
+            at = (tableText + from + 3) & ~size_t{3};
+            if (at > ts.size) bad("string table past the end");
+            tables[index] = std::move(table);
+            ++tableCount;
+        }
+        if (at != ts.size) bad("string tables section has trailing bytes");
+    }
+    size_t stringAttribs = 0;
+    for (const AttribEntry& a : entries) stringAttribs += a.type == AttribType::string;
+    if (stringAttribs != tableCount) bad("string attribute without a string table");
+
     const Section& detailSec = sections[details];
     if (detailSec.size < 8) bad("detail table too small");
     const uint64_t detailCount = detailSec.get<uint64_t>(0);
@@ -298,9 +386,15 @@ Geometry loadGeometry(const uint8_t* data, size_t size) {
     Geometry geo;
     geo.resizePoints(static_cast<size_t>(pointCount));
     for (const Primitive& p : primitives) geo.addPrimitive(p);
-    for (const AttribEntry& a : entries) {
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const AttribEntry& a = entries[i];
         AttribArray& array = geo.attrib(a.cls, std::string(a.name), a.type);
         if (a.count) std::memcpy(array.data(), sections[payload].data + a.offset, static_cast<size_t>(a.count) * 4);
+        if (a.type != AttribType::string) continue;
+        const size_t idCount = tables[i]->strings.size();
+        for (size_t k = 0; k < a.count; ++k)
+            if (array.ints()[k] < 0 || static_cast<size_t>(array.ints()[k]) >= idCount) bad("string id outside its table");
+        array.setTable(std::move(tables[i]));
     }
     for (const auto& [name, value] : detailValues) geo.setDetail(name, value);
     return geo;

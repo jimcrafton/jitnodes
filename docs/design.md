@@ -374,7 +374,12 @@ safe:
    whatever the text, and the test checks that changing a literal does not compile again. Original plan text:
    Wrangle: literal comparison, `stringParams`, read-only check, fusion rebasing, interpreter parity. Tests in the style of
    `docs/wrangle.md` (fused and unfused agree; a literal missing from the table matches nothing; `""` matches id 0).
-4. `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
+4. *Done* (145 tests, ASan clean): `.jngeo` 1.1 with section 7 and type byte 2, graph JSON `"strings"`/`"primStrings"`, strict UTF-8 check
+   (`core/utf8.h`) on save and load. The whole table is stored, so a loaded geometry saves to the same bytes; JSON keeps only the text and
+   rebuilds the table in first-use order. Tests: `geoFileKeepsStringAttributesWithTheirTables`, `geoFileRejectsStringDataThatDoesNotFitItsTable`
+   (patches single table fields and ids), the truncation/byte-flip/valid-checksum tests repeated on a string file, `stringTextThatIsNotUtf8IsNotSaved`,
+   `graphJsonKeepsStringAttributesOfInlineGeometry`. Format described in `geometryFiles.md`. Original plan text:
+   `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
 5. `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,
    `geometryFiles.md`, `fx.md` or a new `strings.md`).
 
