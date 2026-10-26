@@ -403,6 +403,7 @@ state, so the thread count does not matter).
 | `avoid`, `avoidDistance`, `obstacleRadius` | 3, 1, 0.5 | steering away from obstacles (see below): weight, how far outside an obstacle's edge it starts, and the radius of obstacles that have no `radius` attribute |
 | `wander`, `wanderScale`, `wanderSpeed` | 0, 0.2, 0.2 | a curl-noise acceleration that keeps the flock from settling: strength, feature size and evolution speed |
 | `boundary` | `wrap` | `wrap` (leave one side, return on the other), `bounce` (reflect at the box) or `none` |
+| `obstacleTime` | `start` | `start`: obstacles as the inputs hold them now; `sampled`: cook the obstacle chain at each step's time (see below) |
 | `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box for `wrap` and `bounce` |
 
 Input attributes `vx` and `vy` give the initial velocities; without them every boid starts at a random heading with the mean of
@@ -421,9 +422,21 @@ into the picture as discs, as in the example.
 at `startTime` and is at `position + velocity * (time - startTime)` after that. A boid pushed by a moving rock also takes the
 rock's velocity into account (it loses only the velocity *relative* to the rock that points into it). The positions follow the
 simulation's own clock, so a moving obstacle does not restart the simulation and the result is still a pure function of time. Only
-straight-line motion is supported this way; an obstacle input that is itself animated by the playhead (a node that depends on
-time upstream) is a new geometry at every time, so it is read when the simulation starts and restarts the simulation at every new
-time: the right picture, but a simulation from the start each frame.
+straight-line motion is supported this way.
+
+**Obstacles animated by the playhead (`obstacleTime`).** An obstacle input that depends on time upstream (a keyframed or
+`time`-driven `transform`, another simulation) is read as it is *now* with the default `obstacleTime = start`: the simulation
+runs with that one snapshot of the obstacles, and restarts whenever the snapshot (positions, radii, velocities) differs from the
+one it started with. That is the right picture at each time but not a pure function of time: jumping to a frame gives a
+different result from playing up to it. With `obstacleTime = sampled` the node keeps a private copy of the graph and cooks the
+obstacle chain at the time of every simulation step (`startTime + step / stepsPerSecond`), so the flock meets the rock where it
+really was, and jumping, scrubbing back and playing all give the same picture. The obstacle velocity for the push-away comes from
+the movement between consecutive steps (the `vx` / `vy` attributes when the point count changes). Costs and limits:
+- the obstacle chain is cooked once per step in the private copy (on top of its normal cook), so keep it light;
+- the copy is rebuilt, and the flock restarts, when anything upstream of an obstacle input changes (compared by the saved text of
+  those nodes; nodes outside the chain that its expressions refer to are not tracked);
+- obstacles that come from a subnet input cannot be sampled (an error says so), because the copy has no outer inputs;
+- `vx` / `vy` drift is not applied in this mode: the positions at each step are the truth.
 
 ![two flocks: swarms and a gas](images/fxBoids.png)
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "jitnodes/graph/network.h"
+#include "jitnodes/graph/serialize.h"
 #include "noise.h"
 #include "nodeUtil.h"
 #include "pointGrid.h"
@@ -356,9 +357,9 @@ struct BoidsSettings {
 
 struct BoidsState {
     GeometryHandle source;
-    std::vector<GeometryHandle> obstacleSources;
+    std::vector<float> obstacleContent;  // what the obstacle inputs held when the run started (obstacleTime = start)
     std::vector<float> signature;
-    std::string boundary;
+    std::string boundary, obstacleTime;
     int64_t step = -1;
     std::vector<float> x, y, vx, vy, nx, ny, nvx, nvy, neighbors;
     std::vector<float> ox, oy, orad;
@@ -388,6 +389,101 @@ void gatherObstacles(BoidsState& st, const std::vector<GeometryHandle>& in, cons
     }
     st.ox = st.baseX;
     st.oy = st.baseY;
+}
+
+// x, y, radius, vx, vy of every obstacle point: equal content means the same obstacles, whatever geometry objects carry them.
+std::vector<float> obstacleContent(const std::vector<GeometryHandle>& in, const BoidsSettings& s) {
+    std::vector<float> out;
+    for (size_t k = 1; k < in.size(); ++k) {
+        const Geometry& g = *in[k];
+        const AttribArray* radius = g.findAttrib(AttribClass::point, "radius");
+        const AttribArray* avx = g.findAttrib(AttribClass::point, "vx");
+        const AttribArray* avy = g.findAttrib(AttribClass::point, "vy");
+        out.push_back(static_cast<float>(g.pointCount()));
+        for (size_t i = 0; i < g.pointCount(); ++i) {
+            out.push_back(std::as_const(g).x()[i]);
+            out.push_back(std::as_const(g).y()[i]);
+            out.push_back(radius ? std::max(radius->at(i), 0.0f) : s.obstacleRadius);
+            out.push_back(avx ? avx->at(i) : 0.0f);
+            out.push_back(avy ? avy->at(i) : 0.0f);
+        }
+    }
+    return out;
+}
+
+// obstacleTime = sampled: the obstacles of one step, cooked at that step's time. A velocity follows from the movement since the previous
+// step when the point count is unchanged, else from the vx/vy attributes.
+void loadObstacleSample(BoidsState& st, const std::vector<GeometryHandle>& geoms, const BoidsSettings& s) {
+    const std::vector<float> previousX = std::move(st.ox), previousY = std::move(st.oy);
+    st.ox.clear();
+    st.oy.clear();
+    st.orad.clear();
+    st.ovx.clear();
+    st.ovy.clear();
+    st.obstacleReach = 0.0f;
+    for (const GeometryHandle& handle : geoms) {
+        const Geometry& g = *handle;
+        const AttribArray* radius = g.findAttrib(AttribClass::point, "radius");
+        const AttribArray* avx = g.findAttrib(AttribClass::point, "vx");
+        const AttribArray* avy = g.findAttrib(AttribClass::point, "vy");
+        for (size_t i = 0; i < g.pointCount(); ++i) {
+            st.ox.push_back(std::as_const(g).x()[i]);
+            st.oy.push_back(std::as_const(g).y()[i]);
+            st.ovx.push_back(avx ? avx->at(i) : 0.0f);
+            st.ovy.push_back(avy ? avy->at(i) : 0.0f);
+            st.orad.push_back(radius ? std::max(radius->at(i), 0.0f) : s.obstacleRadius);
+            st.obstacleReach = std::max(st.obstacleReach, st.orad.back());
+        }
+    }
+    if (st.ox.size() == previousX.size()) {
+        for (size_t j = 0; j < st.ox.size(); ++j) {
+            st.ovx[j] = (st.ox[j] - previousX[j]) / s.dt;
+            st.ovy[j] = (st.oy[j] - previousY[j]) / s.dt;
+        }
+    }
+    if (!st.ox.empty()) st.obstacleGrid.build(st.ox.data(), st.oy.data(), st.ox.size(), std::max(st.obstacleReach + s.avoidDistance, 1e-3f));
+}
+
+// A private copy of the graph in which the obstacle chain can be cooked at any time without touching the real caches. It is rebuilt when
+// anything upstream of an obstacle input changes (compared by the saved text of those nodes), which also restarts the flock.
+struct ObstacleSampler {
+    std::unique_ptr<Network> net;
+    std::vector<std::string> fingerprint;
+    std::vector<NodeId> inputs;
+};
+
+// Returns true when the sampler was (re)built.
+bool refreshSampler(ObstacleSampler& sampler, Network& real, NodeId self, size_t inputCount) {
+    std::vector<NodeId> inputs;
+    std::vector<std::string> fingerprint;
+    for (size_t k = 1; k < inputCount; ++k) {
+        const NodeId id = real.inputOf(self, static_cast<int>(k));
+        if (id == invalidNodeId) continue;
+        inputs.push_back(id);
+        fingerprint.push_back("input " + std::to_string(id));
+        for (NodeId upstream : real.executionOrder(id)) {
+            if (real.node(upstream).typeName() == "subnetInput")
+                throw std::runtime_error("boids: obstacleTime 'sampled' cannot follow obstacles that come from a subnet input");
+            const NodeClip clip = copyNode(real, upstream);
+            std::string text = clip.type + "\n" + clip.name + "\n" + *clip.text;
+            for (const std::string& name : clip.inputNames) text += "\n" + name;
+            fingerprint.push_back(std::move(text));
+        }
+    }
+    if (sampler.net && sampler.fingerprint == fingerprint) return false;
+    auto copy = std::make_unique<Network>(1);
+    loadNetwork(*copy, saveNetwork(real, false, true));
+    sampler.net = std::move(copy);
+    sampler.fingerprint = std::move(fingerprint);
+    sampler.inputs = std::move(inputs);
+    return true;
+}
+
+std::vector<GeometryHandle> sampleObstacles(ObstacleSampler& sampler, double time) {
+    sampler.net->setTime(time);
+    std::vector<GeometryHandle> out;
+    for (NodeId id : sampler.inputs) out.push_back(sampler.net->cook(id));
+    return out;
 }
 
 void placeObstacles(BoidsState& st, const BoidsSettings& s, float simTime) {
@@ -576,6 +672,7 @@ public:
         declareFloat("avoidDistance", 1.0f);
         declareFloat("obstacleRadius", 0.5f);
         declareString("boundary", "wrap");
+        declareString("obstacleTime", "start");
         declareFloat("boundsMinX", -10.0f);
         declareFloat("boundsMaxX", 10.0f);
         declareFloat("boundsMinY", -6.0f);
@@ -589,6 +686,10 @@ public:
         const std::string& boundary = getString("boundary");
         if (boundary != "none" && boundary != "bounce" && boundary != "wrap")
             throw std::runtime_error("boids: boundary must be 'none', 'bounce' or 'wrap', got '" + boundary + "'");
+        const std::string& obstacleTime = getString("obstacleTime");
+        if (obstacleTime != "start" && obstacleTime != "sampled")
+            throw std::runtime_error("boids: obstacleTime must be 'start' or 'sampled', got '" + obstacleTime + "'");
+        const bool sampled = obstacleTime == "sampled";
         BoidsSettings s;
         const float stepsPerSecond = std::clamp(getFloat("stepsPerSecond"), 10.0f, 1000.0f);
         s.dt = 1.0f / stepsPerSecond;
@@ -624,18 +725,34 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         BoidsState& st = state_;
-        const std::vector<GeometryHandle> obstacleSources(in.begin() + 1, in.end());
-        if (st.step < 0 || st.source != in[0] || st.obstacleSources != obstacleSources || st.signature != signature || st.boundary != boundary || target < st.step) {
+        bool rebuilt = false;
+        if (sampled) {
+            if (ctx.network == nullptr) throw std::runtime_error("boids: obstacleTime 'sampled' needs the node to cook inside a network");
+            rebuilt = refreshSampler(sampler_, *ctx.network, id(), in.size());
+        } else {
+            sampler_ = ObstacleSampler();
+        }
+        const std::vector<float> content = sampled ? std::vector<float>() : obstacleContent(in, s);
+        const double startTime = getFloat("startTime");
+        if (st.step < 0 || st.source != in[0] || rebuilt || st.obstacleContent != content || st.signature != signature || st.boundary != boundary ||
+            st.obstacleTime != obstacleTime || target < st.step) {
             st = BoidsState();
             st.source = in[0];
-            st.obstacleSources = obstacleSources;
+            st.obstacleContent = content;
             st.signature = std::move(signature);
             st.boundary = boundary;
+            st.obstacleTime = obstacleTime;
             initialiseBoids(st, *in[0], s);
-            gatherObstacles(st, in, s);
-            placeObstacles(st, s, 0.0f);
+            if (sampled) loadObstacleSample(st, sampleObstacles(sampler_, startTime), s);
+            else {
+                gatherObstacles(st, in, s);
+                placeObstacles(st, s, 0.0f);
+            }
         }
-        for (int64_t step = st.step + 1; step <= target; ++step) advanceBoids(st, s, step, ctx.pool);
+        for (int64_t step = st.step + 1; step <= target; ++step) {
+            if (sampled) loadObstacleSample(st, sampleObstacles(sampler_, startTime + static_cast<double>(step) * s.dt), s);
+            advanceBoids(st, s, step, ctx.pool);
+        }
         st.step = target;
 
         auto geo = std::make_shared<Geometry>(*in[0]);
@@ -663,6 +780,7 @@ public:
 
 private:
     BoidsState state_;
+    ObstacleSampler sampler_;
 };
 
 struct Spring {

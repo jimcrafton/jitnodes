@@ -3758,6 +3758,80 @@ TEST(boidsObstaclesDriftWithTheirVelocityWithoutRestarting) {
     CHECK(!sameGeometry(*walked.back(), *net.cook(sim)));
 }
 
+namespace {
+
+struct MovingRock {
+    Network net{2};
+    NodeId gen, rock, move, sized, sim;
+
+    explicit MovingRock(const char* obstacleTime) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 300.0f);
+        net.node(gen).setFloat("width", 10.0f);
+        net.node(gen).setFloat("height", 10.0f);
+        rock = net.addNode("generate");
+        net.node(rock).setFloat("count", 1.0f);
+        net.node(rock).setFloat("width", 0.0f);
+        net.node(rock).setFloat("height", 0.0f);
+        move = net.addNode("transform");
+        net.connect(rock, move);
+        net.node(move).setExpression("tx", "1.5 * time");
+        sized = net.addNode("wrangle");
+        net.connect(move, sized);
+        net.node(sized).setString("code", "radius = 1.5;");
+        sim = net.addNode("boids");
+        net.connect(gen, sim);
+        net.connect(sized, sim, 1);
+        net.node(sim).setFloat("radius", 1.5f);
+        for (const char* p : {"boundsMinX", "boundsMinY"}) net.node(sim).setFloat(p, -12.0f);
+        for (const char* p : {"boundsMaxX", "boundsMaxY"}) net.node(sim).setFloat(p, 12.0f);
+        net.node(sim).setString("obstacleTime", obstacleTime);
+    }
+};
+
+}  // namespace
+
+TEST(boidsSampledObstaclesFollowAMovingInputAsAPureFunctionOfTime) {
+    MovingRock stepped("sampled");
+    std::vector<GeometryHandle> walked;
+    for (double t : {0.5, 1.0, 2.0, 3.0}) {
+        stepped.net.setTime(t);
+        const GeometryHandle g = stepped.net.cook(stepped.sim);
+        const float cx = 1.5f * static_cast<float>(t);
+        for (size_t i = 0; i < g->pointCount(); ++i) CHECK(std::hypot(g->x()[i] - cx, g->y()[i]) >= 1.5f - 0.01f);
+        walked.push_back(g);
+    }
+
+    MovingRock jump("sampled");
+    jump.net.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *jump.net.cook(jump.sim)));
+
+    // Going back in time and forward again gives the same picture.
+    stepped.net.setTime(1.0);
+    CHECK(sameGeometry(*walked[1], *stepped.net.cook(stepped.sim)));
+    stepped.net.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *stepped.net.cook(stepped.sim)));
+
+    // Editing anything upstream of the obstacle changes the run: a rock that moves faster pushes the flock elsewhere.
+    stepped.net.node(stepped.move).setExpression("tx", "3 * time");
+    CHECK(!sameGeometry(*walked.back(), *stepped.net.cook(stepped.sim)));
+
+    // 'start' keeps its old meaning: the rock is where the input has it now, for the whole run.
+    MovingRock frozen("start");
+    frozen.net.setTime(3.0);
+    CHECK(!sameGeometry(*walked.back(), *frozen.net.cook(frozen.sim)));
+
+    MovingRock bad("sometimes");
+    bad.net.setTime(1.0);
+    bool threw = false;
+    try {
+        bad.net.cook(bad.sim);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 TEST(ribbonWidensCurvesIntoOutlinesEdgesAndRungs) {
     Network net(2);
     NodeId line = net.addNode("line");

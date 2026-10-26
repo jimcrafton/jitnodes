@@ -428,7 +428,12 @@ complete. Recommendation: (4) plus the four buttons squeezed in with option (2);
 without a layout change. Steps: edit `editor/mockups/mainWindow.html`, reconvert with `html-mockup-to-newui`, extend the palette table in
 `editorWindow.cpp`, add the buttons to the every-palette-button GUI test. GUI tests need the user's go-ahead (they send input).
 
-**C. Boids obstacles cooked at other times.** The real defect today: an obstacle input that depends on the playhead gets a new
+**C. Boids obstacles cooked at other times.** *Done (150 tests, ASan clean, uncommitted):* both parts. The restart check now compares obstacle
+*content* (`obstacleContent`: x, y, radius, vx, vy) instead of geometry handles, so re-cooks that give the same obstacles no longer restart the flock;
+`obstacleTime = sampled` is option 1 (private copy of the graph made with `saveNetwork`/`loadNetwork`, upstream chain cooked at each step time,
+fingerprint = `copyNode` text of the upstream nodes). Details and limits in `fx.md`. Test `boidsSampledObstaclesFollowAMovingInputAsAPureFunctionOfTime`
+(jump = playing up to it = going back and forward; an edit upstream changes the run; checked to fail with `start`). Not done: sampling every k-th step
+with interpolation (cost control), a check that the copy agrees with the real input at the current time. Original analysis: the real defect today: an obstacle input that depends on the playhead gets a new
 `GeometryHandle` every frame, `BoidsNode::cook` compares handles (`st.obstacleSources != obstacleSources`), so the whole flock re-simulates
 from `startTime` each frame, and all earlier steps see the obstacle at the *current* time. Obstacles that move through `vx`/`vy` attributes work
 (`placeObstacles`) because their input is static. Options:
