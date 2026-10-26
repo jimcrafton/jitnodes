@@ -368,7 +368,11 @@ safe:
    every text is one of the input's. Putting one site back to `attrib(..., array.type())` makes it fail. The stress test only gained
    string support in its digest: its graphs have no string source yet, so it calls `checkStrings` once step 5 adds `attribCreate string`.
    A node that reads a string attribute as a float (for example `colorRamp` on `label`) fails with the generic "attribute type mismatch".
-3. Wrangle: literal comparison, `stringParams`, read-only check, fusion rebasing, interpreter parity. Tests in the style of
+3. *Done* (140 tests, ASan clean): `KernelSpec::stringParams`, `resolveStringParams` (kernel.h) called from `KernelNode::cook` and the fused path
+   in `Network::runTask`, `appendKernel`/`composeKernels` rebase them, `WrangleNode` pads its params to `paramCount`. Documented in
+   `wrangle.md` ("String attributes", grammar, limits). One deviation: `stringParams` is not in `signature()` because the code is the same
+   whatever the text, and the test checks that changing a literal does not compile again. Original plan text:
+   Wrangle: literal comparison, `stringParams`, read-only check, fusion rebasing, interpreter parity. Tests in the style of
    `docs/wrangle.md` (fused and unfused agree; a literal missing from the table matches nothing; `""` matches id 0).
 4. `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
 5. `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,

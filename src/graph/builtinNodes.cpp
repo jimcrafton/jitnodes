@@ -54,6 +54,7 @@ public:
         const auto compileStart = std::chrono::steady_clock::now();
         auto compiled = ctx.compiler.compileFor(kernel.spec, *geo, cls);
         const auto runStart = std::chrono::steady_clock::now();
+        resolveStringParams(kernel.spec, *geo, cls, kernel.params);
         compiled->run(*geo, kernel.params, cls, ctx.pool);
         if (ctx.timings) {
             const auto runEnd = std::chrono::steady_clock::now();
@@ -103,6 +104,7 @@ public:
         }
         out.spec = spec_;
         out.params = {getFloat("a"), getFloat("b"), getFloat("c"), getFloat("d")};
+        out.params.resize(static_cast<size_t>(out.spec.paramCount), 0.0f);  // the slots after the named ones belong to string literals
         return true;
     }
 

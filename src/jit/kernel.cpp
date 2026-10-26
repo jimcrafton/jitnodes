@@ -269,6 +269,18 @@ void Kernel::run(Geometry& geo, const std::vector<float>& params, AttribClass cl
     run(ptrs.data(), params.data(), geo.paddedCount(cls), pool);
 }
 
+void resolveStringParams(const KernelSpec& spec, const Geometry& geo, AttribClass cls, std::vector<float>& params) {
+    if (spec.stringParams.empty()) return;
+    if (params.size() < static_cast<size_t>(spec.paramCount)) params.resize(static_cast<size_t>(spec.paramCount), 0.0f);
+    for (const KernelSpec::StringParam& sp : spec.stringParams) {
+        const std::string& name = spec.channels[static_cast<size_t>(sp.channel)];
+        const AttribArray* a = geo.findAttrib(cls, name);
+        if (!a || a->type() != AttribType::string)
+            throw std::runtime_error("'" + name + "' is compared with the string \"" + sp.text + "\" but is not a string attribute");
+        params[static_cast<size_t>(sp.paramIndex)] = static_cast<float>(a->table().find(sp.text));
+    }
+}
+
 KernelCompiler::KernelCompiler() : backend_(std::make_shared<JitBackend>()) {
     jitSupported_ = backend_->sse2;
     // Conservative default: AVX2. AVX-512 is available through setIsa (see docs/performance.md).

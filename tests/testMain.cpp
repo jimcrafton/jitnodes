@@ -4336,6 +4336,83 @@ TEST(everyNodeTypeKeepsStringAttributesConsistent) {
     CHECK(kept > 5);
 }
 
+namespace {
+
+bool wrangleThrows(const std::string& code, const Geometry& input) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", code);
+    net.connect(in, w);
+    try {
+        net.cook(w);
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(wrangleComparesStringAttributesWithLiterals) {
+    const Geometry input = labelled({"tree", "rock", "", "tree", "bush", "rock"}, {"rock", "tree"});
+    const std::vector<float> hit = {1, 0, 0, 1, 0, 0}, both = {0, 0, 1, 1, 1, 0}, rocks = {0, 1, 0, 0, 0, 1}, empty = {0, 0, 1, 0, 0, 0};
+    for (bool jit : {true, false}) {
+        for (bool fusion : {true, false}) {
+            Network net(2);
+            net.setFusionEnabled(fusion);
+            net.compiler().setJitEnabled(jit);
+            net.setExternalInputs({std::make_shared<Geometry>(input)});
+            const NodeId in = net.addNode("subnetInput", "in");
+            const NodeId w1 = net.addNode("wrangle", "w1");
+            const NodeId w2 = net.addNode("wrangle", "w2");
+            const NodeId out = net.addNode("null", "out");
+            net.node(w1).setString("code", "hit = label == \"tree\"; both = \"rock\" != label && x > 1;");
+            net.node(w2).setString("code", "rocks = label == \"rock\"; miss = label == \"nothing\"; gone = label != \"nothing\"; blank = label == \"\"; same = hit;");
+            net.connect(in, w1);
+            net.connect(w1, w2);
+            net.connect(w2, out);
+            net.setDisplayNode(out);
+            const GeometryHandle g = net.cookDisplay();
+            if (fusion) CHECK(net.fusedChainCount() == 1);
+            for (size_t i = 0; i < 6; ++i) {
+                CHECK(g->findAttrib(AttribClass::point, "hit")->at(i) == hit[i]);
+                CHECK(g->findAttrib(AttribClass::point, "both")->at(i) == both[i]);
+                CHECK(g->findAttrib(AttribClass::point, "rocks")->at(i) == rocks[i]);
+                CHECK(g->findAttrib(AttribClass::point, "blank")->at(i) == empty[i]);
+                CHECK(g->findAttrib(AttribClass::point, "miss")->at(i) == 0.0f);
+                CHECK(g->findAttrib(AttribClass::point, "gone")->at(i) == 1.0f);
+                CHECK(g->findAttrib(AttribClass::point, "same")->at(i) == hit[i]);
+            }
+            g->checkStrings();
+            CHECK(g->findAttrib(AttribClass::point, "label")->stringAt(4) == "bush");
+        }
+    }
+
+    // The kernel is shared by different texts; each geometry resolves its own ids.
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", "hit = label == \"tree\";");
+    net.connect(in, w);
+    net.cook(w);
+    const size_t compiled = net.compiler().compileCount();
+    net.node(w).setString("code", "hit = label == \"rock\";");
+    const GeometryHandle again = net.cook(w);
+    CHECK(net.compiler().compileCount() == compiled);
+    CHECK(again->findAttrib(AttribClass::point, "hit")->at(1) == 1.0f && again->findAttrib(AttribClass::point, "hit")->at(0) == 0.0f);
+
+    CHECK(wrangleThrows("hit = label + \"a\";", input));
+    CHECK(wrangleThrows("hit = x == \"a\";", input));
+    CHECK(wrangleThrows("hit = (label + 1) == \"a\";", input));
+    CHECK(wrangleThrows("hit = label < \"a\";", input));
+    CHECK(wrangleThrows("hit = label == \"unterminated;", input));
+    CHECK(wrangleThrows("label = 1;", input));
+    CHECK(!wrangleThrows("hit = label == \"quote\\\"d\";", input));
+}
+
 TEST(stringAttributesAreNotSavedUntilTheFormatsKnowThem) {
     const Geometry g = labelled({"tree"}, {});
     bool threw = false;

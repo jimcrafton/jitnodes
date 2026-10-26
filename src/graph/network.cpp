@@ -638,6 +638,7 @@ void Network::runTask(const CookTask& task) {
         const auto compileStart = Clock::now();
         auto kernel = compiler().compileFor(fused.spec, *geo, task.cls);
         const auto runStart = Clock::now();
+        resolveStringParams(fused.spec, *geo, task.cls, fused.params);
         kernel->run(*geo, fused.params, task.cls, pool());
         const auto runEnd = Clock::now();
         timings.compileMs = millis(compileStart, runStart);

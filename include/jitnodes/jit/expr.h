@@ -99,6 +99,16 @@ struct KernelSpec {
     std::vector<std::pair<int, int>> stores; // (channel index, expression node) written back
     int paramCount = 0;
 
+    // A literal compared with a string attribute (`label == "tree"`) is a parameter whose value is the literal's id in that attribute's
+    // table, which only the geometry knows: resolveStringParams fills the slot before every run. It is not part of signature(), because the
+    // compiled code is the same whatever the text is.
+    struct StringParam {
+        int paramIndex;
+        int channel;
+        std::string text;
+    };
+    std::vector<StringParam> stringParams;
+
     int channelIndex(const std::string& name);  // adds the channel when new
 
     // Canonical text of the spec (structure, constants, channel types and names); used as the kernel cache key.
