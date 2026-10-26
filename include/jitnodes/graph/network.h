@@ -105,6 +105,7 @@ void registerParticleNodes();
 void registerGasNodes();
 void registerFieldNodes();
 void registerCurveNodes();
+void registerShapeNodes();
 void registerGenerativeNodes();
 void registerFluidNodes();
 void registerFileNodes();

@@ -130,6 +130,10 @@ public:
     virtual bool dependsOnPlayhead() const { return false; }
     // Asked while planning a cook: false means cook() will not look at its inputs, so they are neither cooked nor required to be connected.
     virtual bool needsInputs() { return true; }
+    // A selector node (switch) cooks only one of its inputs. selectedInput() is asked while planning, after the node's parameters have
+    // been evaluated for the current time; it returns the input slot to use, and cook() then receives that one geometry.
+    virtual bool selectsInput() const { return false; }
+    virtual int selectedInput() const { return -1; }
     virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
 protected:

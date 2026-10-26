@@ -5641,6 +5641,341 @@ TEST(fileCacheSkipsTheUpstreamCookWhenTheFileIsThere) {
     std::filesystem::remove(path);
 }
 
+using Polyline = std::vector<std::pair<double, double>>;
+
+Geometry polylines(const std::vector<Polyline>& lines, bool closed = false) {
+    Geometry g;
+    size_t total = 0;
+    for (const Polyline& l : lines) total += l.size();
+    g.resizePoints(total);
+    size_t at = 0;
+    for (const Polyline& l : lines) {
+        g.addPrimitive({static_cast<uint32_t>(at), static_cast<uint32_t>(l.size()), closed, PrimKind::polyline});
+        for (const auto& p : l) {
+            g.x()[at] = static_cast<float>(p.first);
+            g.y()[at] = static_cast<float>(p.second);
+            ++at;
+        }
+    }
+    return g;
+}
+
+struct ShapeRig {
+    Network net{1};
+    NodeId node;
+    ShapeRig(Geometry g, const char* type) {
+        net.setExternalInputs({std::make_shared<Geometry>(std::move(g))});
+        const NodeId in = net.addNode("subnetInput", "in");
+        node = net.addNode(type, "n");
+        net.connect(in, node);
+    }
+    Node& n() { return net.node(node); }
+    GeometryHandle cook() { return net.cook(node); }
+};
+
+TEST(smoothShrinksARingOnlyWithoutPreserveAndKeepsOpenEnds) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 64.0f);
+    const NodeId smooth = net.addNode("smooth");
+    net.connect(ring, smooth);
+    net.node(smooth).setFloat("iterations", 40.0f);
+    net.node(smooth).setFloat("preserve", 0.0f);
+    auto plain = net.cook(smooth);
+    CHECK(plain->pointCount() == 64);
+    CHECK(std::hypot(plain->x()[0], plain->y()[0]) < 0.93f);
+    net.node(smooth).setFloat("preserve", 1.0f);
+    auto kept = net.cook(smooth);
+    for (size_t i = 0; i < 64; ++i) CHECK(std::fabs(std::hypot(kept->x()[i], kept->y()[i]) - 1.0f) < 0.01f);
+
+    ShapeRig zigzag(polylines({{{0, 0}, {1, 1}, {2, 0}, {3, 1}, {4, 0}}}), "smooth");
+    auto flat = zigzag.cook();
+    CHECK(nearly(flat->x()[0], 0.0f) && nearly(flat->y()[0], 0.0f) && nearly(flat->x()[4], 4.0f) && nearly(flat->y()[4], 0.0f));
+    CHECK(flat->y()[1] < 0.99f && flat->y()[1] > 0.0f);
+    zigzag.n().setFloat("iterations", 0.0f);
+    CHECK(nearly(zigzag.cook()->y()[1], 1.0f));
+}
+
+TEST(offsetMakesParallelCopiesOnTheLeftWithMiteredCorners) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 64.0f);
+    const NodeId off = net.addNode("offset");
+    net.connect(ring, off);
+    net.node(off).setFloat("distance", 0.2f);
+    net.node(off).setFloat("count", 2.0f);
+    net.node(off).setFloat("keepOriginal", 1.0f);
+    auto g = net.cook(off);
+    CHECK(g->primitiveCount() == 3 && g->pointCount() == 192);
+    const AttribArray* index = g->findAttrib(AttribClass::primitive, "offsetIndex");
+    CHECK(index && index->ints()[0] == 0 && index->ints()[2] == 2);
+    const float miter = 1.0f / std::cos(3.14159265f / 64.0f);
+    CHECK(std::fabs(std::hypot(g->x()[0], g->y()[0]) - 1.0f) < 1e-5f);
+    CHECK(std::fabs(std::hypot(g->x()[64], g->y()[64]) - (1.0f - 0.2f * miter)) < 1e-4f);
+    CHECK(std::fabs(std::hypot(g->x()[128], g->y()[128]) - (1.0f - 0.4f * miter)) < 1e-4f);
+
+    ShapeRig line(polylines({{{0, 0}, {1, 0}, {2, 0}}}), "offset");
+    line.n().setFloat("distance", -0.5f);
+    auto below = line.cook();
+    CHECK(below->primitiveCount() == 1 && nearly(below->y()[1], -0.5f) && nearly(below->x()[1], 1.0f));
+}
+
+TEST(sortReordersPrimitivesWithTheirPointsAndAttributes) {
+    Geometry g = polylines({{{2, 0}, {2, 1}}, {{0, 0}, {0, 1}}, {{1, 0}, {1, 1}}});
+    AttribArray& id = g.attrib(AttribClass::primitive, "id", AttribType::int32);
+    id.ints()[0] = 20;
+    id.ints()[1] = 0;
+    id.ints()[2] = 10;
+    g.attrib(AttribClass::point, "tag").floats()[0] = 7.0f;
+    ShapeRig rig(g, "sort");
+    auto sorted = rig.cook();
+    CHECK(sorted->primitiveCount() == 3 && sorted->pointCount() == 6);
+    for (size_t p = 0; p < 3; ++p) {
+        CHECK(sorted->primitives()[p].start == 2 * p);
+        CHECK(nearly(sorted->x()[2 * p], static_cast<float>(p)));
+        CHECK(sorted->findAttrib(AttribClass::primitive, "id")->ints()[p] == static_cast<int32_t>(10 * p));
+    }
+    CHECK(nearly(sorted->findAttrib(AttribClass::point, "tag")->floats()[4], 7.0f));
+
+    rig.n().setFloat("reverse", 1.0f);
+    CHECK(nearly(rig.cook()->x()[0], 2.0f));
+    rig.n().setFloat("reverse", 0.0f);
+    rig.n().setFloat("shift", 1.0f);
+    CHECK(nearly(rig.cook()->x()[0], 1.0f) && nearly(rig.cook()->x()[4], 0.0f));
+    rig.n().setFloat("shift", 0.0f);
+    rig.n().setString("key", "attrib");
+    rig.n().setString("attrib", "id");
+    CHECK(nearly(rig.cook()->x()[0], 0.0f));
+    rig.n().setString("key", "angle");
+    CHECK(rig.cook()->primitiveCount() == 3);
+    rig.n().setString("class", "point");
+    CHECK(cookThrows(rig.net, rig.node));
+    rig.n().setString("class", "primitive");
+    rig.n().setString("key", "nonsense");
+    CHECK(cookThrows(rig.net, rig.node));
+
+    Geometry cloud;
+    cloud.resizePoints(4);
+    const float xs[] = {3, 1, 2, 0};
+    for (int i = 0; i < 4; ++i) cloud.x()[i] = xs[i];
+    AttribArray& label = cloud.attrib(AttribClass::point, "label", AttribType::string);
+    const char* names[] = {"d", "b", "c", "a"};
+    for (int i = 0; i < 4; ++i) label.ints()[i] = label.intern(names[i]);
+    ShapeRig points(cloud, "sort");
+    points.n().setString("class", "point");
+    auto byX = points.cook();
+    for (int i = 0; i < 4; ++i) CHECK(nearly(byX->x()[i], static_cast<float>(i)));
+    points.n().setString("key", "attrib");
+    points.n().setString("attrib", "label");
+    auto byText = points.cook();
+    for (int i = 0; i < 4; ++i) CHECK(byText->findAttrib(AttribClass::point, "label")->stringAt(i) == std::string(1, static_cast<char>('a' + i)));
+    byText->checkStrings();
+}
+
+TEST(joinChainsCurvesThatMeetAndClosesLoops) {
+    ShapeRig chain(polylines({{{0, 0}, {1, 0}}, {{2, 0}, {1, 0}}, {{2, 0}, {2, 1}}}), "join");
+    auto joined = chain.cook();
+    CHECK(joined->primitiveCount() == 1 && joined->pointCount() == 4 && !joined->primitives()[0].closed);
+    const float wantX[] = {0, 1, 2, 2}, wantY[] = {0, 0, 0, 1};
+    for (int i = 0; i < 4; ++i) CHECK(nearly(joined->x()[i], wantX[i]) && nearly(joined->y()[i], wantY[i]));
+
+    ShapeRig loop(polylines({{{0, 0}, {1, 0}}, {{1, 0}, {1, 1}}, {{1, 1}, {0, 1}}, {{0, 1}, {0, 0}}}), "join");
+    auto ring = loop.cook();
+    CHECK(ring->primitiveCount() == 1 && ring->pointCount() == 4 && ring->primitives()[0].closed);
+    loop.n().setFloat("distance", 0.0f);
+    CHECK(loop.cook()->primitiveCount() == 1);
+
+    ShapeRig apart(polylines({{{0, 0}, {1, 0}}, {{1.5f, 0}, {2, 0}}}), "join");
+    CHECK(apart.cook()->primitiveCount() == 2);
+    apart.n().setFloat("distance", 0.6f);
+    CHECK(apart.cook()->primitiveCount() == 1);
+    apart.n().setFloat("distance", 0.001f);
+    apart.n().setString("mode", "all");
+    apart.n().setFloat("close", 1.0f);
+    auto all = apart.cook();
+    CHECK(all->primitiveCount() == 1 && all->pointCount() == 4 && all->primitives()[0].closed);
+    apart.n().setString("mode", "weave");
+    CHECK(cookThrows(apart.net, apart.node));
+
+    ShapeRig square(polylines({{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}, true), "join");
+    CHECK(square.cook()->primitiveCount() == 1 && square.cook()->primitives()[0].closed);
+}
+
+TEST(bevelCutsCornersAndRoundsThemWithSegments) {
+    ShapeRig square(polylines({{{0, 0}, {2, 0}, {2, 2}, {0, 2}}}, true), "bevel");
+    square.n().setFloat("distance", 0.5f);
+    auto chamfer = square.cook();
+    CHECK(chamfer->pointCount() == 8 && chamfer->primitives()[0].closed);
+    const float corners[4][2] = {{0, 0}, {2, 0}, {2, 2}, {0, 2}};
+    for (size_t i = 0; i < 8; ++i) {
+        float nearest = 1e9f;
+        for (const auto& c : corners) nearest = std::min(nearest, std::hypot(chamfer->x()[i] - c[0], chamfer->y()[i] - c[1]));
+        CHECK(std::fabs(nearest - 0.5f) < 1e-5f);
+    }
+    square.n().setFloat("segments", 4.0f);
+    auto round = square.cook();
+    CHECK(round->pointCount() == 20);
+    for (size_t i = 0; i < 20; ++i) {
+        const float x = round->x()[i], y = round->y()[i];
+        CHECK(x >= -1e-5f && x <= 2.00001f && y >= -1e-5f && y <= 2.00001f);
+    }
+    square.n().setFloat("distance", 5.0f);
+    auto clamped = square.cook();
+    CHECK(clamped->pointCount() == 20 && std::fabs(clamped->x()[0] - 0.0f) < 1e-5f && std::fabs(clamped->y()[0] - 1.0f) < 1e-5f);
+
+    ShapeRig bend(polylines({{{0, 0}, {1, 0}, {1, 1}}}), "bevel");
+    bend.n().setFloat("distance", 0.25f);
+    auto elbow = bend.cook();
+    CHECK(elbow->pointCount() == 4 && nearly(elbow->x()[0], 0.0f) && nearly(elbow->x()[1], 0.75f) && nearly(elbow->y()[2], 0.25f) && nearly(elbow->y()[3], 1.0f));
+    bend.n().setFloat("minAngle", 120.0f);
+    CHECK(bend.cook()->pointCount() == 3);
+}
+
+TEST(twistRotatesByDistanceAndFadesAtTheRadius) {
+    ShapeRig rig(polylines({{{1, 0}, {0, 2}, {0, 0}}}), "twist");
+    auto linear = rig.cook();
+    CHECK(nearly(linear->x()[0], 0.0f) && nearly(linear->y()[0], 1.0f));
+    CHECK(std::fabs(std::hypot(linear->x()[1], linear->y()[1]) - 2.0f) < 1e-4f);
+    CHECK(nearly(linear->x()[2], 0.0f) && nearly(linear->y()[2], 0.0f));
+    rig.n().setFloat("radius", 2.0f);
+    auto swirl = rig.cook();
+    CHECK(std::fabs(swirl->x()[0] - std::cos(3.14159265f / 4.0f)) < 1e-4f && std::fabs(swirl->y()[0] - std::sin(3.14159265f / 4.0f)) < 1e-4f);
+    CHECK(nearly(swirl->x()[1], 0.0f) && nearly(swirl->y()[1], 2.0f));
+    CHECK(nearly(swirl->x()[2], 0.0f));
+    rig.n().setFloat("amount", 0.0f);
+    CHECK(nearly(rig.cook()->x()[0], 1.0f));
+}
+
+TEST(peakPushesAlongTheLeftNormalOrRadially) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 32.0f);
+    const NodeId peak = net.addNode("peak");
+    net.connect(ring, peak);
+    net.node(peak).setFloat("amount", -0.25f);
+    auto grown = net.cook(peak);
+    for (size_t i = 0; i < 32; ++i) CHECK(std::fabs(std::hypot(grown->x()[i], grown->y()[i]) - 1.25f) < 1e-4f);
+    net.node(peak).setString("mode", "radial");
+    net.node(peak).setFloat("amount", 1.0f);
+    auto radial = net.cook(peak);
+    CHECK(std::fabs(std::hypot(radial->x()[5], radial->y()[5]) - 2.0f) < 1e-4f);
+    net.node(peak).setString("scaleAttrib", "missing");
+    CHECK(cookThrows(net, peak));
+
+    Geometry line = polylines({{{0, 0}, {1, 0}, {2, 0}}});
+    line.attrib(AttribClass::point, "w").floats()[1] = 3.0f;
+    ShapeRig rig(line, "peak");
+    rig.n().setString("scaleAttrib", "w");
+    rig.n().setFloat("amount", 0.5f);
+    auto lifted = rig.cook();
+    CHECK(nearly(lifted->y()[0], 0.0f) && nearly(lifted->y()[1], 1.5f) && nearly(lifted->x()[1], 1.0f));
+    rig.n().setString("mode", "sideways");
+    CHECK(cookThrows(rig.net, rig.node));
+}
+
+TEST(latticeMovesPointsWithTheControlGridAndRejectsAWrongCount) {
+    const auto grid = [](float dx, float dy, float stretch) {
+        Polyline pts;
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i) pts.push_back({i * stretch + dx, j * stretch + dy});
+        return polylines({pts});
+    };
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(polylines({{{0, 0}, {1, 1}, {2, 2}, {0.5, 1.5}}})), std::make_shared<Geometry>(grid(1.0f, -2.0f, 1.0f))});
+    const NodeId body = net.addNode("subnetInput", "body");
+    const NodeId cage = net.addNode("subnetInput", "cage");
+    net.node(cage).setFloat("index", 1.0f);
+    const NodeId lat = net.addNode("lattice", "lat");
+    net.connect(body, lat, 0);
+    net.connect(cage, lat, 1);
+    net.node(lat).setFloat("columns", 3.0f);
+    net.node(lat).setFloat("rows", 3.0f);
+    auto moved = net.cook(lat);
+    for (size_t i = 0; i < 4; ++i) {
+        const Geometry& rest = *net.cook(body);
+        CHECK(nearly(moved->x()[i], rest.x()[i] + 1.0f) && nearly(moved->y()[i], rest.y()[i] - 2.0f));
+    }
+    net.node(lat).setFloat("amount", 0.5f);
+    CHECK(nearly(net.cook(lat)->x()[2], 2.5f));
+    net.node(lat).setFloat("amount", 1.0f);
+    net.node(lat).setFloat("minX", -1.0f);
+    net.node(lat).setFloat("maxX", 3.0f);
+    net.node(lat).setFloat("minY", -1.0f);
+    net.node(lat).setFloat("maxY", 3.0f);
+    CHECK(net.cook(lat)->pointCount() == 4);
+    net.node(lat).setFloat("columns", 4.0f);
+    CHECK(cookThrows(net, lat));
+
+    Network scaled(1);
+    scaled.setExternalInputs({std::make_shared<Geometry>(polylines({{{0, 0}, {2, 0}, {1, 1}}})), std::make_shared<Geometry>(grid(0.0f, 0.0f, 2.0f))});
+    const NodeId b2 = scaled.addNode("subnetInput", "b");
+    const NodeId c2 = scaled.addNode("subnetInput", "c");
+    scaled.node(c2).setFloat("index", 1.0f);
+    const NodeId l2 = scaled.addNode("lattice");
+    scaled.connect(b2, l2, 0);
+    scaled.connect(c2, l2, 1);
+    scaled.node(l2).setFloat("columns", 3.0f);
+    scaled.node(l2).setFloat("rows", 3.0f);
+    auto stretched = scaled.cook(l2);
+    CHECK(std::fabs(stretched->x()[1] - 4.0f) < 1e-3f && std::fabs(stretched->y()[1]) < 1e-3f);
+    CHECK(std::fabs(stretched->x()[2] - 2.0f) < 1e-3f && std::fabs(stretched->y()[2] - 4.0f) < 1e-3f);
+}
+
+TEST(switchCooksOnlyTheSelectedInput) {
+    Network net(1);
+    const NodeId a = net.addNode("generate");
+    net.node(a).setFloat("count", 5.0f);
+    const NodeId b = net.addNode("generate");
+    net.node(b).setFloat("count", 9.0f);
+    const NodeId sw = net.addNode("switch");
+    net.connect(a, sw, 0);
+    net.connect(b, sw, 1);
+    CHECK(net.cook(sw)->pointCount() == 5);
+    CHECK(net.node(a).cookCount() == 1 && net.node(b).cookCount() == 0);
+    net.node(sw).setFloat("index", 1.0f);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    CHECK(net.node(b).cookCount() == 1);
+    net.node(sw).setFloat("index", 7.0f);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    net.node(sw).setFloat("index", -3.0f);
+    CHECK(net.cook(sw)->pointCount() == 5);
+    net.node(sw).setExpression("index", "time");
+    net.setTime(1.0);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    net.setTime(0.0);
+    CHECK(net.cook(sw)->pointCount() == 5);
+
+    Network lone(1);
+    const NodeId empty = lone.addNode("switch");
+    CHECK(cookThrows(lone, empty));
+}
+
+TEST(polarBendsARowIntoARingAndBackAgain) {
+    Polyline row;
+    for (int i = 0; i < 8; ++i) row.push_back({static_cast<float>(i) / 8.0f, 2.0f});
+    ShapeRig rig(polylines({row}), "polar");
+    auto ring = rig.cook();
+    for (size_t i = 0; i < 8; ++i) CHECK(std::fabs(std::hypot(ring->x()[i], ring->y()[i]) - 2.0f) < 1e-5f);
+    CHECK(nearly(ring->x()[0], 2.0f) && std::fabs(ring->y()[2] - 2.0f) < 1e-5f);
+
+    Network net(1);
+    net.setExternalInputs({ring});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId back = net.addNode("polar", "back");
+    net.connect(in, back);
+    net.node(back).setString("mode", "fromPolar");
+    auto flat = net.cook(back);
+    for (size_t i = 0; i < 8; ++i) CHECK(std::fabs(flat->x()[i] - static_cast<float>(i) / 8.0f) < 1e-4f && std::fabs(flat->y()[i] - 2.0f) < 1e-4f);
+
+    rig.n().setFloat("amount", 0.0f);
+    CHECK(nearly(rig.cook()->x()[3], 3.0f / 8.0f));
+    rig.n().setFloat("width", 0.0f);
+    CHECK(cookThrows(rig.net, rig.node));
+    rig.n().setFloat("width", 1.0f);
+    rig.n().setString("mode", "spiral");
+    CHECK(cookThrows(rig.net, rig.node));
+}
+
 }  // namespace
 
 int main() {

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 
@@ -129,6 +130,23 @@ public:
     }
 };
 
+// Passes one of its inputs through. Only the selected input is cooked, so a branch that is switched off costs nothing; `index` is clamped
+// to the connected inputs, and the selected input must be connected.
+class SwitchNode : public Node {
+public:
+    SwitchNode() : Node("switch", 2) { declareFloat("index", 0.0f); }
+
+    bool hasVariableInputs() const override { return true; }
+    bool selectsInput() const override { return true; }
+    int selectedInput() const override {
+        const float index = getFloat("index");
+        const int last = std::max(inputCount() - 2, 0);
+        return std::isnan(index) ? 0 : static_cast<int>(std::clamp(std::floor(index), 0.0f, static_cast<float>(last)));
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override { return in[0]; }
+};
+
 class AttribCreateNode : public Node {
 public:
     AttribCreateNode() : Node("attribCreate", 1) {
@@ -175,6 +193,7 @@ void registerBuiltinNodes() {
     add<TransformNode>("transform");
     add<WrangleNode>("wrangle");
     add<MergeNode>("merge");
+    add<SwitchNode>("switch");
     add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");
     registerTopologyNodes();
@@ -185,6 +204,7 @@ void registerBuiltinNodes() {
     registerGasNodes();
     registerFieldNodes();
     registerCurveNodes();
+    registerShapeNodes();
     registerGenerativeNodes();
     registerFluidNodes();
     registerFileNodes();
