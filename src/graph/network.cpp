@@ -380,7 +380,7 @@ bool Network::setTime(double t) {
         timeCandidates_.clear();
         for (const auto& entry : slots_) {
             const Node& n = *entry.second.node;
-            bool candidate = n.childNetwork() != nullptr;
+            bool candidate = n.childNetwork() != nullptr || n.dependsOnPlayhead();
             for (auto it = n.floats_.begin(); !candidate && it != n.floats_.end(); ++it) candidate = it->second.animated();
             if (candidate) timeCandidates_.push_back(entry.first);
         }
@@ -471,7 +471,7 @@ bool Network::dependsOnTime(NodeId id) const {
     for (const auto& entry : n.floats_)
         // A plain number cannot depend on time; skipping it avoids the lookups by name, which dominate when a graph has thousands of nodes.
         if (entry.second.animated() && paramDependsOnTime(id, entry.first, visiting)) return true;
-    return n.childDependsOnTime();
+    return n.childDependsOnTime() || n.dependsOnPlayhead();
 }
 
 bool Network::anyDependsOnTime() const {

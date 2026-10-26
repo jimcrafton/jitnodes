@@ -31,7 +31,8 @@ const std::vector<PaletteEntry> palette = {
     {"addAttribCreate", "attribCreate"}, {"addResample", "resample"}, {"addSubdivide", "subdivide"},
     {"addCopyToPoints", "copyToPoints"}, {"addBlast", "blast"}, {"addSubnet", "subnet"}, {"addSubnetInput", "subnetInput"}, {"addNull", "null"},
     {"addGenerate", "generate"}, {"addScatter", "scatter"}, {"addNoise", "noise"}, {"addWarp", "warp"}, {"addColorRamp", "colorRamp"},
-    {"addRelax", "relax"}, {"addAttribBlur", "attribBlur"}, {"addWave", "wave"}, {"addAttractor", "attractor"}, {"addRender", "render"},
+    {"addRelax", "relax"}, {"addAttribBlur", "attribBlur"}, {"addWave", "wave"}, {"addAttractor", "attractor"}, {"addFlow", "flow"},
+    {"addVoronoi", "voronoi"}, {"addParticles", "particles"}, {"addRender", "render"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};

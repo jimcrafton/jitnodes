@@ -8,72 +8,15 @@
 #include <vector>
 
 #include "jitnodes/graph/network.h"
+#include "noise.h"
 #include "nodeUtil.h"
+#include "pointGrid.h"
 
 namespace jitnodes {
 
 namespace {
 
 constexpr float twoPi = 6.28318530718f;
-constexpr float maxGridCells = 4.0e6f;
-constexpr float maxGridSide = 8192.0f;
-
-// A uniform grid whose cells are at least `radius` wide, so every neighbour closer than `radius` is in the 3 x 3 cells around a point.
-class PointGrid {
-public:
-    void build(const float* xs, const float* ys, size_t n, float radius) {
-        float minX = std::numeric_limits<float>::max(), minY = minX, maxX = std::numeric_limits<float>::lowest(), maxY = maxX;
-        for (size_t i = 0; i < n; ++i) {
-            if (xs[i] < minX) minX = xs[i];
-            if (xs[i] > maxX) maxX = xs[i];
-            if (ys[i] < minY) minY = ys[i];
-            if (ys[i] > maxY) maxY = ys[i];
-        }
-        if (n == 0 || minX > maxX || minY > maxY) minX = minY = maxX = maxY = 0.0f;
-        const float w = maxX - minX, h = maxY - minY;
-        cell_ = std::max({radius, std::sqrt(w * h / maxGridCells), std::max(w, h) / maxGridSide});
-        if (!std::isfinite(cell_)) throw std::runtime_error("point positions are not finite");
-        minX_ = minX;
-        minY_ = minY;
-        cols_ = static_cast<int>(w / cell_) + 1;
-        rows_ = static_cast<int>(h / cell_) + 1;
-        start_.assign(static_cast<size_t>(cols_) * static_cast<size_t>(rows_) + 1, 0);
-        for (size_t i = 0; i < n; ++i) ++start_[cellOf(xs[i], ys[i]) + 1];
-        for (size_t c = 1; c < start_.size(); ++c) start_[c] += start_[c - 1];
-        items_.resize(n);
-        std::vector<uint32_t> fill(start_.begin(), start_.end() - 1);
-        for (size_t i = 0; i < n; ++i) items_[fill[cellOf(xs[i], ys[i])]++] = static_cast<uint32_t>(i);
-    }
-
-    template <class F>
-    void forEachNear(float x, float y, F&& fn) const {
-        const int cx = column(x), cy = row(y);
-        for (int r = std::max(cy - 1, 0); r <= std::min(cy + 1, rows_ - 1); ++r) {
-            for (int c = std::max(cx - 1, 0); c <= std::min(cx + 1, cols_ - 1); ++c) {
-                const size_t cell = static_cast<size_t>(r) * static_cast<size_t>(cols_) + static_cast<size_t>(c);
-                for (uint32_t k = start_[cell]; k < start_[cell + 1]; ++k) fn(items_[k]);
-            }
-        }
-    }
-
-private:
-    // NaN and out-of-range positions land in the nearest edge cell.
-    int column(float x) const {
-        const float v = (x - minX_) / cell_;
-        return static_cast<int>(std::min(v > 0.0f ? v : 0.0f, static_cast<float>(cols_ - 1)));
-    }
-    int row(float y) const {
-        const float v = (y - minY_) / cell_;
-        return static_cast<int>(std::min(v > 0.0f ? v : 0.0f, static_cast<float>(rows_ - 1)));
-    }
-    size_t cellOf(float x, float y) const { return static_cast<size_t>(row(y)) * static_cast<size_t>(cols_) + static_cast<size_t>(column(x)); }
-
-    float minX_ = 0.0f, minY_ = 0.0f, cell_ = 1.0f;
-    int cols_ = 1, rows_ = 1;
-    std::vector<uint32_t> start_;
-    std::vector<uint32_t> items_;
-};
-
 std::vector<std::string> splitNames(const std::string& text) {
     std::vector<std::string> names;
     std::string item;
@@ -369,6 +312,268 @@ public:
     }
 };
 
+// Gives every output point the attribute values of the input point it came from: output points first[i] .. first[i] + count[i] - 1 belong to
+// input point i.
+void replicateAttributes(const Geometry& in, Geometry& out, const std::vector<size_t>& first, const std::vector<uint32_t>& count, ThreadPool* pool) {
+    const size_t n = in.pointCount();
+    for (const auto& entry : in.attribs(AttribClass::point)) {
+        const AttribArray& source = entry.second;
+        AttribArray& target = out.attrib(AttribClass::point, entry.first, source.type());
+        if (source.type() == AttribType::float32) {
+            float* dst = target.floats().data();
+            const float* src = source.floats().data();
+            parallelChunks(pool, n, [&](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) std::fill_n(dst + first[i], count[i], src[i]);
+            });
+        } else {
+            int32_t* dst = target.ints().data();
+            const int32_t* src = source.ints().data();
+            parallelChunks(pool, n, [&](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) std::fill_n(dst + first[i], count[i], src[i]);
+            });
+        }
+    }
+    for (const auto& entry : in.details()) out.setDetail(entry.first, entry.second);
+}
+
+constexpr size_t maxFlowPoints = 50'000'000;
+
+// Follows each input point through a noise-driven vector field and outputs the path as a polyline: streamlines of a flow field.
+class FlowNode : public Node {
+public:
+    FlowNode() : Node("flow", 1) {
+        declareString("mode", "curl");
+        declareFloat("steps", 64.0f);
+        declareFloat("stepLength", 0.1f);
+        declareFloat("bothWays", 0.0f);
+        declareFloat("normalize", 1.0f);
+        declareFloat("strength", 1.0f);
+        declareFloat("turns", 1.0f);
+        declareFloat("scale", 0.1f);
+        declareFloat("octaves", 3.0f);
+        declareFloat("lacunarity", 2.0f);
+        declareFloat("gain", 0.5f);
+        declareFloat("seed", 1.0f);
+        declareFloat("phase", 0.0f);
+        declareFloat("drift", 0.0f);
+    }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const std::string& mode = getString("mode");
+        if (mode != "curl" && mode != "angle") throw std::runtime_error("flow: mode must be 'curl' or 'angle', got '" + mode + "'");
+        const bool curl = mode == "curl";
+        const int steps = std::clamp(static_cast<int>(getFloat("steps")), 1, 4096);
+        const bool both = getFloat("bothWays") != 0.0f;
+        const bool unit = getFloat("normalize") != 0.0f;
+        const float stepLength = getFloat("stepLength"), strength = getFloat("strength"), turns = getFloat("turns"), scale = getFloat("scale");
+        const float phase = getFloat("phase"), drift = getFloat("drift");
+        Fractal field;
+        field.octaves = std::clamp(static_cast<int>(getFloat("octaves")), 1, 12);
+        field.lacunarity = getFloat("lacunarity");
+        field.gain = getFloat("gain");
+        field.seed = seedOf(getFloat("seed"));
+
+        const Geometry& seeds = *in[0];
+        const size_t n = seeds.pointCount();
+        const size_t perTrail = static_cast<size_t>(steps) * (both ? 2 : 1) + 1;
+        if (n * perTrail > maxFlowPoints) throw std::runtime_error("flow: " + std::to_string(n) + " trails of " + std::to_string(perTrail) + " points exceed " + std::to_string(maxFlowPoints) + " points");
+
+        auto geo = std::make_shared<Geometry>();
+        geo->resizePoints(n * perTrail);
+        std::vector<size_t> first(n);
+        std::vector<uint32_t> count(n, static_cast<uint32_t>(perTrail));
+        for (size_t i = 0; i < n; ++i) first[i] = i * perTrail;
+        replicateAttributes(seeds, *geo, first, count, ctx.pool);
+        float* u = geo->attrib(AttribClass::point, "u").floats().data();
+        int32_t* trail = geo->attrib(AttribClass::point, "trail", AttribType::int32).ints().data();
+        float* xs = geo->x();
+        float* ys = geo->y();
+        const float* sx = n ? std::as_const(seeds).x() : nullptr;
+        const float* sy = n ? std::as_const(seeds).y() : nullptr;
+
+        auto direction = [&](float x, float y, float z, float& dx, float& dy) {
+            if (curl) {
+                curlOf(field, x * scale, y * scale, z, 0.02f, dx, dy);
+            } else {
+                const float a = field.sample(x * scale, y * scale, z) * twoPi * turns;
+                dx = std::cos(a);
+                dy = std::sin(a);
+            }
+            if (unit) {
+                const float len = std::hypot(dx, dy);
+                if (len > 1e-12f) {
+                    dx /= len;
+                    dy /= len;
+                } else {
+                    dx = dy = 0.0f;
+                }
+            } else {
+                dx *= strength;
+                dy *= strength;
+            }
+        };
+
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                const size_t base = i * perTrail, seedAt = both ? static_cast<size_t>(steps) : 0;
+                xs[base + seedAt] = sx[i];
+                ys[base + seedAt] = sy[i];
+                float x = sx[i], y = sy[i], dx, dy;
+                for (int k = 1; k <= steps; ++k) {
+                    direction(x, y, phase + drift * static_cast<float>(k - 1), dx, dy);
+                    x += dx * stepLength;
+                    y += dy * stepLength;
+                    xs[base + seedAt + static_cast<size_t>(k)] = x;
+                    ys[base + seedAt + static_cast<size_t>(k)] = y;
+                }
+                if (both) {
+                    x = sx[i];
+                    y = sy[i];
+                    for (int k = 1; k <= steps; ++k) {
+                        direction(x, y, phase - drift * static_cast<float>(k - 1), dx, dy);
+                        x -= dx * stepLength;
+                        y -= dy * stepLength;
+                        xs[base + seedAt - static_cast<size_t>(k)] = x;
+                        ys[base + seedAt - static_cast<size_t>(k)] = y;
+                    }
+                }
+                for (size_t k = 0; k < perTrail; ++k) {
+                    u[base + k] = perTrail > 1 ? static_cast<float>(k) / static_cast<float>(perTrail - 1) : 0.0f;
+                    trail[base + k] = static_cast<int32_t>(i);
+                }
+            }
+        });
+        for (size_t i = 0; i < n; ++i) geo->addPrimitive({static_cast<uint32_t>(i * perTrail), static_cast<uint32_t>(perTrail), false, PrimKind::polyline});
+        return geo;
+    }
+};
+
+// Clips the convex polygon (interleaved x, y) to the side of the perpendicular bisector between the site (sx, sy) and the point at (sx + dx, sy + dy)
+// that contains the site.
+void clipToBisector(std::vector<float>& poly, std::vector<float>& scratch, float sx, float sy, float dx, float dy) {
+    const float half = 0.5f * (dx * dx + dy * dy);
+    const size_t m = poly.size() / 2;
+    scratch.clear();
+    auto side = [&](size_t k) { return (poly[2 * k] - sx) * dx + (poly[2 * k + 1] - sy) * dy - half; };
+    for (size_t k = 0; k < m; ++k) {
+        const size_t next = k + 1 == m ? 0 : k + 1;
+        const float fa = side(k), fb = side(next);
+        if (fa <= 0.0f) {
+            scratch.push_back(poly[2 * k]);
+            scratch.push_back(poly[2 * k + 1]);
+        }
+        if ((fa < 0.0f && fb > 0.0f) || (fa > 0.0f && fb < 0.0f)) {
+            const float t = fa / (fa - fb);
+            scratch.push_back(poly[2 * k] + (poly[2 * next] - poly[2 * k]) * t);
+            scratch.push_back(poly[2 * k + 1] + (poly[2 * next + 1] - poly[2 * k + 1]) * t);
+        }
+    }
+    poly.swap(scratch);
+}
+
+// The Voronoi diagram of the input points: one polygon per point, the region closer to it than to any other point, clipped to the bounding box of
+// the points plus `margin`. Each cell is built by cutting a rectangle with the bisectors of the nearest neighbours, found ring by ring in a grid.
+class VoronoiNode : public Node {
+public:
+    VoronoiNode() : Node("voronoi", 1) {
+        declareFloat("margin", 0.0f);
+        declareFloat("closed", 1.0f);
+    }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const Geometry& sites = *in[0];
+        const size_t n = sites.pointCount();
+        auto geo = std::make_shared<Geometry>();
+        if (n == 0) return geo;
+        const bool closed = getFloat("closed") != 0.0f;
+        const float margin = std::max(getFloat("margin"), 0.0f);
+        const float* xs = std::as_const(sites).x();
+        const float* ys = std::as_const(sites).y();
+
+        float minX = xs[0], maxX = xs[0], minY = ys[0], maxY = ys[0];
+        for (size_t i = 1; i < n; ++i) {
+            minX = std::min(minX, xs[i]);
+            maxX = std::max(maxX, xs[i]);
+            minY = std::min(minY, ys[i]);
+            maxY = std::max(maxY, ys[i]);
+        }
+        if (!std::isfinite(minX + maxX + minY + maxY)) throw std::runtime_error("voronoi: point positions are not finite");
+        minX -= margin;
+        maxX += margin;
+        minY -= margin;
+        maxY += margin;
+        if (maxX - minX < 1e-6f) {
+            minX -= 1.0f;
+            maxX += 1.0f;
+        }
+        if (maxY - minY < 1e-6f) {
+            minY -= 1.0f;
+            maxY += 1.0f;
+        }
+
+        PointGrid grid;
+        grid.build(xs, ys, n, std::max(1.5f * std::sqrt((maxX - minX) * (maxY - minY) / static_cast<float>(n)), 1e-6f));
+        const float cell = grid.cellSize();
+        std::vector<std::vector<float>> cells(n);
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            std::vector<float> scratch;
+            for (size_t i = begin; i < end; ++i) {
+                std::vector<float>& poly = cells[i];
+                poly = {minX, minY, maxX, minY, maxX, maxY, minX, maxY};
+                const float sx = xs[i], sy = ys[i];
+                for (int ring = 0; ring <= grid.maxRing(); ++ring) {
+                    grid.forEachInRing(sx, sy, ring, [&](uint32_t j) {
+                        if (j == i || poly.empty()) return;
+                        const float dx = xs[j] - sx, dy = ys[j] - sy;
+                        if (dx * dx + dy * dy < 1e-18f) return;
+                        clipToBisector(poly, scratch, sx, sy, dx, dy);
+                    });
+                    if (poly.size() < 6) {
+                        poly.clear();
+                        break;
+                    }
+                    float reach2 = 0.0f;
+                    for (size_t k = 0; k < poly.size(); k += 2) reach2 = std::max(reach2, (poly[k] - sx) * (poly[k] - sx) + (poly[k + 1] - sy) * (poly[k + 1] - sy));
+                    if (2.0f * std::sqrt(reach2) <= static_cast<float>(ring) * cell) break;
+                }
+            }
+        });
+
+        std::vector<size_t> first(n);
+        std::vector<uint32_t> count(n);
+        size_t total = 0;
+        for (size_t i = 0; i < n; ++i) {
+            first[i] = total;
+            count[i] = static_cast<uint32_t>(cells[i].size() / 2 + (!closed && !cells[i].empty() ? 1 : 0));
+            total += count[i];
+        }
+        geo->resizePoints(total);
+        replicateAttributes(sites, *geo, first, count, ctx.pool);
+        float* area = geo->attrib(AttribClass::point, "area").floats().data();
+        int32_t* site = geo->attrib(AttribClass::point, "site", AttribType::int32).ints().data();
+        float* ox = geo->x();
+        float* oy = geo->y();
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                const std::vector<float>& poly = cells[i];
+                const size_t m = poly.size() / 2;
+                double twice = 0.0;
+                for (size_t k = 0, prev = m ? m - 1 : 0; k < m; prev = k++) twice += static_cast<double>(poly[2 * prev]) * poly[2 * k + 1] - static_cast<double>(poly[2 * k]) * poly[2 * prev + 1];
+                for (size_t k = 0; k < count[i]; ++k) {
+                    const size_t from = k % m;
+                    ox[first[i] + k] = poly[2 * from];
+                    oy[first[i] + k] = poly[2 * from + 1];
+                    area[first[i] + k] = static_cast<float>(std::fabs(twice) * 0.5);
+                    site[first[i] + k] = static_cast<int32_t>(i);
+                }
+            }
+        });
+        for (size_t i = 0; i < n; ++i)
+            if (count[i] > 0) geo->addPrimitive({static_cast<uint32_t>(first[i]), count[i], closed, PrimKind::polyline});
+        return geo;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -381,6 +586,8 @@ void registerPatternNodes() {
     add<AttribBlurNode>("attribBlur");
     add<WaveNode>("wave");
     add<AttractorNode>("attractor");
+    add<FlowNode>("flow");
+    add<VoronoiNode>("voronoi");
 }
 
 }  // namespace jitnodes

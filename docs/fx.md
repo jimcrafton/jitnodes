@@ -1,7 +1,8 @@
 # Generating points and drawing pictures with them
 
-Ten nodes turn jitnodes into a small particle-image tool: two make points, seven shape them (noise, warp, colour,
-spacing, smoothing, waves and strange attractors), and one (`render`) says how the points become an image. Together they draw pictures such as the nebula in
+Thirteen nodes turn jitnodes into a small particle-image tool: two make points, ten shape them (noise, warp, colour,
+spacing, smoothing, waves, strange attractors, flow lines, Voronoi cells and a particle simulation), and one (`render`) says
+how the points become an image. Together they draw pictures such as the nebula in
 `examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
 
 ```
@@ -11,8 +12,8 @@ jitnodesEditor examples/graphs/nebula.json
 
 ![The nebula graph rendered by jitnodesCli](images/nebula.png)
 
-In the editor the ten nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
-attribBlur, wave, attractor, render): select a
+In the editor the thirteen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
+attribBlur, wave, attractor, flow, voronoi, particles, render): select a
 node, click a button and the new node is wired to the selected one. Each example below is a small graph in
 `examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
 parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
@@ -245,6 +246,96 @@ The `a`..`d` fields are parameters like any other, so animating them (`sin(time)
 the first de Jong row and the Svensson row) placed in the four quarters with `cx`/`cy`, coloured by `dir`, drawn additively with
 `radius` 0.02 (under a pixel, so each point adds a faint dot) and `alpha` 0.12. The whole picture, 1.6 million points through 30
 iterations, cooks in about 0.3 s.
+
+### flow (one input)
+
+Follows each input point through a noise-driven vector field and outputs the path as an open polyline: streamlines of a flow
+field. The input points are the seeds (scatter or generate them); the output has one primitive of `steps + 1` points per seed
+(`2 * steps + 1` with `bothWays`).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `mode` | `curl` | `curl`: the curl of a noise potential, a flow that never converges, so trails wind around without piling up. `angle`: the noise value is the heading (`turns` full turns across its range), the classic flow-field look, where trails run together into bright ridges |
+| `steps` | 64 | steps per direction, 1 to 4096 |
+| `stepLength` | 0.1 | distance moved per step; the vertex spacing, so choose a sprite `radius` of about this size or more to draw a continuous line |
+| `bothWays` | 0 | 1: also trace backwards, so the seed is the middle of the trail |
+| `normalize` | 1 | 1: every step has length `stepLength`. 0: the step is the field vector times `stepLength` (curl) or `strength` times it (angle), so the trail speeds up and slows down |
+| `strength`, `turns` | 1, 1 | the length scale for `normalize` 0, and the number of turns the heading makes in `angle` mode |
+| `scale`, `octaves`, `lacunarity`, `gain`, `seed` | as in `noise` | the field |
+| `phase`, `drift` | 0, 0 | the field's third dimension. `phase` picks a frozen field (animate it and the whole pattern evolves); `drift` also advances it by that much each step, so trails are paths through a changing field |
+
+Every point attribute of the seed is copied to all vertices of its trail, and these are added: `u` (0 at the start of the trail
+to 1 at its end; colour and fade along the trail) and `trail` (int, the seed's index). Cost is seeds times steps: 6,000 seeds of 80
+steps (480,000 points) take about 170 ms in curl mode and 55 ms in angle mode.
+
+![curl and angle flow fields](images/fxFlow.png)
+
+`examples/graphs/fx/fxFlow.json`: 6,000 seeds each on the two halves. Left, `curl` (`scale` 0.12, 80 steps of 0.14): the trails curl
+into closed eddies around the field's maxima and minima. Right, `angle` with `turns` 1.2: trails bunch into bright ridges and
+spread out again. `colorRamp` on `u` colours them and a wrangle fades `alpha` with `u`.
+
+### voronoi (one input)
+
+The Voronoi diagram of the input points: one polygon per point, the region of the plane closer to that point than to any other,
+clipped to the bounding box of the points. Each cell is built by cutting a rectangle with the perpendicular bisectors of its
+nearest neighbours (found ring by ring in a grid), so the cells are exact and cheap: 5,000 sites take 8 ms and 100,000 sites 40 ms.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `margin` | 0 | grows the clipping rectangle on every side; with 0 the cells of the outermost points end exactly at the bounding box |
+| `closed` | 1 | 1: closed polygons (fill them with `scatter count`). 0: open outlines that repeat the first corner (walk them with `scatter lineCount`) |
+
+Each cell is a primitive whose points all carry the attribute values of its site, plus `site` (int, the input point's index) and
+`area` (the cell's area). Coincident sites give the same cell twice. A site whose cell is empty produces no primitive. Position
+attributes are replaced by the cell corners; there is no per-site point output, so keep the input if you want the sites too.
+
+![voronoi cells filled and as outlines](images/fxVoronoi.png)
+
+`examples/graphs/fx/fxVoronoi.json`: the same 70 random sites; left, closed cells filled by `scatter` (45,000 points) and coloured
+by `srcPrim` (the cell's index) in a wrangle; right, the sites spread by `relax` first, outlines walked by `scatter lineCount`.
+Cells of relaxed sites are close to hexagons; those of random sites are the usual mix of tiny and huge.
+
+### particles (one input)
+
+A particle simulation. The input points are the particles at `startTime`; the result is where they are at the playhead, after
+fixed steps of force integration (semi-implicit Euler at `stepsPerSecond`). It is the one node that reads the playhead itself, so it
+recooks as soon as the time changes and needs no `time` expression. Press play and it runs.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond`, `seed` | 0, 120, 1 | the particles stay at their start before `startTime`; steps per second (10 to 2000); seed of the random emission |
+| `gravityX`, `gravityY` | 0, -2 | constant acceleration |
+| `drag` | 0.1 | velocity decays by `exp(-drag * dt)` each step |
+| `noiseForce`, `noiseScale`, `noiseSpeed` | 0, 0.2, 0.2 | acceleration from a curl-noise field: strength, size of the features (`scale` as in `noise`) and how fast the field evolves with time |
+| `attract`, `attractX`, `attractY`, `attractSoftening` | 0, 0, 0, 0.5 | pull towards a point: `attract * d / (r^2 + softening^2)^1.5`, an inverse-square force that does not blow up at the centre |
+| `swirl` | 0 | the same force turned a quarter turn: acceleration around the attractor point |
+| `repel`, `repelRadius` | 0, 0.3 | particles closer than `repelRadius` push each other apart (soft collisions); the strongest push is `repel` at distance 0. This builds a grid every step, so it is the expensive force |
+| `lifetime` | 0 | seconds a particle lives (0: forever). When it ends the particle restarts from its input position and velocity. Starting ages are staggered, so the respawns are spread over the lifetime instead of all happening at once |
+| `initialSpeed`, `speedVariation`, `direction`, `spread` | 0, 0, 90, 360 | emission velocity added to the particle's own: speed (with a random fraction `speedVariation` either way), heading in degrees from +x and the cone width in degrees. A particle gets a new random velocity at each respawn |
+| `boundary` | `none` | `none`; `bounce` (reflect at the box with the velocity scaled by `bounce`, and `friction` slows the sliding velocity); `wrap` (leave on one side and come back on the other) |
+| `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box for `bounce` and `wrap` |
+| `bounce`, `friction` | 0.6, 0 | restitution and sliding friction at the box |
+
+Input attributes `vx` and `vy` give each particle a starting velocity (a wrangle can set them, as in the orbit example); the
+output has `vx`, `vy`, `age` (seconds since the last respawn), `life` (`age / lifetime`, 0 to 1, 0 without a lifetime) and `speed`,
+and keeps every other attribute, so colour and `rand` survive.
+
+**How the simulation relates to time.** The result is a pure function of the input, the parameters and the playhead: the same time
+always gives the same points, on any number of threads, and a graph reopened tomorrow gives the same frame. The node remembers the
+state of its latest cook. Playing forward only advances the new steps (cheap); scrubbing backwards, changing a parameter or changing
+the input restarts from the input and simulates up to the playhead (cost proportional to the elapsed time). The step count is
+limited to 1,000,000 (about 2.3 hours at the default rate); a simulation that long is better baked than cooked.
+
+Cost per second of animation is points times `stepsPerSecond` times the work of the forces: the fountain and the orbit below
+(14,000 and 12,000 particles, 6 s, 720 steps) take about 45 ms each. `noiseForce` adds about eight noise samples per particle per
+step, and `repel` a grid build and neighbour search.
+
+![a fountain and orbiting particles at t = 6 s](images/fxParticles.png)
+
+`examples/graphs/fx/fxParticles.json` rendered with `jitnodesCli ... --time 6`. Left, a fountain: a tiny gaussian `generate` as
+the nozzle, `initialSpeed` 11 in a 50 degree cone, gravity -9.8, a bouncing floor and `lifetime` 4 (coloured by `life`). Right, 12,000
+particles on a disc around an attractor of strength 30, each given 55% of the circular speed by a wrangle (`vx`, `vy`); by t = 6 the
+disc has wound up into concentric shells, coloured by `speed`. In the editor, press play and both move.
 
 ### render (one input)
 

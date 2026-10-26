@@ -100,6 +100,7 @@ void registerTopologyNodes();
 void registerGenerateNodes();
 void registerFxNodes();
 void registerPatternNodes();
+void registerParticleNodes();
 void registerSubnetNodes();
 
 class Network {

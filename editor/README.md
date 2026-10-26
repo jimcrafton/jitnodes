@@ -74,7 +74,7 @@ takes a few minutes; later builds only rebuild what changed. `ui/mainWindow.newu
   to model is tested without a mouse or a visible window.
 
 Wired so far: New/Open/Save (Save asks for a path the first time; New and Open ask before discarding changes), Undo/Redo
-(enabled from `canUndo`/`canRedo`), the twenty-two palette buttons (two columns), Play/Pause with the time slider and label, the fusion
+(enabled from `canUndo`/`canRedo`), the twenty-five palette buttons (two columns), Play/Pause with the time slider and label, the fusion
 toggle, thread count and instruction set drop-downs, the node title/type, status, cook info, profile summary and the window
 title (`name*` when modified). The graph starts empty: click a palette button (for example `line`, then `transform`) to add nodes. Graph canvas: left-drag a node to move it; left-drag from an output port (bottom centre) to a node or an input port (top)
 to connect; left-drag a connected input port to detach and re-drop the wire; double-click a node to make it the display

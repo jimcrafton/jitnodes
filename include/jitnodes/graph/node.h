@@ -124,6 +124,8 @@ public:
     virtual const Network* childNetwork() const { return nullptr; }
     virtual bool isAssetInstance() const { return false; }  // child graph comes from the asset definition, not the file
     virtual bool childDependsOnTime() const { return false; }
+    // True for nodes that read the playhead (CookContext::time) themselves, such as a simulation: the network recooks them when the time changes.
+    virtual bool dependsOnPlayhead() const { return false; }
     virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
 protected:

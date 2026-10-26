@@ -103,8 +103,8 @@ it may do with the node:
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
 `merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, the point and image nodes
-`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor` and `render` (see
-[fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp` and `patternNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`
+`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `particles` and `render` (see
+[fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`
 and `subnetInput`; assets register more.
 
 **`Network`** owns the nodes in slots (`Node` + its input ids), assigns ids, checks for cycles on `connect`, keeps the
@@ -194,7 +194,10 @@ Consequences worth knowing:
   starts its next task. Finished nodes keep their results, unfinished ones stay dirty. Granularity is one node.
 - **Time:** `setTime(t)` only dirties nodes whose parameters depend on time: keyframes, `time` / `frame` in an
   expression, or references (transitively, also through `parent.`) to such parameters. Everything else keeps its cache,
-  which is why scrubbing or playing a mostly static graph is cheap.
+  which is why scrubbing or playing a mostly static graph is cheap. A node that reads `CookContext::time` itself (the
+  `particles` simulation) says so by overriding `Node::dependsOnPlayhead()`, and is then dirtied by every `setTime`. Such a
+  node may keep state between cooks (the simulation keeps its latest step) as long as the result stays a pure function of
+  inputs, parameters and time.
 
 ## The JIT: from wrangle text to machine code
 
