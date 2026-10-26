@@ -1,0 +1,29 @@
+// A stochastic tree whose strokes are widened with ribbon: the width falls with branch depth (widthAttrib), and taper pinches every stroke to
+// a point at both ends, so each stroke becomes a thin leaf-shaped outline. curveSample puts points on the outlines, keeping depth and u.
+//   jitnodesCli examples/graphs/fx/fxRibbon.json --png fxRibbon.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    {
+      id: 1, type: "lsystem", name: "tree",
+      floats: { iterations: 5, angle: 24, angleJitter: 9, length: 1.2, lengthJitter: 0.25, branchScale: 0.82, startX: 0, startY: -6.5, seed: 7 },
+      strings: { axiom: "X", rules: "X=F[+X][-X]FX; X=F[+X]F[-X]X; X=FF[+X][-X]" },
+      inputs: []
+    },
+    { id: 2, type: "wrangle", name: "thickness", strings: { code: "w = 1 - depth * 0.13;" }, inputs: [1] },
+    { id: 3, type: "ribbon", name: "wood", floats: { width: 0.6, widthEnd: 0.6, taper: 0.5 }, strings: { widthAttrib: "w", output: "outline" }, inputs: [2] },
+    { id: 4, type: "curveSample", name: "outlinePoints", floats: { count: 0, spacing: 0.03 }, inputs: [3] },
+    { id: 5, type: "colorRamp", name: "color", floats: { min: 0, max: 5 }, strings: { attribute: "depth", ramp: "0 #8a5a3a, 0.4 #ff9a5a, 1 #ffe9a8" }, inputs: [4] },
+    { id: 6, type: "wrangle", name: "look", strings: { code: "radius = 0.05; alpha = 0.5; softness = 0.5;" }, inputs: [5] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 600, viewCx: 0, viewCy: -2.5, viewWidth: 12 },
+      strings: { background: "#000000" },
+      inputs: [6]
+    }
+  ]
+}

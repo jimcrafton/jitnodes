@@ -362,23 +362,41 @@ struct BoidsState {
     int64_t step = -1;
     std::vector<float> x, y, vx, vy, nx, ny, nvx, nvy, neighbors;
     std::vector<float> ox, oy, orad;
+    std::vector<float> baseX, baseY, ovx, ovy;
+    bool obstaclesMove = false;
+    float obstacleReach = 0.0f;
     PointGrid obstacleGrid;
 };
 
-// Circles from the points of the obstacle inputs: the point's `radius` attribute, or `fallback` for points without one.
+// Circles from the points of the obstacle inputs: the point's `radius` attribute, or the fallback for points without one.
+// `vx`/`vy` give an obstacle a constant velocity: it sits at its input position at the start time and drifts from there.
 void gatherObstacles(BoidsState& st, const std::vector<GeometryHandle>& in, const BoidsSettings& s) {
-    float reach = 0.0f;
     for (size_t k = 1; k < in.size(); ++k) {
         const Geometry& g = *in[k];
         const AttribArray* radius = g.findAttrib(AttribClass::point, "radius");
+        const AttribArray* avx = g.findAttrib(AttribClass::point, "vx");
+        const AttribArray* avy = g.findAttrib(AttribClass::point, "vy");
         for (size_t i = 0; i < g.pointCount(); ++i) {
-            st.ox.push_back(std::as_const(g).x()[i]);
-            st.oy.push_back(std::as_const(g).y()[i]);
+            st.baseX.push_back(std::as_const(g).x()[i]);
+            st.baseY.push_back(std::as_const(g).y()[i]);
+            st.ovx.push_back(avx ? avx->at(i) : 0.0f);
+            st.ovy.push_back(avy ? avy->at(i) : 0.0f);
             st.orad.push_back(radius ? std::max(radius->at(i), 0.0f) : s.obstacleRadius);
-            reach = std::max(reach, st.orad.back());
+            st.obstacleReach = std::max(st.obstacleReach, st.orad.back());
+            st.obstaclesMove = st.obstaclesMove || st.ovx.back() != 0.0f || st.ovy.back() != 0.0f;
         }
     }
-    if (!st.ox.empty()) st.obstacleGrid.build(st.ox.data(), st.oy.data(), st.ox.size(), std::max(reach + s.avoidDistance, 1e-3f));
+    st.ox = st.baseX;
+    st.oy = st.baseY;
+}
+
+void placeObstacles(BoidsState& st, const BoidsSettings& s, float simTime) {
+    if (st.ox.empty()) return;
+    for (size_t j = 0; j < st.ox.size(); ++j) {
+        st.ox[j] = st.baseX[j] + st.ovx[j] * simTime;
+        st.oy[j] = st.baseY[j] + st.ovy[j] * simTime;
+    }
+    st.obstacleGrid.build(st.ox.data(), st.oy.data(), st.ox.size(), std::max(st.obstacleReach + s.avoidDistance, 1e-3f));
 }
 
 void initialiseBoids(BoidsState& st, const Geometry& in, const BoidsSettings& s) {
@@ -416,6 +434,7 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
     const float r2 = s.radius * s.radius, sr2 = s.separationRadius * s.separationRadius;
     const float width = s.maxX - s.minX, height = s.maxY - s.minY;
     const bool haveObstacles = !st.ox.empty();
+    if (st.obstaclesMove) placeObstacles(st, s, simTime);
     parallelChunks(pool, n, [&](size_t begin, size_t end) {
         for (size_t i = begin; i < end; ++i) {
             const float px = st.x[i], py = st.y[i];
@@ -498,7 +517,7 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
                     const float nx = d > 1e-9f ? dx / d : 1.0f, ny = d > 1e-9f ? dy / d : 0.0f;
                     x = st.ox[j] + nx * (st.orad[j] + 1e-3f);
                     y = st.oy[j] + ny * (st.orad[j] + 1e-3f);
-                    const float inward = vx * nx + vy * ny;
+                    const float inward = (vx - st.ovx[j]) * nx + (vy - st.ovy[j]) * ny;
                     if (inward < 0.0f) {
                         vx -= inward * nx;
                         vy -= inward * ny;
@@ -614,6 +633,7 @@ public:
             st.boundary = boundary;
             initialiseBoids(st, *in[0], s);
             gatherObstacles(st, in, s);
+            placeObstacles(st, s, 0.0f);
         }
         for (int64_t step = st.step + 1; step <= target; ++step) advanceBoids(st, s, step, ctx.pool);
         st.step = target;

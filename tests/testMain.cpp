@@ -3709,6 +3709,169 @@ TEST(curveSampleSpacesPointsAlongCurvesWithFramesAndAttributes) {
     CHECK(net.cook(cs)->pointCount() == 0);  // nothing to sample on a single point
 }
 
+TEST(boidsObstaclesDriftWithTheirVelocityWithoutRestarting) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId rock = net.addNode("generate");
+    net.node(rock).setFloat("count", 1.0f);
+    net.node(rock).setFloat("width", 0.0f);
+    net.node(rock).setFloat("height", 0.0f);
+    NodeId drift = net.addNode("wrangle");
+    net.connect(rock, drift);
+    net.node(drift).setString("code", "vx = 1.5; radius = 1.5;");
+    NodeId sim = net.addNode("boids");
+    net.connect(gen, sim);
+    net.connect(drift, sim, 1);
+    net.node(sim).setFloat("radius", 1.5f);
+    for (const char* p : {"boundsMinX", "boundsMinY"}) net.node(sim).setFloat(p, -12.0f);
+    for (const char* p : {"boundsMaxX", "boundsMaxY"}) net.node(sim).setFloat(p, 12.0f);
+
+    // The rock is at x = 1.5 * t, and no boid is ever inside it.
+    std::vector<std::shared_ptr<const Geometry>> walked;
+    for (double t : {0.5, 1.0, 2.0, 3.0}) {
+        net.setTime(t);
+        auto g = net.cook(sim);
+        const float cx = 1.5f * static_cast<float>(t);
+        for (size_t i = 0; i < g->pointCount(); ++i) CHECK(std::hypot(g->x()[i] - cx, g->y()[i]) >= 1.5f - 0.01f);
+        walked.push_back(g);
+    }
+
+    // A pure function of time: jumping straight to t = 3 gives what playing up to it gave.
+    Network jump(2);
+    NodeId g2 = jump.addNode("generate"), r2 = jump.addNode("generate"), w2 = jump.addNode("wrangle"), s2 = jump.addNode("boids");
+    jump.connect(g2, s2);
+    jump.connect(r2, w2);
+    jump.connect(w2, s2, 1);
+    for (const char* p : {"count", "width", "height"}) jump.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"count", "width", "height"}) jump.node(r2).setFloat(p, net.node(rock).getFloat(p));
+    jump.node(w2).setString("code", "vx = 1.5; radius = 1.5;");
+    for (const char* p : {"radius", "boundsMinX", "boundsMinY", "boundsMaxX", "boundsMaxY"}) jump.node(s2).setFloat(p, net.node(sim).getFloat(p));
+    jump.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *jump.cook(s2)));
+
+    // The velocity matters: a rock that stays put leaves the flock somewhere else.
+    net.node(drift).setString("code", "radius = 1.5;");
+    net.setTime(3.0);
+    CHECK(!sameGeometry(*walked.back(), *net.cook(sim)));
+}
+
+TEST(ribbonWidensCurvesIntoOutlinesEdgesAndRungs) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 11.0f);
+    net.node(line).setFloat("length", 10.0f);
+    net.node(line).setFloat("y", 3.0f);
+    NodeId rb = net.addNode("ribbon");
+    net.connect(line, rb);
+    net.node(rb).setFloat("width", 2.0f);
+    net.node(rb).setFloat("widthEnd", 2.0f);
+    auto outline = net.cook(rb);
+    CHECK(outline->pointCount() == 22 && outline->primitiveCount() == 1);
+    CHECK(outline->primitives()[0].closed && outline->primitives()[0].count == 22);
+    for (size_t i = 0; i < 22; ++i) {
+        const float side = outline->findAttrib(AttribClass::point, "side")->at(i);
+        CHECK_NEAR(outline->y()[i], 3.0f + side);  // left of +x is +y
+        CHECK_NEAR(outline->findAttrib(AttribClass::point, "width")->at(i), 2.0f);
+    }
+    CHECK(outline->findAttrib(AttribClass::point, "side")->at(0) == 1.0f && outline->findAttrib(AttribClass::point, "side")->at(21) == -1.0f);
+
+    net.node(rb).setString("output", "edges");
+    auto edges = net.cook(rb);
+    CHECK(edges->primitiveCount() == 2 && !edges->primitives()[0].closed && edges->primitives()[1].start == 11);
+    net.node(rb).setString("output", "rungs");
+    auto rungs = net.cook(rb);
+    CHECK(rungs->primitiveCount() == 11 && rungs->primitives()[3].count == 2);
+    CHECK_NEAR(rungs->y()[6] - rungs->y()[7], 2.0f);
+
+    // Width runs from one end to the other, tapers pinch the ends, and an attribute scales it.
+    net.node(rb).setString("output", "outline");
+    net.node(rb).setFloat("width", 0.0f);
+    net.node(rb).setFloat("widthEnd", 4.0f);
+    auto grown = net.cook(rb);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(0), 0.0f);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(10), 4.0f);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(5), 2.0f);
+    net.node(rb).setFloat("width", 2.0f);
+    net.node(rb).setFloat("widthEnd", 2.0f);
+    net.node(rb).setFloat("taper", 0.2f);
+    auto pinched = net.cook(rb);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(0), 0.0f);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(10), 0.0f);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(5), 2.0f);
+    net.node(rb).setFloat("taper", 0.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "w = x;");
+    net.connect(wr, rb);
+    net.node(rb).setString("widthAttrib", "w");
+    auto scaled = net.cook(rb);
+    CHECK_NEAR(scaled->findAttrib(AttribClass::point, "width")->at(4), 2.0f * scaled->findAttrib(AttribClass::point, "w")->at(4));
+    net.node(rb).setString("widthAttrib", "missing");
+    CHECK(cookThrows(net, rb));
+    net.node(rb).setString("widthAttrib", "");
+    net.node(rb).setString("output", "sideways");
+    CHECK(cookThrows(net, rb));
+
+    // Closed curves give two closed rings and every point keeps its source attributes.
+    Network cells(2);
+    NodeId pts = cells.addNode("generate"), vor = cells.addNode("voronoi"), rib = cells.addNode("ribbon");
+    cells.node(pts).setFloat("count", 12.0f);
+    cells.connect(pts, vor);
+    cells.connect(vor, rib);
+    cells.node(rib).setString("output", "edges");
+    auto base = cells.cook(vor);
+    auto rings = cells.cook(rib);
+    CHECK(rings->primitiveCount() == 2 * base->primitiveCount());
+    CHECK(rings->pointCount() == 2 * base->pointCount());
+    for (const Primitive& p : rings->primitives()) CHECK(p.closed);
+
+    Network other(4);
+    NodeId l2 = other.addNode("line"), r2 = other.addNode("ribbon");
+    other.connect(l2, r2);
+    other.node(l2).setFloat("count", 11.0f);
+    other.node(l2).setFloat("length", 10.0f);
+    other.node(l2).setFloat("y", 3.0f);
+    other.node(r2).setFloat("width", 0.0f);
+    other.node(r2).setFloat("widthEnd", 4.0f);
+    CHECK(sameGeometry(*grown, *other.cook(r2)));
+}
+
+TEST(trailDrawsStreaksBehindMovingPoints) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 20.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(gen, wr);
+    net.node(wr).setString("code", "vx = 2; vy = 0;");
+    NodeId tr = net.addNode("trail");
+    net.connect(wr, tr);
+    net.node(tr).setFloat("length", 0.5f);
+    net.node(tr).setFloat("segments", 4.0f);
+    auto base = net.cook(wr);
+    auto g = net.cook(tr);
+    CHECK(g->pointCount() == 20 * 5 && g->primitiveCount() == 20);
+    for (size_t p = 0; p < 20; ++p) {
+        const size_t head = p * 5, tail = p * 5 + 4;
+        CHECK_NEAR(g->x()[head], base->x()[p]);
+        CHECK_NEAR(g->x()[tail], base->x()[p] - 1.0f);  // 2 per second for half a second, behind the point
+        CHECK_NEAR(g->y()[tail], base->y()[p]);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "u")->at(tail), 1.0f);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "alpha")->at(head), 1.0f);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "alpha")->at(tail), 0.0f);
+        CHECK(g->findAttrib(AttribClass::point, "trail")->ints()[tail] == static_cast<int32_t>(p));
+        CHECK(g->primitives()[p].start == head && g->primitives()[p].count == 5 && !g->primitives()[p].closed);
+    }
+    net.node(tr).setFloat("maxLength", 0.25f);
+    CHECK_NEAR(net.cook(tr)->x()[4], base->x()[0] - 0.25f);
+    net.node(tr).setFloat("fade", 0.0f);
+    CHECK_NEAR(net.cook(tr)->findAttrib(AttribClass::point, "alpha")->at(4), 1.0f);
+    net.connect(gen, tr);
+    CHECK(cookThrows(net, tr));  // no velocity to follow
+}
+
 TEST(reactionDiffusionGrowsPatternsDeterministicallyAndStaysBounded) {
     auto build = [](Network& net, NodeId& sim) {
         sim = net.addNode("reactionDiffusion");

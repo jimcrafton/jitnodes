@@ -52,8 +52,8 @@ Sample graphs in `examples/graphs/`: `clouds.json` (sprites: sky, sun, drifting 
 - **Toolbar:** New, Open, Save (graph files are JSON5, see [architecture.md](architecture.md#persistence-undo-and-clips)),
   Undo / Redo, Play with a time slider, and the global engine settings: fusion on/off, thread count, instruction set.
 - **Palette:** one button per node type. Clicking one adds a node and wires the *selected* node into its first input,
-  makes it the display node and selects it, so building a chain is "click, click, click". The last nineteen buttons
-  (generate, scatter, noise, warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, render) are the [fx nodes](fx.md). The Assets section lists registered
+  makes it the display node and selects it, so building a chain is "click, click, click". The last twenty-one buttons
+  (generate, scatter, noise, warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, ribbon, trail, render) are the [fx nodes](fx.md). The Assets section lists registered
   assets.
 - **Graph:** the canvas. Nodes are boxes with input ports on top and an output port at the bottom; the display node
   is highlighted.

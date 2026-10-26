@@ -345,7 +345,7 @@
                 bounds: {
                   type: "Rect",
                   pos: { type: "Point", x: 8, y: 28 },
-                  size: { type: "Size", width: 174, height: 319 }
+                  size: { type: "Size", width: 174, height: 339 }
                 },
                 visible: true,
                 layout: { type: "FlexLayout", orientation: "Vertical", spacing: 1 },
@@ -1052,6 +1052,52 @@
                     childViews: [
                       {
                         type: "Button",
+                        text: "ribbon",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 0, y: 0 },
+                          size: { type: "Size", width: 85, height: 19 }
+                        },
+                        name: "addRibbon",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 85, height: 19 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "Button",
+                        text: "trail",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 89, y: 0 },
+                          size: { type: "Size", width: 85, height: 19 }
+                        },
+                        name: "addTrail",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 85, height: 19 },
+                        desiredSizeOverride: true
+                      }
+                    ]
+                  },
+                  {
+                    type: "SubView",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 0, y: 320 },
+                      size: { type: "Size", width: 174, height: 19 }
+                    },
+                    visible: true,
+                    layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
+                    childViews: [
+                      {
+                        type: "Button",
                         text: "render",
                         bounds: {
                           type: "Rect",
@@ -1075,7 +1121,7 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 350 },
+                  pos: { type: "Point", x: 8, y: 370 },
                   size: { type: "Size", width: 174, height: 1 }
                 },
                 visible: true,
@@ -1093,7 +1139,7 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 354 },
+                  pos: { type: "Point", x: 8, y: 374 },
                   size: { type: "Size", width: 174, height: 17 }
                 },
                 style: {
@@ -1109,8 +1155,8 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 375 },
-                  size: { type: "Size", width: 174, height: 36 }
+                  pos: { type: "Point", x: 8, y: 395 },
+                  size: { type: "Size", width: 174, height: 28 }
                 },
                 visible: true,
                 name: "assetListHost",
@@ -1118,7 +1164,7 @@
                   type: "ViewStyle",
                   backgroundFill: { type: "Fill", kind: "Color", color: "#8080801a" }
                 },
-                desiredSize: { type: "Size", width: 174, height: 36 },
+                desiredSize: { type: "Size", width: 174, height: 28 },
                 desiredSizeOverride: true,
                 childViews: []
               },
@@ -1128,8 +1174,8 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 414 },
-                  size: { type: "Size", width: 174, height: 42 }
+                  pos: { type: "Point", x: 8, y: 426 },
+                  size: { type: "Size", width: 174, height: 30 }
                 },
                 name: "assetDetails",
                 style: {
@@ -1140,7 +1186,7 @@
                   textColor: "#9a9ca3",
                   textAlignment: "Left"
                 },
-                desiredSize: { type: "Size", width: 174, height: 42 },
+                desiredSize: { type: "Size", width: 174, height: 30 },
                 desiredSizeOverride: true
               },
               {

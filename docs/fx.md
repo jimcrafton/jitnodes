@@ -1,8 +1,9 @@
 # Generating points and drawing pictures with them
 
-Nineteen nodes turn jitnodes into a small particle-image tool: four make points (`reactionDiffusion` makes a grid and `lsystem`
-plants), fourteen shape them (noise, warp, colour, spacing, sampling curves, smoothing, waves, strange attractors, flow lines,
-Voronoi cells, Lloyd relaxation, and three simulations: particles, boids, springs), and one (`render`) says
+Twenty-one nodes turn jitnodes into a small particle-image tool: four make points (`reactionDiffusion` makes a grid and `lsystem`
+plants), sixteen shape them (noise, warp, colour, spacing, sampling curves, widening curves into ribbons, motion streaks,
+smoothing, waves, strange attractors, flow lines, Voronoi cells, Lloyd relaxation, and three simulations: particles, boids,
+springs), and one (`render`) says
 how the points become an image. Together they draw pictures such as the nebula in
 `examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
 
@@ -13,8 +14,8 @@ jitnodesEditor examples/graphs/nebula.json
 
 ![The nebula graph rendered by jitnodesCli](images/nebula.png)
 
-In the editor the nineteen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
-attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, render): select a
+In the editor the twenty-one nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
+attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, ribbon, trail, render): select a
 node, click a button and the new node is wired to the selected one. Each example below is a small graph in
 `examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
 parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
@@ -413,10 +414,16 @@ Input attributes `vx` and `vy` give the initial velocities; without them every b
 is a set of obstacles: each of its points is a circle centred on the point, with the radius of its `radius` attribute, or
 `obstacleRadius` if the point has none. A boid within `avoidDistance` of a circle's edge steers away from it, more strongly the
 closer it is (`avoid` is the weight), and a boid that ends a step inside a circle is moved to its surface and loses the velocity
-into it, so nothing ever sits inside a rock. The obstacles are read when the simulation starts and stay where they are: an
-obstacle input that changes with time restarts the simulation at every new time, which still gives the right picture but costs a
-simulation from the start each frame. Because `render` also draws a point with its `radius`, the same points can be merged into the
-picture as discs, as in the example.
+into it, so nothing ever sits inside a rock. Because `render` also draws a point with its `radius`, the same points can be merged
+into the picture as discs, as in the example.
+
+**Moving obstacles.** An obstacle point with `vx` / `vy` attributes drifts at that constant velocity: it sits at its input position
+at `startTime` and is at `position + velocity * (time - startTime)` after that. A boid pushed by a moving rock also takes the
+rock's velocity into account (it loses only the velocity *relative* to the rock that points into it). The positions follow the
+simulation's own clock, so a moving obstacle does not restart the simulation and the result is still a pure function of time. Only
+straight-line motion is supported this way; an obstacle input that is itself animated by the playhead (a node that depends on
+time upstream) is a new geometry at every time, so it is read when the simulation starts and restarts the simulation at every new
+time: the right picture, but a simulation from the start each frame.
 
 ![two flocks: swarms and a gas](images/fxBoids.png)
 
@@ -549,6 +556,54 @@ times the work of none.
 `depth`. Middle: three alternative rules for `X` at 24 degrees with `angleJitter` 9, `lengthJitter` 0.25 and `branchScale` 0.82, so
 every branch is shorter than its parent and no two look alike. Right: `F=F-G+F+G-F; G=GG` at 120 degrees, the Sierpinski
 triangle, coloured along its stroke by `u`. Each is sampled with `curveSample` and `spacing` 0.04 to 0.05.
+
+### ribbon (one input)
+
+Gives curves a width. Every input curve (polylines; cubics are flattened first, `tolerance` as in `scatter`) is offset to its left and
+right by half the width at each point, and the offsets become new lines: a closed **outline**, two **edges**, or a line across the
+curve at every point (**rungs**). Corners are mitred, up to twice the half width, so sharp turns do not pinch or spike.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `width`, `widthEnd` | 0.1, 0.1 | full width at the start and at the end of each curve; it changes linearly in between (by arc length) |
+| `taper` | 0 | 0 to 0.5: pinch both ends of an open curve to a point over this fraction of its length (smooth); closed curves are not tapered |
+| `widthAttrib` | empty | name of a point attribute that multiplies the width at each point (the node throws if the input has no such attribute) |
+| `output` | `outline` | `outline`: one closed polyline per open curve (left side forward, right side back); two closed rings per closed curve. `edges`: two lines per curve, open for an open curve. `rungs`: one two-point line per curve point |
+| `tolerance` | 0.1 | curve flattening tolerance |
+
+Every output point keeps the attributes of the curve point it came from, with three added: `side` (1 on the left of the direction of
+travel, -1 on the right), `u` (0 to 1 along the curve) and `width` (the width used at that point). The output has no filled area
+(the geometry has no polygons), so to see a ribbon in the renderer, run `curveSample` on the outline as in the example. Cost is
+linear in the points and the attributes.
+
+![a tree drawn with tapered ribbons](images/fxRibbon.png)
+
+`examples/graphs/fx/fxRibbon.json`: an `lsystem` tree whose strokes get `w = 1 - depth * 0.13` from a `wrangle`; `ribbon` uses it
+as `widthAttrib` (thinner towards the tips) with `width` 0.6 and `taper` 0.5, so every stroke becomes a thin leaf-shaped outline.
+
+### trail (one input)
+
+A motion streak behind every point: a polyline of `segments` segments starting at the point and running back along its velocity
+(`vx`, `vy`) for `length` seconds. It is an extrapolation of the *current* velocity, a straight line, not a record of where the point
+has been (that would need the input at earlier times, which a node cannot ask for). It is exact for points that move in a straight
+line, such as `particles` without forces or `boids` over a short `length`, and it is a pure function of the input. The node throws if
+the input has neither `vx` nor `vy`.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `length` | 0.3 | how many seconds of velocity the streak covers |
+| `segments` | 8 | segments per streak (1 to 1000); each streak has `segments + 1` points |
+| `fade` | 1 | 0 to 1: `alpha` is multiplied by `1 - fade * u` along the streak, so the tail disappears at 1 (an input without `alpha` is taken as 1) |
+| `maxLength` | 0 | if above 0, longer streaks are shortened to this length in world units |
+
+Every streak point keeps the attributes of its point (position aside), plus `u` (0 at the head, which sits on the point, to 1 at the
+tail) and `trail` (the index of the point it belongs to). The output has one open polyline per input point. Put `curveSample` after
+it to turn the lines into evenly spaced points that keep `Cd` and the faded `alpha`.
+
+![streaks behind a flock](images/fxTrails.png)
+
+`examples/graphs/fx/fxTrails.json` at `--time 9`: the clustering flock of the boids example, coloured by heading, with `trail`
+(`length` 0.45, 6 segments) and `curveSample` (`spacing` 0.04).
 
 ### render (one input)
 

@@ -1,0 +1,31 @@
+// A flock of 700 boids after 9 seconds with a motion streak behind every boid. trail draws a straight line back along each boid's velocity,
+// fading toward the tail; curveSample then puts evenly spaced points on the streaks, keeping the heading colour and the fading alpha.
+//   jitnodesCli examples/graphs/fx/fxTrails.json --png fxTrails.png --time 9
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "start", floats: { count: 700, seed: 3, width: 24, height: 12 }, inputs: [] },
+    {
+      id: 2, type: "boids", name: "flock",
+      floats: {
+        radius: 1.6, separationRadius: 0.5, separation: 1.2, alignment: 3, cohesion: 1.2, minSpeed: 1.5, maxSpeed: 4, maxForce: 8,
+        wander: 0.4, boundsMinX: -14, boundsMaxX: 14, boundsMinY: -7, boundsMaxY: 7, seed: 5
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "colorRamp", name: "headingColor", floats: { min: -3.1416, max: 3.1416 }, strings: { attribute: "angle", ramp: "0 #ff5a7a, 0.25 #ffd36a, 0.5 #5affb0, 0.75 #4aa8ff, 1 #ff5a7a" }, inputs: [2] },
+    { id: 4, type: "trail", name: "streaks", floats: { length: 0.45, segments: 6, fade: 1 }, inputs: [3] },
+    { id: 5, type: "curveSample", name: "streakPoints", floats: { count: 0, spacing: 0.04 }, inputs: [4] },
+    { id: 6, type: "wrangle", name: "look", strings: { code: "radius = 0.1; softness = 0.6;" }, inputs: [5] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.2, gamma: 2.2, width: 840, height: 420, viewCx: 0, viewCy: 0, viewWidth: 30 },
+      strings: { background: "#000000" },
+      inputs: [6]
+    }
+  ]
+}

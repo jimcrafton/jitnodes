@@ -34,7 +34,8 @@ const std::vector<PaletteEntry> palette = {
     {"addRelax", "relax"}, {"addAttribBlur", "attribBlur"}, {"addWave", "wave"}, {"addAttractor", "attractor"}, {"addFlow", "flow"},
     {"addVoronoi", "voronoi"}, {"addLloyd", "lloyd"}, {"addParticles", "particles"}, {"addBoids", "boids"},
     {"addSprings", "springs"}, {"addReaction", "reactionDiffusion"},
-    {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRender", "render"},
+    {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
+    {"addRender", "render"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
