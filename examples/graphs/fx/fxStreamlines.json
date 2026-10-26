@@ -1,0 +1,46 @@
+// streamlines with spacing control. Left: a curl-noise field; 6,000 random seeds, but a seed too close to an earlier line is dropped and a line ends
+// when it comes closer than half of `separation` to another, so the lines are evenly spread. Right: the same idea on the velocity of a gasField
+// (a nozzle blowing to the right, at t = 2), which is read as a grid through the second input.
+//   jitnodesCli examples/graphs/fx/fxStreamlines.json --png fxStreamlines.png --time 2
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "seedsCurl", floats: { count: 6000, seed: 3, cx: -5.5, width: 10, height: 11 }, inputs: [] },
+    {
+      id: 2, type: "streamlines", name: "curlLines",
+      floats: { scale: 0.18, octaves: 2, seed: 4, stepSize: 0.04, maxSteps: 400, separation: 0.3, useBounds: 1, boundsMinX: -10.5, boundsMaxX: -0.5, boundsMinY: -5.5, boundsMaxY: 5.5 },
+      strings: { field: "curl" },
+      inputs: [1]
+    },
+    { id: 3, type: "curveSample", name: "curlDots", floats: { count: 0, spacing: 0.03 }, inputs: [2] },
+    { id: 4, type: "colorRamp", name: "curlColor", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #fff3c4, 0.5 #ff8f5a, 1 #7a1fa8" }, inputs: [3] },
+    {
+      id: 5, type: "gasField", name: "wind",
+      floats: {
+        boundsMinX: 0.5, boundsMaxX: 10.5, boundsMinY: -5.5, boundsMaxY: 5.5, resolution: 64, nozzleX: 1.5, nozzleY: 0, nozzleRadius: 1.2,
+        nozzleSpeed: 8, nozzleDensity: 0, nozzleHeat: 0, buoyancy: 0, vorticity: 6
+      },
+      inputs: []
+    },
+    { id: 6, type: "generate", name: "seedsWind", floats: { count: 6000, seed: 5, cx: 5.5, width: 10, height: 11 }, inputs: [] },
+    {
+      id: 7, type: "streamlines", name: "windLines",
+      floats: { stepSize: 0.04, maxSteps: 400, separation: 0.3, minSpeed: 0.05 },
+      inputs: [6, 5]
+    },
+    { id: 8, type: "curveSample", name: "windDots", floats: { count: 0, spacing: 0.03 }, inputs: [7] },
+    { id: 9, type: "colorRamp", name: "windColor", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #d8fbff, 0.5 #4fc3ff, 1 #1b2fd0" }, inputs: [8] },
+    { id: 10, type: "merge", name: "all", inputs: [4, 9] },
+    { id: 11, type: "wrangle", name: "look", strings: { code: "radius = 0.035; alpha = 0.7; softness = 0.5;" }, inputs: [10] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 800, height: 400, viewWidth: 22 },
+      strings: { background: "#000000" },
+      inputs: [11]
+    }
+  ]
+}

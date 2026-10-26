@@ -132,7 +132,7 @@ class Palette(EditorCase):
     def test_every_fx_palette_button_adds_its_node(self):
         buttons = ["addGenerate", "addScatter", "addNoise", "addWarp", "addColorRamp", "addRelax", "addAttribBlur",
                    "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addLsystem", "addCurveSample", "addRibbon", "addTrail", "addFileRead", "addFileCache", "addRender",
-                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail", "addGasField"]
+                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail", "addGasField", "addGrow", "addStreamlines"]
         for count, button in enumerate(buttons, 1):
             with self.subTest(button=button):
                 self.app.click(button)

@@ -185,6 +185,7 @@ void registerBuiltinNodes() {
     registerGasNodes();
     registerFieldNodes();
     registerCurveNodes();
+    registerGenerativeNodes();
     registerFileNodes();
     registerStringNodes();
     registerSubnetNodes();

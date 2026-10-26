@@ -451,6 +451,76 @@ Limits: the solver is first order (semi-Lagrangian advection is dissipative, vor
 collocated, so a few cells of the velocity can show a checkerboard when `iterations` is low, there are no obstacles inside the box, and
 density is not strictly conserved.
 
+### grow (one input)
+
+Differential growth. Every polyline of the input (open or closed, at least 2 points; points outside primitives are ignored) becomes a
+chain of nodes that push each other apart, stay joined to their chain neighbours and split their long segments, so a short curve buckles
+into coral-like folds. Per step, from the positions at the start of the step (so the result does not depend on the thread count):
+- **repel**: a node moves away from every node within `repelRadius` that is not its chain neighbour, by `repel * (1 - d / repelRadius)` per second;
+- **attract**: it moves towards both chain neighbours by `attract` per second (a fraction of the distance), which keeps the chain joined;
+- **smooth**: it moves towards the midpoint of its two neighbours by `smooth` per second, which straightens kinks;
+- **split**: a segment longer than `maxLength` gets a new node at its midpoint (one split per segment per step, until `maxPoints`).
+The total move of a node is limited to `maxSpeed` per second. Like `particles` it is stepped from `startTime` at `stepsPerSecond` (10 to
+1000), cached, and a pure function of time (restarted when a parameter or the input changes or the time goes back; 100,000 steps at most).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond` | 0, 60 | when the growth starts and its step rate |
+| `repel`, `repelRadius` | 6, 0.6 | the push between nodes that are not neighbours, and its reach. Make the radius a few times `maxLength` |
+| `attract`, `smooth` | 8, 4 | the pull towards the neighbours and towards their midpoint |
+| `maxSpeed` | 3 | the largest move of a node, units per second |
+| `maxLength`, `maxPoints` | 0.25, 20000 | split longer segments; stop splitting at this many nodes in total |
+| `useBounds`, `boundsMinX/MaxX/MinY/MaxY` | 0, -10..10, -6..6 | 1: nodes stay inside the box (they pile up along its walls) |
+
+The output has one polyline per input chain (closed ones stay closed) with the point attributes `age` (seconds since the node was
+created, 0 for the input's own nodes at the start), `u` (0 to 1 along the chain) and `chain` (int). Attributes of the input points are not
+carried over (new nodes would have none to inherit). Cost grows with the point count and the number of neighbours within `repelRadius`. Growth in a box ends in a maze when every segment is at `maxLength` and nothing can move; a ring left to grow
+without bounds keeps expanding.
+
+![a ring of 12 nodes grown for 2.5 seconds inside a box](images/fxGrow.png)
+
+`examples/graphs/fx/fxGrow.json` at t = 2.5: a 12-node circle of radius 0.8 growing in a box of 11 by 11. `curveSample` puts dots on the
+curve and `colorRamp` colours them by `age`, so the newest folds are the paler ones at the outside. At t = 12 the box is full (20,000 nodes) and
+the render takes about 8 s.
+
+### streamlines (seed points, optionally a field grid)
+
+Curves that follow a vector field, ending where they should: each point of the first input is a seed, traced forwards and/or backwards
+with a midpoint integrator, one polyline per accepted seed. It differs from `flow`, which always takes a fixed number of steps from every
+seed and copies the seed's attributes: `streamlines` stops at the bounds, where the field vanishes and where a line comes too close to
+another, drops seeds that would crowd, reads a gas grid, and outputs variable-length lines, but runs serially and keeps no seed attributes.
+
+The field is one of:
+- `curl` (default): the curl of an fbm noise potential, which never converges, so lines swirl around its extrema;
+- `angle`: the noise value is the heading (`turns` full turns across its range), Tyler Hobbs's flow field;
+- **a grid in the second input**: a regular grid of points, row by row from bottom to top and left to right inside a row, with float
+  `vx` and `vy` attributes, sampled bilinearly. The output of `gasField` is exactly that, so the velocity of the smoke can be drawn as lines
+  (`field` and the noise parameters are then ignored). A line ends when it leaves the grid. The inputs are variable: the seeds are the
+  first connected input and the field the next one.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `field` | `curl` | `curl` or `angle`, when there is no field grid |
+| `scale`, `octaves`, `lacunarity`, `gain`, `seed`, `phase` | 0.1, 3, 2, 0.5, 1, 0 | the noise field, as in `noise` |
+| `turns` | 1 | `angle` only: turns of the heading across the noise range (0 gives straight lines along +x) |
+| `direction` | `both` | `forward`, `backward` or `both` (the seed is the middle of the line) |
+| `stepSize`, `maxSteps` | 0.05, 400 | the length of a step (also the point spacing) and the steps per direction (1 to 100,000) |
+| `separation` | 0 | the spacing (Jobard and Lefer's evenly spaced streamlines): a seed closer than this to a point of an earlier line is dropped; 0 switches spacing off. Seeds are tried in input order, so earlier ones win |
+| `endRatio` | 0.5 | a line ends when its next point would be closer than `separation * endRatio` to another line (the line's own recent points do not count, so a line may turn sharply) |
+| `minSpeed` | 0 | a line ends where the field is weaker than this |
+| `minLength` | 0 | lines shorter than this are discarded (their points free the space again) |
+| `useBounds`, `boundsMinX/MaxX/MinY/MaxY` | 0, -10..10, -6..6 | 1: lines end at the box and seeds outside it are dropped |
+
+The output has `u` (0 to 1 along the line), `speed` (the field strength; for `curl` and `angle` the raw vector length before normalising),
+`line` (int, the line's index) and `seed` (int, the index of its seed point). A closed orbit runs for `maxSteps` unless `separation` is on, which can end it
+when it comes back to an older part of itself. More than 50 million output points is an error.
+
+![evenly spaced streamlines of a curl noise and of a gas jet](images/fxStreamlines.png)
+
+`examples/graphs/fx/fxStreamlines.json`: left a curl field, 6,000 random seeds with `separation` 0.3 reduced to evenly
+spaced lines; right the velocity of a `gasField` with a rightward jet in a closed box at t = 2 (one large vortex, as it should be: nothing
+escapes), seeded the same way and read through the second input. Both take about 0.2 s.
+
 ### boids (a flock input and any number of obstacle inputs)
 
 A flock. Every input point is a boid that steers by Reynolds' three rules, looking only at the boids within `radius`: **separation**

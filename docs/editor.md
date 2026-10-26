@@ -54,7 +54,7 @@ Sample graphs in `examples/graphs/`: `clouds.json` (sprites: sky, sun, drifting 
   count, instruction set. Type a node type in the field and press Enter: an exact name (any case) adds it, so does a prefix
   or part of a name that only one type has (`groupbys`); an ambiguous or unknown text is reported in the status line with the
   candidates. It reaches every registered type, including the ones without a palette button and loaded assets.
-- **Palette:** one button per common node type (40, in rows of 16 px; `gasField` shares the last row with `render`). Clicking one adds a node and wires the *selected* node into its first input,
+- **Palette:** one button per common node type (42, in rows of 16 px; `gasField` shares a row with `render`, `grow` with `streamlines`). Clicking one adds a node and wires the *selected* node into its first input,
   makes it the display node and selects it, so building a chain is "click, click, click". The last twenty-one buttons
   (generate, scatter, noise, warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, ribbon, trail, render) are the [fx nodes](fx.md). The Assets section lists registered
   assets.

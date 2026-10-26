@@ -3718,6 +3718,177 @@ TEST(particlesAreBlownByGasAndCanStirIt) {
     CHECK(cookThrows(*on, onSim));
 }
 
+TEST(growSplitsLongSegmentsAndPushesNodesApart) {
+    Network net(1);
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 8.0f);
+    net.node(circle).setFloat("radius", 0.3f);
+    NodeId grow = net.addNode("grow");
+    net.connect(circle, grow);
+    Node& n = net.node(grow);
+    n.setFloat("attract", 0.0f);
+    n.setFloat("smooth", 0.0f);
+    n.setFloat("maxLength", 100.0f);
+    n.setFloat("repelRadius", 2.0f);
+    CHECK(net.dependsOnTime(grow));
+    auto meanRadius = [](const Geometry& g) {
+        double sum = 0.0;
+        for (size_t i = 0; i < g.pointCount(); ++i) sum += std::hypot(g.x()[i], g.y()[i]);
+        return sum / static_cast<double>(g.pointCount());
+    };
+
+    auto start = net.cook(grow);
+    CHECK(start->pointCount() == 8 && start->primitiveCount() == 1 && start->primitives()[0].closed);
+    net.setTime(0.5);
+    auto pushed = net.cook(grow);
+    CHECK(pushed->pointCount() == 8);
+    CHECK(meanRadius(*pushed) > 0.3 + 0.05);
+
+    // Without any force and with a huge maxLength nothing moves.
+    n.setFloat("repel", 0.0f);
+    auto still = net.cook(grow);
+    for (size_t i = 0; i < still->pointCount(); ++i) CHECK_NEAR(still->x()[i], start->x()[i]);
+
+    // Long segments are split, the new points are younger, and the bounds hold.
+    n.setFloat("repel", 6.0f);
+    n.setFloat("attract", 8.0f);
+    n.setFloat("smooth", 4.0f);
+    n.setFloat("maxLength", 0.2f);
+    n.setFloat("repelRadius", 0.5f);
+    n.setFloat("useBounds", 1.0f);
+    n.setFloat("boundsMinX", -1.0f);
+    n.setFloat("boundsMaxX", 1.0f);
+    n.setFloat("boundsMinY", -1.0f);
+    n.setFloat("boundsMaxY", 1.0f);
+    net.setTime(3.0);
+    auto grown = net.cook(grow);
+    CHECK(grown->pointCount() > 20);
+    float youngest = 1e9f;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        CHECK(grown->x()[i] >= -1.0f && grown->x()[i] <= 1.0f && grown->y()[i] >= -1.0f && grown->y()[i] <= 1.0f);
+        youngest = std::min(youngest, grown->findAttrib(AttribClass::point, "age")->at(i));
+    }
+    CHECK(youngest < 2.9f);
+    n.setFloat("maxPoints", 20.0f);
+    CHECK(net.cook(grow)->pointCount() <= 20);
+    n.setFloat("maxPoints", 20000.0f);
+
+    // Scrubbing back and forth, a fresh network and more threads all give the same curves.
+    net.setTime(1.0);
+    auto early = net.cook(grow);
+    net.setTime(3.0);
+    CHECK(sameGeometry(*grown, *net.cook(grow)));
+    net.setTime(1.0);
+    CHECK(sameGeometry(*early, *net.cook(grow)));
+    Network other(4);
+    NodeId circle2 = other.addNode("circle");
+    other.node(circle2).setFloat("count", 8.0f);
+    other.node(circle2).setFloat("radius", 0.3f);
+    NodeId grow2 = other.addNode("grow");
+    other.connect(circle2, grow2);
+    for (const std::string& name : n.floatNames()) other.node(grow2).setFloat(name, n.getFloat(name));
+    other.setTime(1.0);
+    CHECK(sameGeometry(*early, *other.cook(grow2)));
+
+    NodeId empty = net.addNode("generate");
+    NodeId bad = net.addNode("grow");
+    net.connect(empty, bad);
+    CHECK(cookThrows(net, bad));
+}
+
+TEST(streamlinesFollowTheFieldKeepTheirSpacingAndReadAGasGrid) {
+    auto seeds = [](Network& net, float count, float width, float height) {
+        NodeId gen = net.addNode("generate");
+        net.node(gen).setFloat("count", count);
+        net.node(gen).setFloat("width", width);
+        net.node(gen).setFloat("height", height);
+        return gen;
+    };
+    Network net(1);
+    NodeId one = seeds(net, 1.0f, 0.0f, 0.0f);
+    NodeId lines = net.addNode("streamlines");
+    net.connect(one, lines);
+    Node& n = net.node(lines);
+    // The angle field with no turns points along +x: straight lines.
+    n.setString("field", "angle");
+    n.setFloat("turns", 0.0f);
+    n.setFloat("stepSize", 0.1f);
+    n.setFloat("maxSteps", 10.0f);
+    n.setString("direction", "forward");
+    auto forward = net.cook(lines);
+    CHECK(forward->pointCount() == 11 && forward->primitiveCount() == 1);
+    CHECK_NEAR(forward->x()[10], 1.0f);
+    CHECK_NEAR(forward->y()[10], 0.0f);
+    CHECK_NEAR(forward->findAttrib(AttribClass::point, "u")->at(10), 1.0f);
+    n.setString("direction", "both");
+    auto both = net.cook(lines);
+    CHECK(both->pointCount() == 21);
+    CHECK_NEAR(both->x()[0], -1.0f);
+    CHECK_NEAR(both->x()[10], 0.0f);
+    n.setFloat("useBounds", 1.0f);
+    n.setFloat("boundsMinX", -0.35f);
+    n.setFloat("boundsMaxX", 0.55f);
+    auto clipped = net.cook(lines);
+    CHECK(clipped->pointCount() == 9);
+    n.setFloat("useBounds", 0.0f);
+
+    // Many seeds: without spacing every seed gives a line, with it the lines keep their distance.
+    Network crowd(1);
+    NodeId many = seeds(crowd, 400.0f, 6.0f, 6.0f);
+    NodeId cl = crowd.addNode("streamlines");
+    crowd.connect(many, cl);
+    Node& c = crowd.node(cl);
+    c.setFloat("maxSteps", 60.0f);
+    auto free = crowd.cook(cl);
+    CHECK(free->primitiveCount() == 400);
+    c.setFloat("separation", 0.4f);
+    auto spaced = crowd.cook(cl);
+    CHECK(spaced->primitiveCount() > 5 && spaced->primitiveCount() < 400);
+    const AttribArray* lineOf = spaced->findAttrib(AttribClass::point, "line");
+    float closest = 1e9f;
+    for (size_t i = 0; i < spaced->pointCount(); ++i) {
+        for (size_t j = i + 1; j < spaced->pointCount(); ++j) {
+            if (lineOf->ints()[i] == lineOf->ints()[j]) continue;
+            closest = std::min(closest, std::hypot(spaced->x()[i] - spaced->x()[j], spaced->y()[i] - spaced->y()[j]));
+        }
+    }
+    CHECK(closest >= 0.4f * 0.5f * 0.99f);
+
+    // A gas grid is a field: the nozzle blows along +x, so a line seeded in it runs along +x.
+    Network sim(1);
+    NodeId gas = sim.addNode("gasField");
+    Node& g = sim.node(gas);
+    g.setFloat("nozzleX", 0.0f);
+    g.setFloat("nozzleY", 0.0f);
+    g.setFloat("nozzleAngle", 0.0f);
+    g.setFloat("nozzleSpeed", 6.0f);
+    g.setFloat("nozzleDensity", 0.0f);
+    g.setFloat("nozzleHeat", 0.0f);
+    g.setFloat("buoyancy", 0.0f);
+    g.setFloat("boundsMinX", -4.0f);
+    g.setFloat("boundsMaxX", 4.0f);
+    g.setFloat("boundsMinY", -4.0f);
+    g.setFloat("boundsMaxY", 4.0f);
+    g.setFloat("resolution", 32.0f);
+    NodeId seed = seeds(sim, 1.0f, 0.0f, 0.0f);
+    NodeId sl = sim.addNode("streamlines");
+    sim.connect(seed, sl, 0);
+    sim.connect(gas, sl, 1);
+    sim.node(sl).setString("direction", "forward");
+    sim.node(sl).setFloat("maxSteps", 30.0f);
+    sim.setTime(0.5);
+    auto flow = sim.cook(sl);
+    CHECK(flow->primitiveCount() == 1 && flow->pointCount() > 5);
+    CHECK(flow->x()[flow->pointCount() - 1] > 0.5f);
+    CHECK(std::fabs(flow->y()[flow->pointCount() - 1]) < 0.5f * flow->x()[flow->pointCount() - 1]);
+
+    n.setString("field", "nonesuch");
+    CHECK(cookThrows(net, lines));
+    n.setString("field", "curl");
+    n.setFloat("stepSize", 0.0f);
+    CHECK(cookThrows(net, lines));
+}
+
 double alignmentOf(const Geometry& geo) {
     double sx = 0.0, sy = 0.0, total = 0.0;
     for (size_t i = 0; i < geo.pointCount(); ++i) {

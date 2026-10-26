@@ -483,12 +483,12 @@ reactionDiffusion, lsystem, curveSample, ribbon, trail, file nodes, string nodes
 4. **Position-based fluid (`fluid`)**: particles with a density constraint (Macklin and Müller-Fischer, *Position Based Fluids*): neighbour grid (the
    `PointGrid` of boids), iterative lambda solve, artificial pressure for surface tension, XSPH viscosity, vorticity confinement as a velocity
    post-process. Reuses the stepping and boundary code of `particles`. About 2 days; gives splashes and a "liquid" look nothing else here has.
-5. **Differential growth (`grow`)**: polylines whose nodes repel neighbours, attract their chain neighbours and midpoint, and split long
+5. **Differential growth (`grow`)** (*done, uncommitted:* `src/graph/generativeNodes.cpp`; repel/attract/smooth/split as below, Jacobi update so thread-count independent, stepped and cached like `particles`; outputs `age`, `u`, `chain`; input attributes are not carried; test `growSplitsLongSegmentsAndPushesNodesApart`; example `fxGrow.json`; details in `fx.md`). Original: polylines whose nodes repel neighbours, attract their chain neighbours and midpoint, and split long
    segments (the Spaghetti Bones / Blender geometry-nodes setups use exactly these three forces); stepped like `springs`. Strong generative-art
    payoff, reuses `PointGrid` and the polyline subdivision of `resample`.
 6. **Space colonization (`colonize`)**: grows branching curves towards attractor points (leaf venation, trees); output polylines with a `depth`
    attribute for `ribbon` widths. Complements `lsystem`.
-7. **Flow-field lines (`streamlines`)**: integrates polylines through a vector field (`noise` curl, or the gas field), Tyler Hobbs's flow-field
+7. **Flow-field lines (`streamlines`)** (*done, uncommitted:* the same file; `flow` already existed for fixed-length curl/angle trails, so this node is the spaced, variable-length version: Jobard-Lefer spacing (`separation`, `endRatio`), bounds, `minSpeed`, and a second input that is a grid with `vx`/`vy` (the `gasField` output); serial; test `streamlinesFollowTheFieldKeepTheirSpacingAndReadAGasGrid`; example `fxStreamlines.json`; moving fields are sampled at the cooked time only). Original: integrates polylines through a vector field (`noise` curl, or the gas field), Tyler Hobbs's flow-field
    technique with spacing control so lines do not crowd. `trail` is a straight streak; this is the curved, field-driven version.
 8. Smaller: `smooth` for curves (Chaikin or Laplacian), `offset` / `stroke` (open since the topology list), `sort`, `join`, `bevel`, `polar`
    (cartesian to polar warp), `twist`, `lattice` deform, `peak`, a `switch` node, `foreach` over primitives (copies and per-piece processing) and

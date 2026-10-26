@@ -38,6 +38,7 @@ const std::vector<PaletteEntry> palette = {
     {"addSprings", "springs"}, {"addReaction", "reactionDiffusion"},
     {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
     {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"}, {"addGasField", "gasField"},
+    {"addGrow", "grow"}, {"addStreamlines", "streamlines"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};

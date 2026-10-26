@@ -375,7 +375,7 @@
                 bounds: {
                   type: "Rect",
                   pos: { type: "Point", x: 8, y: 28 },
-                  size: { type: "Size", width: 174, height: 339 }
+                  size: { type: "Size", width: 174, height: 356 }
                 },
                 visible: true,
                 layout: { type: "FlexLayout", orientation: "Vertical", spacing: 1 },
@@ -1299,6 +1299,52 @@
                         desiredSizeOverride: true
                       }
                     ]
+                  },
+                  {
+                    type: "SubView",
+                    bounds: {
+                      type: "Rect",
+                      pos: { type: "Point", x: 0, y: 340 },
+                      size: { type: "Size", width: 174, height: 16 }
+                    },
+                    visible: true,
+                    layout: { type: "FlexLayout", orientation: "Horizontal", spacing: 4 },
+                    childViews: [
+                      {
+                        type: "Button",
+                        text: "grow",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 0, y: 0 },
+                          size: { type: "Size", width: 71, height: 16 }
+                        },
+                        name: "addGrow",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 71, height: 16 },
+                        desiredSizeOverride: true
+                      },
+                      {
+                        type: "Button",
+                        text: "streamlines",
+                        bounds: {
+                          type: "Rect",
+                          pos: { type: "Point", x: 75, y: 0 },
+                          size: { type: "Size", width: 99, height: 16 }
+                        },
+                        name: "addStreamlines",
+                        layoutParams: { type: "FlexLayoutParams", weight: 1 },
+                        style: {
+                          type: "ThemedButtonStyle",
+                          font: { type: "Font", name: "Segoe UI", size: 12, bold: false, italic: false, strikeThrough: false, underlined: false }
+                        },
+                        desiredSize: { type: "Size", width: 99, height: 16 },
+                        desiredSizeOverride: true
+                      }
+                    ]
                   }
                 ]
               },
@@ -1306,7 +1352,7 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 370 },
+                  pos: { type: "Point", x: 8, y: 387 },
                   size: { type: "Size", width: 174, height: 1 }
                 },
                 visible: true,
@@ -1324,7 +1370,7 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 374 },
+                  pos: { type: "Point", x: 8, y: 391 },
                   size: { type: "Size", width: 174, height: 17 }
                 },
                 style: {
@@ -1340,7 +1386,7 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 395 },
+                  pos: { type: "Point", x: 8, y: 412 },
                   size: { type: "Size", width: 174, height: 28 }
                 },
                 visible: true,
@@ -1359,7 +1405,7 @@
                 textAlignment: "Left",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 426 },
+                  pos: { type: "Point", x: 8, y: 443 },
                   size: { type: "Size", width: 174, height: 30 }
                 },
                 name: "assetDetails",
@@ -1378,7 +1424,7 @@
                 type: "SubView",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 459 },
+                  pos: { type: "Point", x: 8, y: 476 },
                   size: { type: "Size", width: 174, height: 16 }
                 },
                 visible: true,
@@ -1425,7 +1471,7 @@
                 text: "Load asset...",
                 bounds: {
                   type: "Rect",
-                  pos: { type: "Point", x: 8, y: 478 },
+                  pos: { type: "Point", x: 8, y: 495 },
                   size: { type: "Size", width: 174, height: 24 }
                 },
                 name: "loadAssetButton",
