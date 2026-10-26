@@ -548,6 +548,152 @@ public:
     }
 };
 
+// Space colonization (Runions et al.): branches grow from the root points towards the attractor points. Every attractor pulls on its nearest
+// node within `influence`; a node with pulls grows a new node `segment` away along the mean pull direction; an attractor that a node comes
+// within `killDistance` of is used up. Not time dependent: it runs until no attractor is reachable or a limit is hit. The output has one polyline
+// per branch (a branch ends at a fork, the next ones start at the fork's point) with the point attributes `depth` (nodes from the root),
+// `size` (nodes in the sub-tree, for widths by the pipe model) and `branch`.
+class ColonizeNode : public Node {
+public:
+    ColonizeNode() : Node("colonize", 2) {
+        declareFloat("influence", 2.0f);
+        declareFloat("killDistance", 0.3f);
+        declareFloat("segment", 0.15f);
+        declareFloat("maxIterations", 500.0f);
+        declareFloat("maxNodes", 200000.0f);
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        const float influence = getFloat("influence"), kill = getFloat("killDistance"), segment = getFloat("segment");
+        if (!(influence > 0.0f) || !(segment > 0.0f) || !(kill >= 0.0f)) throw std::runtime_error("colonize: influence and segment must be greater than 0 and killDistance not negative");
+        if (!(kill < influence)) throw std::runtime_error("colonize: killDistance must be smaller than influence");
+        const int maxIterations = std::clamp(static_cast<int>(getFloat("maxIterations")), 1, 100000);
+        const size_t maxNodes = static_cast<size_t>(std::clamp(getFloat("maxNodes"), 1.0f, 5.0e6f));
+        const Geometry& roots = *in[1];
+        if (roots.pointCount() == 0) throw std::runtime_error("colonize: the second input needs at least one root point");
+
+        std::vector<float> nx(std::as_const(roots).x(), std::as_const(roots).x() + roots.pointCount());
+        std::vector<float> ny(std::as_const(roots).y(), std::as_const(roots).y() + roots.pointCount());
+        std::vector<int32_t> parent(nx.size(), -1);
+        std::vector<float> ax, ay;
+        if (in[0]->pointCount()) {
+            ax.assign(std::as_const(*in[0]).x(), std::as_const(*in[0]).x() + in[0]->pointCount());
+            ay.assign(std::as_const(*in[0]).y(), std::as_const(*in[0]).y() + in[0]->pointCount());
+        }
+
+        const float influence2 = influence * influence, kill2 = kill * kill;
+        for (int iteration = 0; iteration < maxIterations && !ax.empty() && nx.size() < maxNodes; ++iteration) {
+            PointGrid grid;
+            grid.build(nx.data(), ny.data(), nx.size(), influence);
+            std::vector<float> sx(nx.size(), 0.0f), sy(nx.size(), 0.0f);
+            std::vector<uint32_t> pulls(nx.size(), 0);
+            std::vector<char> used(ax.size(), 0);
+            for (size_t a = 0; a < ax.size(); ++a) {
+                float best = influence2;
+                int64_t bestNode = -1;
+                grid.forEachNear(ax[a], ay[a], [&](uint32_t j) {
+                    const float dx = ax[a] - nx[j], dy = ay[a] - ny[j];
+                    const float d2 = dx * dx + dy * dy;
+                    if (d2 < kill2) used[a] = 1;
+                    if (d2 < best || (d2 == best && static_cast<int64_t>(j) < bestNode)) {
+                        best = d2;
+                        bestNode = j;
+                    }
+                });
+                if (used[a] || bestNode < 0) continue;
+                const float d = std::sqrt(best);
+                if (d < 1e-12f) continue;
+                sx[bestNode] += (ax[a] - nx[bestNode]) / d;
+                sy[bestNode] += (ay[a] - ny[bestNode]) / d;
+                ++pulls[bestNode];
+            }
+            const size_t before = nx.size();
+            for (size_t i = 0; i < before && nx.size() < maxNodes; ++i) {
+                if (!pulls[i]) continue;
+                const float len = std::sqrt(sx[i] * sx[i] + sy[i] * sy[i]);
+                if (len < 1e-6f) continue;
+                nx.push_back(nx[i] + sx[i] / len * segment);
+                ny.push_back(ny[i] + sy[i] / len * segment);
+                parent.push_back(static_cast<int32_t>(i));
+            }
+            size_t kept = 0;
+            for (size_t a = 0; a < ax.size(); ++a) {
+                if (used[a]) continue;
+                // An attractor can also be used up by a node that was just added.
+                bool near = false;
+                for (size_t i = before; i < nx.size() && !near; ++i) {
+                    const float dx = ax[a] - nx[i], dy = ay[a] - ny[i];
+                    near = dx * dx + dy * dy < kill2;
+                }
+                if (near) continue;
+                ax[kept] = ax[a];
+                ay[kept] = ay[a];
+                ++kept;
+            }
+            const bool grew = nx.size() > before, removed = kept < ax.size();
+            ax.resize(kept);
+            ay.resize(kept);
+            if (!grew && !removed) break;
+        }
+
+        const size_t n = nx.size();
+        std::vector<int32_t> depth(n, 0), size(n, 1);
+        std::vector<uint32_t> children(n, 0);
+        for (size_t i = 0; i < n; ++i) {
+            if (parent[i] < 0) continue;
+            depth[i] = depth[parent[i]] + 1;
+            ++children[parent[i]];
+        }
+        for (size_t i = n; i-- > 0;)
+            if (parent[i] >= 0) size[parent[i]] += size[i];
+        std::vector<std::vector<uint32_t>> kids(n);
+        for (size_t i = 0; i < n; ++i)
+            if (parent[i] >= 0) kids[parent[i]].push_back(static_cast<uint32_t>(i));
+
+        struct Chain {
+            std::vector<uint32_t> nodes;
+        };
+        std::vector<Chain> chains;
+        for (size_t i = 0; i < n; ++i) {
+            const bool head = parent[i] < 0 || children[parent[i]] != 1;
+            if (!head || (parent[i] < 0 && children[i] != 1)) continue;
+            Chain c;
+            if (parent[i] >= 0) c.nodes.push_back(static_cast<uint32_t>(parent[i]));
+            uint32_t at = static_cast<uint32_t>(i);
+            for (;;) {
+                c.nodes.push_back(at);
+                if (children[at] != 1) break;
+                at = kids[at][0];
+            }
+            chains.push_back(std::move(c));
+        }
+
+        size_t total = 0;
+        for (const Chain& c : chains) total += c.nodes.size();
+        auto geo = std::make_shared<Geometry>();
+        geo->resizePoints(total);
+        float* xs = geo->x();
+        float* ys = geo->y();
+        int32_t* depthOut = geo->attrib(AttribClass::point, "depth", AttribType::int32).ints().data();
+        int32_t* sizeOut = geo->attrib(AttribClass::point, "size", AttribType::int32).ints().data();
+        int32_t* branchOut = geo->attrib(AttribClass::point, "branch", AttribType::int32).ints().data();
+        size_t at = 0;
+        for (size_t c = 0; c < chains.size(); ++c) {
+            const size_t count = chains[c].nodes.size();
+            for (uint32_t node : chains[c].nodes) {
+                xs[at] = nx[node];
+                ys[at] = ny[node];
+                depthOut[at] = depth[node];
+                sizeOut[at] = size[node];
+                branchOut[at] = static_cast<int32_t>(c);
+                ++at;
+            }
+            geo->addPrimitive(Primitive{static_cast<uint32_t>(at - count), static_cast<uint32_t>(count), false, PrimKind::polyline});
+        }
+        return geo;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -558,6 +704,7 @@ void add(const char* typeName) {
 void registerGenerativeNodes() {
     add<GrowNode>("grow");
     add<StreamlinesNode>("streamlines");
+    add<ColonizeNode>("colonize");
 }
 
 }  // namespace jitnodes

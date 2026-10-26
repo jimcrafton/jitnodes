@@ -3796,6 +3796,134 @@ TEST(growSplitsLongSegmentsAndPushesNodesApart) {
     CHECK(cookThrows(net, bad));
 }
 
+TEST(fluidStaysAtRestSettlesInTheBoxAndIsDeterministic) {
+    auto build = [](Network& net, NodeId& fluid) {
+        NodeId merge = net.addNode("merge");
+        for (int row = 0; row < 8; ++row) {
+            NodeId line = net.addNode("line");
+            net.node(line).setFloat("count", 20.0f);
+            net.node(line).setFloat("length", 1.9f);
+            net.node(line).setFloat("y", 0.1f * static_cast<float>(row));
+            net.connect(line, merge, row);
+        }
+        fluid = net.addNode("fluid");
+        net.connect(merge, fluid);
+        Node& n = net.node(fluid);
+        n.setFloat("boundsMinX", 0.0f);
+        n.setFloat("boundsMaxX", 2.0f);
+        n.setFloat("boundsMinY", -1.0f);
+        n.setFloat("boundsMaxY", 3.0f);
+        return merge;
+    };
+    Network net(1);
+    NodeId fluid;
+    NodeId source = build(net, fluid);
+    Node& n = net.node(fluid);
+    CHECK(net.dependsOnTime(fluid));
+
+    // A lattice of the right spacing is at rest density: no gravity, no motion.
+    n.setFloat("gravityY", 0.0f);
+    auto start = net.cook(fluid);
+    CHECK(start->pointCount() == 160);
+    net.setTime(0.5);
+    auto still = net.cook(fluid);
+    for (size_t i = 0; i < still->pointCount(); ++i) {
+        CHECK(std::fabs(still->x()[i] - start->x()[i]) < 0.02f);
+        CHECK(std::fabs(still->y()[i] - start->y()[i]) < 0.02f);
+    }
+
+    // Under gravity the block falls into the floor and settles with roughly rest density, inside the bounds.
+    n.setFloat("gravityY", -9.8f);
+    net.setTime(2.0);
+    auto settled = net.cook(fluid);
+    const AttribArray* density = settled->findAttrib(AttribClass::point, "density");
+    double meanDensity = 0.0, meanY = 0.0;
+    float maxY = -1e9f;
+    for (size_t i = 0; i < settled->pointCount(); ++i) {
+        CHECK(settled->x()[i] >= 0.0f && settled->x()[i] <= 2.0f && settled->y()[i] >= -1.0f && settled->y()[i] <= 3.0f);
+        meanDensity += density->at(i);
+        meanY += settled->y()[i];
+        maxY = std::max(maxY, settled->y()[i]);
+    }
+    meanDensity /= static_cast<double>(settled->pointCount());
+    meanY /= static_cast<double>(settled->pointCount());
+    CHECK(meanY < -0.4 && maxY < 0.1f);
+    CHECK(meanDensity > 0.7 && meanDensity < 1.5);
+
+    // Scrubbing, more threads and a changed signature all reproduce the same particles.
+    net.setTime(1.0);
+    auto early = net.cook(fluid);
+    net.setTime(2.0);
+    CHECK(sameGeometry(*settled, *net.cook(fluid)));
+    Network other(4);
+    NodeId fluid2;
+    build(other, fluid2);
+    for (const std::string& name : n.floatNames()) other.node(fluid2).setFloat(name, n.getFloat(name));
+    other.setTime(1.0);
+    CHECK(sameGeometry(*early, *other.cook(fluid2)));
+    n.setFloat("vorticity", 5.0f);
+    n.setFloat("tension", 0.05f);
+    auto swirled = net.cook(fluid);
+    for (size_t i = 0; i < swirled->pointCount(); ++i) CHECK(std::isfinite(swirled->x()[i]) && std::isfinite(swirled->y()[i]));
+
+    n.setFloat("spacing", 0.0f);
+    CHECK(cookThrows(net, fluid));
+    n.setFloat("spacing", 0.1f);
+    NodeId empty = net.addNode("generate");
+    net.node(empty).setFloat("count", 0.0f);
+    NodeId bad = net.addNode("fluid");
+    net.connect(empty, bad);
+    CHECK(cookThrows(net, bad));
+    (void)source;
+}
+
+TEST(colonizeGrowsBranchesToEveryAttractor) {
+    Network net(1);
+    NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 40.0f);
+    net.node(ring).setFloat("radius", 3.0f);
+    NodeId root = net.addNode("generate");
+    net.node(root).setFloat("count", 1.0f);
+    net.node(root).setFloat("width", 0.0f);
+    net.node(root).setFloat("height", 0.0f);
+    NodeId tree = net.addNode("colonize");
+    net.connect(ring, tree, 0);
+    net.connect(root, tree, 1);
+    Node& n = net.node(tree);
+    n.setFloat("influence", 6.0f);
+    auto grown = net.cook(tree);
+    CHECK(grown->pointCount() > 40 && grown->primitiveCount() >= 2);
+    for (const Primitive& p : grown->primitives()) CHECK(p.count >= 2 && !p.closed);
+    const Geometry& attractors = *net.cook(ring);
+    for (size_t a = 0; a < attractors.pointCount(); ++a) {
+        float nearest = 1e9f;
+        for (size_t i = 0; i < grown->pointCount(); ++i)
+            nearest = std::min(nearest, std::hypot(grown->x()[i] - attractors.x()[a], grown->y()[i] - attractors.y()[a]));
+        CHECK(nearest < 0.3f + 1e-3f);
+    }
+    int32_t maxDepth = 0, rootSize = 0;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        maxDepth = std::max(maxDepth, grown->findAttrib(AttribClass::point, "depth")->ints()[i]);
+        if (grown->findAttrib(AttribClass::point, "depth")->ints()[i] == 0) rootSize = grown->findAttrib(AttribClass::point, "size")->ints()[i];
+    }
+    CHECK(maxDepth >= 15);
+    CHECK(rootSize > 40);
+    CHECK(sameGeometry(*grown, *net.cook(tree)));
+
+    n.setFloat("maxNodes", 10.0f);
+    CHECK(net.cook(tree)->pointCount() <= 20);
+    n.setFloat("maxNodes", 200000.0f);
+    n.setFloat("killDistance", 7.0f);
+    CHECK(cookThrows(net, tree));
+    n.setFloat("killDistance", 0.3f);
+    NodeId none = net.addNode("generate");
+    net.node(none).setFloat("count", 0.0f);
+    NodeId bad = net.addNode("colonize");
+    net.connect(ring, bad, 0);
+    net.connect(none, bad, 1);
+    CHECK(cookThrows(net, bad));
+}
+
 TEST(streamlinesFollowTheFieldKeepTheirSpacingAndReadAGasGrid) {
     auto seeds = [](Network& net, float count, float width, float height) {
         NodeId gen = net.addNode("generate");

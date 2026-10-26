@@ -483,6 +483,62 @@ without bounds keeps expanding.
 curve and `colorRamp` colours them by `age`, so the newest folds are the paler ones at the outside. At t = 12 the box is full (20,000 nodes) and
 the render takes about 8 s.
 
+### fluid (one input)
+
+A liquid made of particles, after Macklin and Mueller-Fischer's *Position Based Fluids*. The input points are the particles (with optional float
+`vx`, `vy` attributes as start velocities). Per step: gravity is applied and positions are predicted; neighbours within the kernel radius
+`spacing * radiusScale` are found once (the `PointGrid` of `boids`); then `iterations` Jacobi passes solve the density constraint of every
+particle (poly6 density, spiky gradient, `relaxation` is the constraint-force-mixing term) and move it; the velocity is the distance moved over
+the step; finally XSPH viscosity and vorticity confinement are applied. Every sum runs in neighbour-list order and every pass reads the previous
+iterate, so the result does not depend on the thread count. Like `particles` it is stepped from `startTime` at `stepsPerSecond` (10 to 1000),
+cached, and a pure function of time (restarted when a parameter or the input changes or the time goes back; 100,000 steps and 1,000,000
+particles at most).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `startTime`, `stepsPerSecond` | 0, 120 | when the simulation starts and its step rate |
+| `spacing`, `radiusScale` | 0.1, 2.2 | the particle spacing that is the rest density (a square lattice of this spacing is at rest), and the kernel radius in spacings (at least 1.2) |
+| `gravityX`, `gravityY` | 0, -9.8 | acceleration |
+| `iterations`, `relaxation` | 4, 100 | solver passes per step (more is less compressible and slower); a larger `relaxation` is softer and more stable |
+| `tension` | 0 | 0 to 1: how strongly an under-dense particle is pulled back in. 0 gives no cohesion (spray flies apart), small values give surface tension |
+| `viscosity` | 0.01 | XSPH velocity smoothing, 0 to 1 |
+| `vorticity` | 0 | vorticity confinement, keeps small swirls alive (small values, around 0.1 to 1) |
+| `maxSpeed` | 30 | velocity limit, units per second |
+| `boundsMinX/MaxX/MinY/MaxY` | -5..5, -3..3 | the box; its walls are inelastic (particles are clamped and lose the normal velocity) |
+
+The output has the point attributes `vx`, `vy`, `speed` and `density` (1 at rest density); attributes of the input points are not carried over.
+The displacement of one particle in one iteration is limited to a tenth of the spacing, so a clump of overlapping particles (a random
+`generate` as the start) is pushed apart over a few steps instead of exploding. Start from a lattice (rows of `line` merged) for a block that
+begins exactly at rest. Cost is about particles times neighbours (about 15 within the radius) times `iterations`; no obstacles or emitters yet.
+The palette is full, so there is no button: type `fluid` in the editor's add-by-name field.
+
+![a column of 1100 particles collapsing across a box and climbing the far wall](images/fxFluid.png)
+
+`examples/graphs/fx/fxFluid.json` at t = 2.5: a dam break, 1100 random points in a 3 by 4 column at the left of a 10 by 6 box, coloured by speed.
+
+### colonize (attractor points, root points)
+
+Space colonization (Runions et al.): branches grow from the root points towards the attractors. Input 0 holds the attractors, input 1 the
+roots. Each iteration every attractor pulls on its nearest node within `influence`; a node with pulls grows a new node `segment` away along
+the mean direction of its pulls; an attractor that a node comes within `killDistance` of is used up. It is not time dependent: it runs until
+nothing can grow or a limit is hit, and the result is deterministic.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `influence` | 2 | how far an attractor reaches; a root further than this from every attractor never grows, so make it larger than the gap |
+| `killDistance` | 0.3 | an attractor closer than this to a node is removed (must be smaller than `influence`); larger gives a sparser tree |
+| `segment` | 0.15 | length of every new branch piece |
+| `maxIterations`, `maxNodes` | 500, 200000 | limits |
+
+The output has one polyline per branch: a branch ends at a fork and the branches after it start at the fork's point (so fork points appear
+once per branch). Point attributes: `depth` (nodes from the root), `size` (nodes in the sub-tree, for widths by the pipe model, e.g. `ribbon`
+with `widthAttrib`) and `branch`. Roots with several children and single-point roots produce no polyline of their own. There is no tropism or
+gravity bias. Cost per iteration is attractors plus nodes, with a grid rebuild; 1200 attractors take a few milliseconds in total.
+
+![a tree grown into a disc of 1200 attractors, coloured by depth](images/fxColonize.png)
+
+`examples/graphs/fx/fxColonize.json`: one root below a disc-shaped crown of scattered attractors; the veins fan out like a leaf.
+
 ### streamlines (seed points, optionally a field grid)
 
 Curves that follow a vector field, ending where they should: each point of the first input is a seed, traced forwards and/or backwards

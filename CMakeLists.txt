@@ -57,6 +57,7 @@ add_library(jitnodes STATIC
   src/graph/gasSolver.cpp
   src/graph/gasNodes.cpp
   src/graph/generativeNodes.cpp
+  src/graph/fluidNodes.cpp
   src/graph/fieldNodes.cpp
   src/graph/curveNodes.cpp
   src/graph/fileNodes.cpp
