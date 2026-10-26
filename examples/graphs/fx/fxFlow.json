@@ -1,0 +1,27 @@
+// flow follows seed points through a noise field and keeps the whole path. Left: curl noise (streamlines that never converge, 6,000 trails of
+// 80 steps). Right: an angle field (the noise value is the direction, 6,000 trails). Each path vertex is a faint sprite; colour and fade
+// come from u, the position along the trail.
+//   jitnodesCli examples/graphs/fx/fxFlow.json --png fxFlow.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "seedsCurl", floats: { count: 6000, seed: 1, cx: -10, width: 18, height: 16 }, inputs: [] },
+    { id: 2, type: "flow", name: "curlTrails", floats: { steps: 80, stepLength: 0.14, scale: 0.12, octaves: 3, seed: 5 }, strings: { mode: "curl" }, inputs: [1] },
+    { id: 3, type: "colorRamp", name: "curlColor", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #fff3c4, 0.4 #ff8f5a, 1 #7a1fa8" }, inputs: [2] },
+    { id: 4, type: "generate", name: "seedsAngle", floats: { count: 6000, seed: 2, cx: 10, width: 18, height: 16 }, inputs: [] },
+    { id: 5, type: "flow", name: "angleTrails", floats: { steps: 80, stepLength: 0.14, scale: 0.12, octaves: 3, seed: 5, turns: 1.2 }, strings: { mode: "angle" }, inputs: [4] },
+    { id: 6, type: "colorRamp", name: "angleColor", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #d8fbff, 0.4 #4fc3ff, 1 #1b2fd0" }, inputs: [5] },
+    { id: 7, type: "merge", name: "all", inputs: [3, 6] },
+    { id: 8, type: "wrangle", name: "look", strings: { code: "radius = 0.1; alpha = 0.15 * (1 - u * 0.8); softness = 1;" }, inputs: [7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.1, gamma: 2.2, width: 700, height: 350, viewWidth: 40 },
+      strings: { background: "#000000" },
+      inputs: [8]
+    }
+  ]
+}
