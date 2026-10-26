@@ -22,13 +22,14 @@
 
   .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
 
-  .nodeList { display: flex; flex-direction: column; gap: 1px; }
+  .nodeScroll { flex-grow: 1; overflow-y: auto; }
+  .nodeList { display: flex; flex-direction: column; gap: 3px; width: 156px; }
   .nodeRow { display: flex; flex-direction: row; gap: 4px; }
   .palette { display: flex; flex-direction: column; gap: 3px; width: 190px; padding: 8px; background: var(--panel); border-radius: 4px; }
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
-  .palette .nodeRow button { flex-grow: 1; height: 16px; }
+  .palette .nodeRow button { flex-grow: 1; height: 22px; }
   #assetListHost { height: 28px; background: var(--panelAlt); }
   #assetDetails { height: 30px; font-size: 11px; color: var(--muted); }
 
@@ -97,7 +98,7 @@
   <div class="main">
     <div id="palettePanel" class="palette">
       <h3>Nodes</h3>
-      <div class="nodeList">
+      <div id="nodeScroll" class="nodeScroll"><div id="nodeList" class="nodeList">
       <div class="nodeRow"><button id="addLine">line</button><button id="addTransform">transform</button></div>
       <div class="nodeRow"><button id="addWrangle">wrangle</button><button id="addMerge">merge</button></div>
       <div class="nodeRow"><button id="addAttribCreate">attribCreate</button><button id="addAttribString">attribString</button></div>
@@ -119,7 +120,15 @@
       <div class="nodeRow"><button id="addFileCache">fileCache</button><button id="addFileTrail">fileTrail</button></div>
       <div class="nodeRow"><button id="addRender">render</button><button id="addGasField">gasField</button></div>
       <div class="nodeRow"><button id="addGrow">grow</button><button id="addStreamlines">streamlines</button></div>
-      </div>
+      <div class="nodeRow"><button id="addBevel">bevel</button><button id="addCircle">circle</button></div>
+      <div class="nodeRow"><button id="addColonize">colonize</button><button id="addFlatten">flatten</button></div>
+      <div class="nodeRow"><button id="addFluid">fluid</button><button id="addForeach">foreach</button></div>
+      <div class="nodeRow"><button id="addJoin">join</button><button id="addLattice">lattice</button></div>
+      <div class="nodeRow"><button id="addOffset">offset</button><button id="addPeak">peak</button></div>
+      <div class="nodeRow"><button id="addPolar">polar</button><button id="addSmooth">smooth</button></div>
+      <div class="nodeRow"><button id="addSolver">solver</button><button id="addSort">sort</button></div>
+      <div class="nodeRow"><button id="addSwitch">switch</button><button id="addTwist">twist</button></div>
+      </div></div>
       <hr>
       <h3>Assets</h3>
       <canvas id="assetListHost"></canvas>

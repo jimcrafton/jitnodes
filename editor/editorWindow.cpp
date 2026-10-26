@@ -39,6 +39,10 @@ const std::vector<PaletteEntry> palette = {
     {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
     {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"}, {"addGasField", "gasField"},
     {"addGrow", "grow"}, {"addStreamlines", "streamlines"},
+    {"addBevel", "bevel"}, {"addCircle", "circle"}, {"addColonize", "colonize"}, {"addFlatten", "flatten"},
+    {"addFluid", "fluid"}, {"addForeach", "foreach"}, {"addJoin", "join"}, {"addLattice", "lattice"},
+    {"addOffset", "offset"}, {"addPeak", "peak"}, {"addPolar", "polar"}, {"addSmooth", "smooth"},
+    {"addSolver", "solver"}, {"addSort", "sort"}, {"addSwitch", "switch"}, {"addTwist", "twist"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
@@ -224,6 +228,8 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     viewportCanvas_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(1.0f));
     viewportHost->addChild(viewportCanvas_);
     palettePanel_ = &view<newui::SubView>("palettePanel");
+    auto& nodeScroll = view<newui::ScrollView>("nodeScroll");
+    nodeScroll.setContentSize(newui::Size(nodeScroll.contentSize().width - 24.0f, nodeScroll.contentSize().height));
     graphPanel_ = &view<newui::SubView>("graphPanel");
     sidePanel_ = &view<newui::SubView>("sidePanel");
     paramsPanel_ = &view<newui::SubView>("paramsPanel");

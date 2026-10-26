@@ -133,6 +133,28 @@ the stateful simulations (`reactionDiffusion` 3.5 s, `boids` 0.24 s): those are 
 `generate` of 2M points costs 6 ms, so caching it would be slower than recooking (reading 2M x several floats from disk is
 not free), and `nebula` at 0.18 s is borderline.
 
+### Whole-graph costs at 10k nodes (2026-10-26, release)
+
+100 chains of 100 `transform` nodes (an expression on every tenth) merged into one display node: 10104 nodes, 1000 animated.
+Per edit the editor commits to the history, and the title bar asks `modified()` on every refresh; both snapshot the whole graph.
+`setTime` runs on every playhead move.
+
+| Operation | Before (ms) | After (ms) |
+|---|---|---|
+| `History::commit` after one edit | 62 | 7.8 |
+| `History::commit` with no change (and `EditorModel::modified()`) | 63 | 3.3 |
+| `setTime` (1000 animated nodes) | 4.5 | 1.1 |
+| `setTime` right after a plain value edit | 6.1 | 1.1 |
+
+A snapshot used to write every node as JSON and compare it with the previous text. Nodes now carry a `revision()` taken from a
+process-wide counter on every change to what they save (parameters, expressions, keys, strings, geometry, spare parameters,
+position, name), so `snapshotNetwork(net, &previous)` reuses the previous text of a node whose revision it still sees. Subnet and
+asset nodes are always rewritten, because their text includes a child graph that can change without touching them. What is left is
+building the 10k-entry map. `setTime` keeps the list of nodes that depend on time between calls and drops it only after an edit that
+can change that list (an expression, keys or a string parameter, a node added, removed or renamed, an edit inside a subnet); a plain
+value edit (`setFloat` on a parameter with no expression) keeps it. The remaining 1.1 ms is marking the 10k nodes downstream of the
+animated ones dirty, which a cook needs anyway; one cook of the display node is 12 ms.
+
 ### fx nodes, cold cook of the example graphs (2026-10-26)
 
 Median of 3 cold cooks (fresh `Network`, load, `setTime`, one cook of the display node), at the time each graph is

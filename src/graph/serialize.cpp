@@ -780,17 +780,23 @@ GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous)
         s.spare = n.spareNames();
         for (int i = 0; i < n.inputCount(); ++i) s.inputs.push_back(net.inputOf(id, i));
 
-        json5::document doc;
-        json5::builder b(doc);
-        writeNode(b, net, id, false);
-        std::string text = dump(doc);
         const NodeSnapshot* old = nullptr;
         if (previous) {
             auto it = previous->nodes.find(id);
             if (it != previous->nodes.end()) old = &it->second;
         }
-        if (old && *old->text == text) s.text = old->text;
-        else s.text = std::make_shared<const std::string>(std::move(text));
+        // A subnet's text includes its child graph, whose edits do not touch the container node.
+        s.revision = n.childNetwork() == nullptr ? n.revision() : 0;
+        if (old && s.revision != 0 && old->revision == s.revision) {
+            s.text = old->text;
+        } else {
+            json5::document doc;
+            json5::builder b(doc);
+            writeNode(b, net, id, false);
+            std::string text = dump(doc);
+            if (old && *old->text == text) s.text = old->text;
+            else s.text = std::make_shared<const std::string>(std::move(text));
+        }
         snap.nodes.emplace(id, std::move(s));
     }
     return snap;

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -150,7 +151,8 @@ public:
     void disconnect(NodeId to, int inputIndex);
     NodeId inputOf(NodeId to, int inputIndex) const;
 
-    void markDirty(NodeId id);
+    // structural = false is for an edit that cannot change which nodes depend on time (a plain parameter value), so setTime keeps its cache.
+    void markDirty(NodeId id, bool structural = true);
 
     // Called by a node when the node names its expressions refer to change.
     void referencesChanged(NodeId id, const std::set<std::string>& before, const std::set<std::string>& after);
@@ -278,11 +280,10 @@ private:
     static constexpr size_t maxExpressionDepth = 400;
 
     std::map<NodeId, Slot> slots_;
-    // The nodes setTime has to look at: those with an expression or keys on a parameter, and subnets. Rebuilt after any edit that can change which
-    // nodes those are (every markDirty, node added or removed); setTime's own markDirty calls do not.
-    mutable std::vector<NodeId> timeCandidates_;
-    mutable bool timeCandidatesValid_ = false;
-    bool settingTime_ = false;
+    // The nodes setTime recooks: those with an expression, keys or a playhead dependency, and subnets that contain one. Rebuilt after any edit
+    // that can change which nodes those are (a structural markDirty, node added or removed).
+    mutable std::vector<NodeId> timeAffected_;
+    mutable bool timeAffectedValid_ = false;
     // Reverse indexes, kept in step with every change of wiring and of expression references: consumers_ holds one entry per wired
     // input (so a node wired twice into one consumer appears twice), referrers_ the nodes whose expressions mention a node name.
     std::unordered_map<NodeId, std::vector<NodeId>> consumers_;
@@ -290,11 +291,14 @@ private:
     std::unordered_map<std::string, NodeId> names_;
     mutable std::unordered_map<std::string, size_t> suffixHint_;  // uniqueName: every number below the hint is taken for that stem
     void forgetName(const std::string& name);
+    void markDownstream(NodeId id, std::unordered_set<NodeId>& seen);
+    // A subnet's `parent.x` expressions follow the owner's parameters, so its cache goes stale with the owner's.
+    void invalidateTimeCache();
     NodeId nextId_ = 1;
     NodeId displayNode_ = invalidNodeId;
     KernelCompiler ownCompiler_;
-    void notifyOwner() {
-        if (parent_ && propagateToParent_) parent_->markDirty(owner_);
+    void notifyOwner(bool structural = true) {
+        if (parent_ && propagateToParent_) parent_->markDirty(owner_, structural);
     }
 
     Network* parent_ = nullptr;

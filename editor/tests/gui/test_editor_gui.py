@@ -79,8 +79,19 @@ class EditorCase(AppTestCase):
         setClipboardText("")      # the system clipboard is shared with the editor's copy and paste
         super().setUp()
 
+    def revealPaletteButton(self, name):
+        scroll = self.app.find("nodeScroll")
+        for _ in range(40):
+            r = self.app.find(name)
+            if scroll.y <= r.y and r.y + r.h <= scroll.y + scroll.h:
+                return
+            self.app.wheel("nodeScroll", 1 if r.y < scroll.y else -1)
+        self.fail("could not scroll %s into view" % name)
+
     def add(self, *buttons):
         for name in buttons:
+            if name.startswith("add") and not name.endswith("Button") and name != "addByName":
+                self.revealPaletteButton(name)
             self.app.click(name)
 
     def label(self, name):
@@ -132,10 +143,12 @@ class Palette(EditorCase):
     def test_every_fx_palette_button_adds_its_node(self):
         buttons = ["addGenerate", "addScatter", "addNoise", "addWarp", "addColorRamp", "addRelax", "addAttribBlur",
                    "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addLsystem", "addCurveSample", "addRibbon", "addTrail", "addFileRead", "addFileCache", "addRender",
-                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail", "addGasField", "addGrow", "addStreamlines"]
+                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail", "addGasField", "addGrow", "addStreamlines",
+                   "addBevel", "addCircle", "addColonize", "addFlatten", "addFluid", "addForeach", "addJoin", "addLattice",
+                   "addOffset", "addPeak", "addPolar", "addSmooth", "addSolver", "addSort", "addSwitch", "addTwist"]
         for count, button in enumerate(buttons, 1):
             with self.subTest(button=button):
-                self.app.click(button)
+                self.add(button)
                 expected = "%d node%s" % (count, "" if count == 1 else "s")
                 self.assertTrue(self.status().startswith(expected), self.status())
 

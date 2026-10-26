@@ -1,5 +1,6 @@
 #include "jitnodes/graph/node.h"
 
+#include <atomic>
 #include <stdexcept>
 
 #include "jitnodes/graph/network.h"
@@ -7,7 +8,11 @@
 
 namespace jitnodes {
 
-Node::Node(std::string typeName, int inputCount) : typeName_(std::move(typeName)), inputCount_(inputCount) {}
+namespace {
+std::atomic<uint64_t> revisionCounter{0};
+}
+
+Node::Node(std::string typeName, int inputCount) : revision_(++revisionCounter), typeName_(std::move(typeName)), inputCount_(inputCount) {}
 
 Node::~Node() = default;
 
@@ -19,6 +24,7 @@ void Node::declareFloat(const std::string& name, float defaultValue) {
 void Node::addSpareFloat(const std::string& name, float defaultValue) {
     declareFloat(name, defaultValue);
     spare_.insert(name);
+    touch();
 }
 
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
@@ -41,13 +47,17 @@ void Node::setFloat(const std::string& name, float value) {
     FloatParam& p = floatParam(name);
     if (p.value == value) return;
     p.value = value;
-    if (p.animated()) return;
+    if (p.animated()) {
+        touch();
+        return;
+    }
     p.resolved = value;
-    markChanged();
+    markChanged(false);
 }
 
 void Node::publishFloat(const std::string& name, float value) {
     FloatParam& p = floatParam(name);
+    if (p.value != value) touch();
     p.value = p.resolved = value;
 }
 
@@ -154,8 +164,11 @@ std::vector<std::string> Node::geometryNames() const {
     return names;
 }
 
-void Node::markChanged() {
-    if (network_) network_->markDirty(id_);
+void Node::touch() { revision_ = ++revisionCounter; }
+
+void Node::markChanged(bool structural) {
+    touch();
+    if (network_) network_->markDirty(id_, structural);
     else dirty_ = true;
 }
 

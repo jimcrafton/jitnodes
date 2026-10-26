@@ -1575,6 +1575,67 @@ TEST(subnetsSupportSeveralInputsAndReportErrors) {
     CHECK(message.find("only valid inside a subnet") != std::string::npos);
 }
 
+TEST(setTimeCacheFollowsTheOwnersParametersIntoSubnets) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    CHECK(!rig.net.setTime(1.0));                    // builds both caches: nothing depends on time yet
+    rig.net.cook(rig.out);
+    rig.net.node(rig.sub).setFloat("amount", 3.0f);  // a plain value edit keeps the caches and is still seen by the cook
+    CHECK(!rig.net.setTime(1.5));
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 3.0f);
+    rig.net.node(rig.sub).setKeyframes("amount", {{0.0, 0.0f, KeyInterp::linear}, {2.0, 10.0f, KeyInterp::linear}});
+    CHECK(rig.net.setTime(1.0));                     // the inner expression now follows time through the owner
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+    rig.net.node(rig.sub).clearAnimation("amount");
+    rig.net.cook(rig.out);
+    CHECK(!rig.net.setTime(1.25));
+    rig.inner().node(rig.xf).setExpression("ty", "time");
+    CHECK(rig.net.setTime(1.5));                     // an edit inside the subnet reaches the owner's cache
+    CHECK_NEAR(rig.net.cook(rig.out)->y()[0], 1.5f);
+}
+
+TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
+    SubnetRig rig;
+    Network& net = rig.net;
+    const NodeId wr = net.addNode("wrangle", "wr");
+    const NodeId other = net.addNode("transform", "other");
+    const GraphSnapshot before = snapshotNetwork(net);
+
+    GraphSnapshot same = snapshotNetwork(net, &before);
+    CHECK(sameGraph(before, same));
+    for (const auto& [id, node] : before.nodes) CHECK(id == rig.sub || node.text == same.nodes.at(id).text);
+
+    const std::vector<std::pair<const char*, std::function<void()>>> edits = {
+        {"plain value", [&] { net.node(other).setFloat("tx", 4.0f); }},
+        {"expression", [&] { net.node(other).setExpression("ty", "time * 2"); }},
+        {"base value under an expression", [&] { net.node(other).setFloat("ty", 9.0f); }},
+        {"keyframes", [&] { net.node(other).setKeyframes("sx", {{0.0, 1.0f, KeyInterp::linear}, {1.0, 2.0f, KeyInterp::linear}}); }},
+        {"string", [&] { net.node(wr).setString("code", "y = x;"); }},
+        {"spare parameter", [&] { net.node(other).addSpareFloat("mine", 1.5f); }},
+        {"position", [&] { net.node(other).setPosition(12.0f, 34.0f); }},
+        {"rename", [&] { net.renameNode(other, "renamed"); }},
+        {"subnet contents", [&] { rig.inner().node(rig.xf).setFloat("ty", 7.0f); }},
+    };
+    GraphSnapshot previous = before;
+    for (const auto& [what, edit] : edits) {
+        edit();
+        GraphSnapshot incremental = snapshotNetwork(net, &previous);
+        const GraphSnapshot fresh = snapshotNetwork(net);
+        CHECK(sameGraph(incremental, fresh));
+        CHECK(!sameGraph(incremental, previous));
+        for (const auto& [id, node] : fresh.nodes) CHECK(*node.text == *incremental.nodes.at(id).text);
+        previous = std::move(incremental);
+        if (!sameGraph(previous, fresh)) std::printf("edit '%s' lost\n", what);
+    }
+
+    net.node(other).setFloat("tx", 4.0f);  // setting the value it already has is no edit
+    CHECK(sameGraph(snapshotNetwork(net, &previous), previous));
+    const uint64_t revision = net.node(other).revision();
+    net.node(other).setPosition(12.0f, 34.0f);
+    CHECK(net.node(other).revision() == revision);
+}
+
 TEST(subnetsRoundTripThroughFiles) {
     SubnetRig rig;
     subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);

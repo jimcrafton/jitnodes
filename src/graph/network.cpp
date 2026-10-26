@@ -77,7 +77,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     s.inputs.assign(static_cast<size_t>(n->inputCount()), invalidNodeId);
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     names_[name] = id;
     nextId_ = std::max(nextId_, id + 1);
     slots_.at(id).node->onAttached(*this);
@@ -86,7 +86,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 
 void Network::clear() {
     slots_.clear();
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     consumers_.clear();
     referrers_.clear();
     names_.clear();
@@ -130,7 +130,7 @@ void Network::removeNode(NodeId id) {
     indexReferences(*slot(id).node, false);
     forgetName(slot(id).node->name());
     slots_.erase(id);
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
 
@@ -241,6 +241,7 @@ void Network::renameNode(NodeId id, const std::string& newName) {
     for (auto& entry : slots_) rewriteReferences(entry.first, renames);
     forgetName(target.name_);
     target.name_ = newName;
+    target.touch();
     names_[newName] = id;
     markAllDirty();
 }
@@ -293,10 +294,25 @@ NodeId Network::inputOf(NodeId to, int inputIndex) const {
     return s.inputs.at(static_cast<size_t>(inputIndex));
 }
 
-void Network::markDirty(NodeId id) {
+void Network::markDirty(NodeId id, bool structural) {
     slot(id);
-    if (!settingTime_) timeCandidatesValid_ = false;
     std::unordered_set<NodeId> seen;
+    markDownstream(id, seen);
+    if (structural) {
+        timeAffectedValid_ = false;
+        for (NodeId reached : seen)
+            if (Network* child = slot(reached).node->childNetwork()) child->invalidateTimeCache();
+    }
+    notifyOwner(structural);
+}
+
+void Network::invalidateTimeCache() {
+    timeAffectedValid_ = false;
+    for (auto& entry : slots_)
+        if (Network* child = entry.second.node->childNetwork()) child->invalidateTimeCache();
+}
+
+void Network::markDownstream(NodeId id, std::unordered_set<NodeId>& seen) {
     std::vector<NodeId> pending{id};
     while (!pending.empty()) {
         const NodeId current = pending.back();
@@ -308,11 +324,10 @@ void Network::markDirty(NodeId id) {
         if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
         if (auto it = referrers_.find(n.name()); it != referrers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
     }
-    notifyOwner();
 }
 
 void Network::markAllDirty() {
-    timeCandidatesValid_ = false;
+    invalidateTimeCache();
     for (auto& entry : slots_) {
         entry.second.node->dirty_ = true;
         entry.second.node->cooked_.reset();
@@ -376,23 +391,20 @@ bool Network::indexesConsistent() const {
 bool Network::setTime(double t) {
     if (t == time_) return false;
     time_ = t;
-    if (!timeCandidatesValid_) {
-        timeCandidates_.clear();
+    if (!timeAffectedValid_) {
+        timeAffected_.clear();
         for (const auto& entry : slots_) {
             const Node& n = *entry.second.node;
             bool candidate = n.childNetwork() != nullptr || n.dependsOnPlayhead();
             for (auto it = n.floats_.begin(); !candidate && it != n.floats_.end(); ++it) candidate = it->second.animated();
-            if (candidate) timeCandidates_.push_back(entry.first);
+            if (candidate && dependsOnTime(entry.first)) timeAffected_.push_back(entry.first);
         }
-        timeCandidatesValid_ = true;
+        timeAffectedValid_ = true;
     }
-    std::vector<NodeId> affected;
-    for (NodeId id : timeCandidates_)
-        if (dependsOnTime(id)) affected.push_back(id);
-    settingTime_ = true;
-    for (NodeId id : affected) markDirty(id);
-    settingTime_ = false;
-    return !affected.empty();
+    std::unordered_set<NodeId> seen;
+    for (NodeId id : timeAffected_) markDownstream(id, seen);
+    if (!timeAffected_.empty()) notifyOwner(false);
+    return !timeAffected_.empty();
 }
 
 float Network::resolveSymbol(NodeId owner, const std::string& symbol) {

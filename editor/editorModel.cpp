@@ -82,7 +82,7 @@ void EditorModel::save(const std::string& path) {
     saved_ = snapshotNetwork(net_);
 }
 
-bool EditorModel::modified() const { return !sameGraph(snapshotNetwork(net_), saved_); }
+bool EditorModel::modified() const { return !sameGraph(snapshotNetwork(net_, &saved_), saved_); }
 
 std::vector<NodeId> EditorModel::selection() const {
     std::vector<NodeId> out;

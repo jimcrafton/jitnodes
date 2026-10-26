@@ -92,10 +92,15 @@ public:
 
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
+        if (hasPosition_ && posX_ == x && posY_ == y) return;
         posX_ = x;
         posY_ = y;
         hasPosition_ = true;
+        touch();
     }
+    // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
+    // same id), so a snapshot can reuse the text it wrote for a node whose revision it still sees.
+    uint64_t revision() const { return revision_; }
     bool hasPosition() const { return hasPosition_; }
     float posX() const { return posX_; }
     float posY() const { return posY_; }
@@ -162,9 +167,11 @@ private:
     FloatParam& floatParam(const std::string& name);
     const FloatParam& floatParam(const std::string& name) const;
     void rebuildReferences();
-    void markChanged();
+    void markChanged(bool structural = true);
+    void touch();
 
     NodeId id_ = invalidNodeId;
+    uint64_t revision_;
     std::string typeName_;
     std::string name_;
     int inputCount_ = 0;
