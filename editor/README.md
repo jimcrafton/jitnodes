@@ -74,7 +74,7 @@ takes a few minutes; later builds only rebuild what changed. `ui/mainWindow.newu
   to model is tested without a mouse or a visible window.
 
 Wired so far: New/Open/Save (Save asks for a path the first time; New and Open ask before discarding changes), Undo/Redo
-(enabled from `canUndo`/`canRedo`), the thirty-three palette buttons (two columns), Play/Pause with the time slider and label, the fusion
+(enabled from `canUndo`/`canRedo`), the thirty-five palette buttons (two columns), Play/Pause with the time slider and label, the fusion
 toggle, thread count and instruction set drop-downs, the node title/type, status, cook info, profile summary and the window
 title (`name*` when modified). The graph starts empty: click a palette button (for example `line`, then `transform`) to add nodes. Graph canvas: left-drag a node to move it; left-drag from an output port (bottom centre) to a node or an input port (top)
 to connect; left-drag a connected input port to detach and re-drop the wire; double-click a node to make it the display
@@ -94,7 +94,8 @@ Viewport: shows the geometry of the display node after every cook, so editing a 
 Primitives are stroked as polylines (closed ones are closed); points are drawn as dots for geometry without primitives or
 with at most 64 points. Left, middle or right drag pans, the wheel zooms around the cursor, and Fit frames the geometry (the
 first geometry after New or Open is fitted automatically). A double click maximizes the viewport over the graph and a second
-one restores it; a right click opens a menu with Export... (PNG or JPEG). The grid steps by powers of ten and its step
+one restores it; a right click opens a menu with Export... (PNG or JPEG) and Save geometry... (the displayed geometry as a `.jngeo` file, see
+[geometry files](../docs/geometryFiles.md)). The grid steps by powers of ten and its step
 is shown in the corner; the header shows the point and primitive counts. Geometry over 40,000 points is drawn with every
 n-th point.
 

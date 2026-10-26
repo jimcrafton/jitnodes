@@ -195,6 +195,104 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
   (`--svg`, `--points`), re-saves the graph (`--save`), prints the profile (`--profile`) and lists node types
   (`--types`).
 
+## Binary geometry files and other follow-ups from the format research
+Source: `best binary format for storing a node graph.docx` (a chat transcript, `D:\code\curvy\docs`). It compares FlatBuffers,
+Protocol Buffers, MessagePack and a custom memory-mapped layout, and concludes that for a C++ SIMD engine a custom flat
+layout wins: a header, offset tables instead of pointers, string interning, one contiguous float pool per attribute, 64-byte
+alignment and an XXHash64 checksum. The rest of the transcript drifts into a runtime arena, a stage scheduler, a profiler and
+AVX-512 masks. Its sample code has the same kind of mistakes as the earlier `jit-node-exec.docx` (camelCase asmjit calls, an
+invented "XXHash style" function), so the ideas are used and the code is not.
+
+### What the research gives us, and what it does not
+| Idea in the research | Verdict | Why |
+|---|---|---|
+| Custom flat binary layout (header, offset tables, aligned float blocks) | **Adopt, for geometry** | Cooked geometry is the only large float data and it is never saved today, so every slow simulation (boids, reactionDiffusion, a 2M-point `generate`) is recooked at every load. |
+| Binary format for the *graph* itself | **Measure first, probably skip** | A graph file holds parameters, not points. It is a few KB to a few hundred KB, hand-editable and diffable as JSON5, and `saveNetwork` is byte-stable. A binary graph would lose all that for no measurable gain unless the 1000-node stress graph shows parse time that matters (step 0). |
+| FlatBuffers / Protobuf / MessagePack | **Skip** | New third-party dependency (the project vendors only asmjit and json5), a schema compiler in the build, and none of them gives 64-byte-aligned padded SoA blocks, which is what `AttribArray` already is. The research itself ends with the custom layout. |
+| String table, offsets instead of pointers, per-section sizes | **Adopt** | Needed for a relocatable file anyway. |
+| XXHash64 checksum and bounds-checked header | **Adopt** | A truncated or corrupt cache must be rejected before any array is trusted. |
+| mmap zero-copy loading | **Later, only if measured** | Copying 100M floats takes tens of milliseconds, and zero-copy needs a non-owning `AlignedArray` and a copy-on-write detach. Not worth it before the plain loader exists and is measured. |
+| Append-only runtime arena and thread-local arenas | **Skip** | Already decided above ("Scratch-arena temporaries were dropped"): no cook path allocates large temporaries, and attributes are copy-on-write. |
+| Kahn-layered parallel cooking | **Already done** (`Network::cook`, level by level) | A refinement is in step 5. |
+| Chrome-tracing profiler, per-thread timelines | **Adopt (small)** | We keep per-node totals only; a timeline shows idle gaps in uneven graphs. Step 4. |
+| Parameter block, branchless `vcmpps` masks, AVX-512 opmask merge | **Already done** | `Kernel` parameter block; `select` is `vblendvps` on AVX2 and a k-register blend on AVX-512 (`vecEmitter.cpp`). |
+| Interned string ids (hashed strings) for string attributes | **Adopt later** | String attribute types are still open under "Attributes"; a per-geometry string table of int ids fits the file format's string table. Step 6. |
+
+### Implementation plan
+**Step 0, measure (before any code).** Time `loadNetwork` on the stress graph and on `nebula.json`, and time a cold cook of
+`reactionDiffusion` 512 x 512 at t=30, `boids` (900, 14 s) and `generate` 2M points. This decides how much a cache saves and
+whether a binary graph is worth discussing; record the numbers in `docs/performance.md`.
+*Done 2026-10-26* ("Load and cook" table there): a 2646-node graph loads in 31 ms, so no binary graph format; cold cooks are
+`reactionDiffusion` 3.5 s, `boids` 0.24 s, `nebula` 0.18 s, `generate` 2M only 6 ms, so the cache only pays for the simulations.
+
+**Step 1, the file format (`include/jitnodes/geo/geoFile.h`, `src/geo/geoFile.cpp`).** One little-endian file per geometry,
+extension `.jngeo`, no dependency:
+```
+Header (64 bytes): magic "JNGEO1\0\0", u32 formatVersion, u32 endianMarker 0x01020304, u32 flags, u32 sectionCount,
+                   u64 fileSize, u64 xxh64 of everything after the header, u64 reserved
+Section table:     {u32 id, u32 flags, u64 offset (64-byte aligned), u64 byteSize} per section
+Sections:          1 strings   u32 count, then u32 offsets + UTF-8 bytes
+                   2 counts    u64 pointCount, u64 primitiveCount
+                   3 prims     {u32 start, u32 count, u8 closed, u8 kind, pad} per primitive
+                   4 attribs   directory {u32 nameIndex, u8 class, u8 type, u64 count, u64 dataOffset, u64 dataBytes}
+                   5 details   {u32 nameIndex, f32 value}
+                   6 payload   each attribute exactly as stored in memory: padToLanes(count) elements, zero padded, 64-byte aligned
+```
+*Done 2026-10-26* as written, with one payload section (directory offsets relative to it); exact layout and checks in
+`geometryFiles.md`. `xxh64` is the public header `core/xxhash.h` so tests can recompute the checksum.
+Rules: every offset and size is checked against `fileSize` (and against hard caps for counts) before use; unknown section ids are
+skipped, an unknown `formatVersion` major is an error with a clear message; floats are copied bit for bit (NaN payloads and
+-0 included). `saveGeometry(const Geometry&) -> std::vector<uint8_t>` and `loadGeometry(const uint8_t*, size_t) -> Geometry`,
+plus `...File` variants. The loader fills `AlignedArray` storage with one `memcpy` per attribute, so attribute loading runs at
+memory bandwidth. XXH64 is implemented in `src/core/xxhash.h` (about 60 lines, checked against the published test vectors).
+Tests: round trip of attributes of both classes and types, details, closed and cubic primitives and an empty geometry; the
+result must be bit-identical (`sameGeometry`); a corpus of mutated files (flipped bytes, truncations, huge counts, offsets past
+the end) must all throw `std::runtime_error` and never read out of bounds.
+
+**Step 2, nodes and tools.** *Done 2026-10-26* (see `geometryFiles.md`), with two deviations: `--geo-in FILE` renders a file without a graph
+(`--svg`/`--png`) instead of replacing a node's input, and the node skips its input through a new `Node::needsInputs()` hook that
+`buildTask` consults. `fileCache` also accepts `$F` (it shares the expansion with `fileRead`), which step 3 builds on. GUI tests
+for the two new palette buttons are in the every-palette-button test; the "Save geometry..." menu item opens a native file dialog and
+has no GUI test.
+- `fileRead` (no input): `path`; loads the file. A `$F` / `$F4` token in the path is replaced by the frame number
+  (`round(time * fps)`), so a baked sequence plays back. It depends on the playhead only when the path has a token. A missing
+  or corrupt file is a cook error naming the path.
+- `fileCache` (one input): `path`, `mode` = `write` (cook the input and write it), `read` (ignore the input and read) or `auto`
+  (read when the file exists and is valid, else cook the input and write it). Passes the geometry through unchanged. In `read`
+  mode the input is not cooked at all, which is the point: an expensive simulation upstream is skipped. The file does not record
+  what produced it, so a stale cache is the user's to delete or re-write; the docs say so plainly.
+- `jitnodesCli --geo-out FILE` writes the cooked display node as `.jngeo`, and `--geo-in FILE` replaces the input of a named
+  node for testing. The editor's viewport context menu (today "Export..." for images, which picks PNG or JPEG by extension) gets a
+  "Save geometry..." item.
+- Palette buttons (the mockup, the converter, `editorWindow.cpp`, one GUI test entry each) and a docs section in `fx.md` or a new
+  `geometryFiles.md`.
+
+**Step 3, baked sequences and trail history.** `fileCache` in `record` mode writes `$F` frames as the playhead visits them, and a
+`fileRead` of earlier frames gives any node a history without cooking inputs at other times. A `trail` that reads frames
+`t - k * step` from a sequence is then a real recorded trail. This is the cheap alternative to "cook obstacle inputs at other
+times" for boids obstacles and trails; it needs the sequence to be baked once, so it suits finished sims, not interactive ones.
+
+**Step 4, trace export.** Record `{node, thread, start, end}` for each task in a pre-sized per-thread buffer (no lock on the
+hot path), `Network::writeTrace(path)` emits Chrome trace JSON (`chrome://tracing`, Perfetto), and `jitnodesCli --trace FILE`
+writes it. The profile table in the editor stays as it is. Test: the trace parses as JSON, every task appears once, and
+recording does not change any result.
+
+**Step 5, scheduler refinement (only if step 4 shows barrier gaps).** `Network::cook` runs the tasks one level at a time, so a
+slow node in a level holds back unrelated branches in the next. Replace the level barriers by a dependency counter per task: a
+task becomes runnable when its last input finishes. Results do not depend on scheduling, so the existing thread-count tests
+keep working; compare traces before and after on an uneven graph (one slow `reactionDiffusion` branch next to many cheap nodes).
+
+**Step 6, string attributes (separate project).** A string attribute as `int32` ids into a per-geometry string table, written to
+section 1 of the file and readable in wrangles through hashed comparison. Needs a new `AttribType`, so it touches the
+kernel cache key, `merge` (table union and remapping) and `attribCreate`; plan it on its own.
+
+**Order and effort.** 0 and 1 first (a day, mostly tests), then 2 (a day with palette and docs), 4 (half a day), 3 (half a day on
+top of 2), 5 and 6 only on evidence. Nothing here changes the JSON graph format, existing graphs or existing node behaviour.
+
+**Risks.** A cache that does not know its input changed gives stale pictures (mitigation: `auto` is opt-in, the node shows the
+file's age in its status text, and the docs warn); files from a newer build are rejected, never half-read; `.jngeo` carries no
+asset or node information, so it is a data file, not a replacement for graph files.
+
 ## Threading and profiling
 - `ThreadPool::parallelFor(count, fn)`: the caller takes part and idle workers help, so it can be called from inside a
   pool task (nested parallelism) and with zero workers (runs inline). The first exception is rethrown once all indices
@@ -323,6 +421,9 @@ Remaining 3D work: indexed polygon/triangle primitives (vertex indirection), mat
 8. **Persistence and tooling (first slice done)**: see "Persistence and tooling" below. Subnets and assets: see "Subnets and
    assets". Done: diff-based undo, asset versions, `updateAssetInstances` and migration hooks. Still open: a loadable
    plugin ABI, the editor front end (newui, see "Editor UI"), Blend2D output.
+9. **Binary geometry files (planned)**: see "Binary geometry files and other follow-ups from the format research" above:
+   measure, `.jngeo` format with checksum, `fileRead` / `fileCache` nodes and CLI, baked sequences, trace export, then a
+   dependency-counting scheduler and string attributes if the evidence asks for them.
 
 ## Editor UI
 - Decision: the editor is built on [newui](https://github.com/jimcrafton/newui) (checkout `D:\code\newui`; Win32,

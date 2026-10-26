@@ -35,7 +35,7 @@ const std::vector<PaletteEntry> palette = {
     {"addVoronoi", "voronoi"}, {"addLloyd", "lloyd"}, {"addParticles", "particles"}, {"addBoids", "boids"},
     {"addSprings", "springs"}, {"addReaction", "reactionDiffusion"},
     {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
-    {"addRender", "render"},
+    {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
@@ -636,9 +636,13 @@ void EditorWindow::toggleViewportMaximized() {
 
 void EditorWindow::showViewportMenu() {
     newui::MenuItem menu;
-    bool exportChosen = false;
+    bool exportChosen = false, saveChosen = false;
     menu.addChild(std::make_unique<newui::MenuItem>("Export..."))->onClick.add([&exportChosen](newui::MenuItem&) {
         exportChosen = true;
+        return newui::SyncReturn::Handled;
+    });
+    menu.addChild(std::make_unique<newui::MenuItem>("Save geometry..."))->onClick.add([&saveChosen](newui::MenuItem&) {
+        saveChosen = true;
         return newui::SyncReturn::Handled;
     });
     POINT at{};
@@ -646,6 +650,27 @@ void EditorWindow::showViewportMenu() {
     newui::ContextMenu popup;
     popup.show(frame_.frameHandle(), menu, at.x, at.y);
     if (exportChosen) guarded([this] { doExportImage(); });
+    if (saveChosen) guarded([this] { doSaveGeometry(); });
+}
+
+void EditorWindow::doSaveGeometry() {
+    const GeometryHandle& geo = viewport_->geometry();
+    if (!geo) {
+        message_ = "there is nothing to save";
+        refresh();
+        return;
+    }
+    newui::FileDialogOptions options;
+    options.title = "Save geometry";
+    options.defaultFileName = "geometry.jngeo";
+    options.defaultExtension = "jngeo";
+    options.filters = {{"geometry files", "*.jngeo"}};
+    std::string path;
+    if (!newui::Dialog::showSaveFile(frame_.frameHandle(), options, path)) return;
+    if (std::filesystem::path(path).extension().empty()) path += ".jngeo";
+    saveGeometryToFile(*geo, path);
+    message_ = "saved " + baseName(path) + " (" + std::to_string(geo->pointCount()) + " points)";
+    refresh();
 }
 
 void EditorWindow::doExportImage() {

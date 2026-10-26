@@ -3927,6 +3927,274 @@ TEST(reactionDiffusionGrowsPatternsDeterministicallyAndStaysBounded) {
     CHECK(cookThrows(net, sim));
 }
 
+TEST(xxh64MatchesReferenceVectors) {
+    const auto hash = [](const char* s) { return xxh64(s, std::strlen(s)); };
+    CHECK(xxh64("", 0) == 0xEF46DB3751D8E999ull);
+    CHECK(hash("abc") == 0x44BC2CF5AD770999ull);
+    CHECK(hash("Nobody inspects the spammish repetition") == 0xFBCEA83C8A378BF1ull);
+}
+
+namespace {
+
+bool sameBits(const Geometry& a, const Geometry& b) {
+    if (a.pointCount() != b.pointCount() || a.primitiveCount() != b.primitiveCount() || a.details().size() != b.details().size()) return false;
+    for (size_t i = 0; i < a.primitiveCount(); ++i) {
+        const Primitive &p = a.primitives()[i], &q = b.primitives()[i];
+        if (p.start != q.start || p.count != q.count || p.closed != q.closed || p.kind != q.kind) return false;
+    }
+    for (auto l = a.details().begin(), r = b.details().begin(); l != a.details().end(); ++l, ++r)
+        if (l->first != r->first || std::memcmp(&l->second, &r->second, 4) != 0) return false;
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        const auto &left = a.attribs(cls), &right = b.attribs(cls);
+        if (left.size() != right.size()) return false;
+        for (auto l = left.begin(), r = right.begin(); l != left.end(); ++l, ++r) {
+            if (l->first != r->first || l->second.type() != r->second.type() || l->second.size() != r->second.size()) return false;
+            if (std::memcmp(l->second.data(), r->second.data(), l->second.paddedSize() * 4) != 0) return false;
+        }
+    }
+    return true;
+}
+
+Geometry sampleGeometry() {
+    Geometry g;
+    g.resizePoints(37);
+    for (size_t i = 0; i < 37; ++i) {
+        g.x()[i] = static_cast<float>(i) * 0.5f;
+        g.y()[i] = -static_cast<float>(i * i);
+    }
+    AttribArray& tricky = g.attrib(AttribClass::point, "tricky");
+    const uint32_t bits[] = {0x80000000u, 0x7fc00001u, 0x7f800000u, 0xff800000u, 0x00000001u};
+    for (size_t i = 0; i < 5; ++i) std::memcpy(&tricky.floats()[i], &bits[i], 4);
+    AttribArray& id = g.attrib(AttribClass::point, "id", AttribType::int32);
+    for (size_t i = 0; i < 37; ++i) id.ints()[i] = static_cast<int32_t>(i) - 20;
+    g.addPrimitive({0, 12, true, PrimKind::polyline});
+    g.addPrimitive({12, 25, false, PrimKind::cubic});
+    g.attrib(AttribClass::primitive, "w").floats()[1] = 3.5f;
+    g.attrib(AttribClass::primitive, "kind", AttribType::int32).ints()[0] = 7;
+    g.setDetail("render.width", 640.0f);
+    g.setDetail("render.gamma", -0.0f);
+    return g;
+}
+
+void refreshChecksum(std::vector<uint8_t>& bytes) {
+    const uint64_t h = xxh64(bytes.data() + 64, bytes.size() - 64);
+    std::memcpy(bytes.data() + 32, &h, 8);
+}
+
+bool loadFails(const std::vector<uint8_t>& bytes, size_t length) {
+    try {
+        loadGeometry(bytes.data(), length);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(geoFileRoundTripIsBitIdentical) {
+    const Geometry g = sampleGeometry();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    CHECK(bytes.size() % 64 == 0);
+    const Geometry back = loadGeometry(bytes.data(), bytes.size());
+    CHECK(sameBits(g, back));
+    CHECK(saveGeometry(back) == bytes);
+
+    const Geometry empty;
+    const std::vector<uint8_t> emptyBytes = saveGeometry(empty);
+    const Geometry emptyBack = loadGeometry(emptyBytes.data(), emptyBytes.size());
+    CHECK(sameBits(empty, emptyBack));
+    CHECK(emptyBack.pointCount() == 0 && emptyBack.primitiveCount() == 0);
+
+    Geometry noPrims;
+    noPrims.resizePoints(5);
+    noPrims.setDetail("only", 1.0f);
+    const std::vector<uint8_t> noPrimBytes = saveGeometry(noPrims);
+    CHECK(sameBits(noPrims, loadGeometry(noPrimBytes.data(), noPrimBytes.size())));
+}
+
+TEST(geoFileAttributeArraysStayAlignedAndIndependent) {
+    const Geometry g = sampleGeometry();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    Geometry back = loadGeometry(bytes.data(), bytes.size());
+    for (const auto& [name, array] : back.attribs(AttribClass::point)) CHECK(reinterpret_cast<uintptr_t>(array.data()) % 64 == 0);
+    back.x()[0] = 99.0f;
+    CHECK(g.x()[0] == 0.0f);
+}
+
+TEST(geoFileWritesAndReadsFiles) {
+    const Geometry g = sampleGeometry();
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_geometry.jngeo").string();
+    saveGeometryToFile(g, path);
+    CHECK(!std::filesystem::exists(path + ".tmp"));
+    saveGeometryToFile(g, path);
+    CHECK(sameBits(g, loadGeometryFromFile(path)));
+    std::filesystem::remove(path);
+    bool threw = false;
+    try {
+        loadGeometryFromFile(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(geoFileRejectsEveryTruncationAndByteFlip) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    for (size_t length = 0; length < bytes.size(); ++length) CHECK(loadFails(bytes, length));
+    std::vector<uint8_t> extended = bytes;
+    extended.push_back(0);
+    CHECK(loadFails(extended, extended.size()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 8 || i == 9) continue;  // minor version: newer minors load
+        std::vector<uint8_t> mutated = bytes;
+        mutated[i] ^= 0x5a;
+        CHECK(loadFails(mutated, mutated.size()));
+    }
+}
+
+TEST(geoFileSurvivesMutationsWithAValidChecksum) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    size_t rejected = 0;
+    for (size_t i = 64; i < bytes.size(); ++i) {
+        for (uint8_t value : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x7f), uint8_t(0x80), uint8_t(0xff)}) {
+            std::vector<uint8_t> mutated = bytes;
+            if (mutated[i] == value) continue;
+            mutated[i] = value;
+            refreshChecksum(mutated);
+            try {
+                const Geometry g = loadGeometry(mutated.data(), mutated.size());
+                for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+                    for (const auto& [name, array] : g.attribs(cls)) CHECK(array.size() == g.count(cls));
+                for (const Primitive& p : g.primitives()) CHECK(static_cast<uint64_t>(p.start) + p.count <= g.pointCount());
+            } catch (const std::runtime_error&) {
+                ++rejected;
+            }
+        }
+    }
+    CHECK(rejected > 1000);
+}
+
+TEST(geoFileRejectsHugeCountsAndOffsets) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    const auto sectionOffset = [&](uint32_t id) {
+        uint64_t offset;
+        std::memcpy(&offset, bytes.data() + 64 + 24 * (id - 1) + 8, 8);
+        return static_cast<size_t>(offset);
+    };
+    const auto patched = [&](size_t at, uint64_t value) {
+        std::vector<uint8_t> mutated = bytes;
+        std::memcpy(mutated.data() + at, &value, 8);
+        refreshChecksum(mutated);
+        return mutated;
+    };
+    for (uint64_t huge : {uint64_t(0x7fffffff), uint64_t(0x80000000), uint64_t(1) << 40, ~uint64_t(0)}) {
+        CHECK(loadFails(patched(sectionOffset(2), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(2) + 8, huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(3), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(4), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(5), huge), bytes.size()));
+        CHECK(loadFails(patched(64 + 8, huge), bytes.size()));
+        CHECK(loadFails(patched(64 + 16, huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(4) + 8 + 16, huge), bytes.size()));
+    }
+
+    std::vector<uint8_t> future = bytes;
+    future[10] = 2;
+    refreshChecksum(future);
+    CHECK(loadFails(future, future.size()));
+    std::vector<uint8_t> minor = bytes;
+    minor[8] = 5;
+    refreshChecksum(minor);
+    CHECK(!loadFails(minor, minor.size()));
+}
+
+TEST(fileReadPlaysABakedSequenceByFrame) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "jitnodes_test_sequence";
+    std::filesystem::create_directories(dir);
+    for (int frame = 1; frame <= 3; ++frame) {
+        Geometry g;
+        g.resizePoints(static_cast<size_t>(frame));
+        saveGeometryToFile(g, (dir / ("f" + std::string(frame < 10 ? "000" : "00") + std::to_string(frame) + ".jngeo")).string());
+    }
+    Network net(2);
+    net.setFps(10.0);
+    const NodeId read = net.addNode("fileRead");
+    net.node(read).setString("path", (dir / "f$F4.jngeo").string());
+    CHECK(net.dependsOnTime(read));
+    net.setTime(0.1);
+    CHECK(net.cook(read)->pointCount() == 1);
+    net.setTime(0.3);
+    CHECK(net.cook(read)->pointCount() == 3);
+    net.setTime(0.5);
+    CHECK(cookThrows(net, read));
+
+    net.node(read).setString("path", (dir / "f0002.jngeo").string());
+    CHECK(!net.dependsOnTime(read));
+    CHECK(net.cook(read)->pointCount() == 2);
+    net.node(read).setString("path", "");
+    CHECK(cookThrows(net, read));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(fileCacheSkipsTheUpstreamCookWhenTheFileIsThere) {
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_cache.jngeo").string();
+    std::filesystem::remove(path);
+    const auto build = [&](Network& net, NodeId& source, NodeId& cache, const char* mode) {
+        source = net.addNode("generate");
+        net.node(source).setFloat("count", 500.0f);
+        cache = net.addNode("fileCache");
+        net.node(cache).setString("path", path);
+        net.node(cache).setString("mode", mode);
+        net.connect(source, cache, 0);
+    };
+
+    Network first(2);
+    NodeId source, cache;
+    build(first, source, cache, "auto");
+    auto written = first.cook(cache);
+    CHECK(first.node(source).cookCount() == 1);
+    CHECK(std::filesystem::exists(path));
+    CHECK(sameGeometry(*written, *first.cook(source)));
+
+    // A new session: the file satisfies the cache, so the generate node is never cooked.
+    Network second(2);
+    build(second, source, cache, "auto");
+    auto loaded = second.cook(cache);
+    CHECK(second.node(source).cookCount() == 0);
+    CHECK(sameGeometry(*loaded, *written));
+
+    // read mode works with nothing connected; write mode recooks and rewrites.
+    Network third(2);
+    const NodeId lone = third.addNode("fileCache");
+    third.node(lone).setString("path", path);
+    third.node(lone).setString("mode", "read");
+    CHECK(sameGeometry(*third.cook(lone), *written));
+
+    Network fourth(2);
+    build(fourth, source, cache, "write");
+    fourth.node(source).setFloat("count", 20.0f);
+    CHECK(fourth.cook(cache)->pointCount() == 20);
+    CHECK(loadGeometryFromFile(path).pointCount() == 20);
+
+    // A corrupt file: auto cooks and replaces it, read reports it.
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "not a geometry file";
+    }
+    Network fifth(2);
+    build(fifth, source, cache, "read");
+    CHECK(cookThrows(fifth, cache));
+    fifth.node(cache).setString("mode", "auto");
+    CHECK(fifth.cook(cache)->pointCount() == 500);
+    CHECK(fifth.node(source).cookCount() == 1);
+    CHECK(loadGeometryFromFile(path).pointCount() == 500);
+
+    fifth.node(cache).setString("mode", "sideways");
+    CHECK(cookThrows(fifth, cache));
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {

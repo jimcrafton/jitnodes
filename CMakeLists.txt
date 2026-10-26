@@ -38,6 +38,7 @@ add_library(jitnodes STATIC
   src/geo/topology.cpp
   src/geo/svgExport.cpp
   src/geo/raster.cpp
+  src/geo/geoFile.cpp
   src/jit/expr.cpp
   src/jit/exprParser.cpp
   src/jit/fuse.cpp
@@ -55,6 +56,7 @@ add_library(jitnodes STATIC
   src/graph/particleNodes.cpp
   src/graph/fieldNodes.cpp
   src/graph/curveNodes.cpp
+  src/graph/fileNodes.cpp
   src/graph/subnet.cpp
   src/graph/serialize.cpp
   src/graph/history.cpp

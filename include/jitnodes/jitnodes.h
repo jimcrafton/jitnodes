@@ -3,6 +3,8 @@
 #include "jitnodes/core/alignedArray.h"
 #include "jitnodes/core/arena.h"
 #include "jitnodes/core/threadPool.h"
+#include "jitnodes/core/xxhash.h"
+#include "jitnodes/geo/geoFile.h"
 #include "jitnodes/geo/geometry.h"
 #include "jitnodes/geo/raster.h"
 #include "jitnodes/geo/svgExport.h"

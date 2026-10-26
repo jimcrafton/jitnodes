@@ -98,13 +98,15 @@ it may do with the node:
 |---|---|
 | `isPointwise()` / `pointKernel()` | one input, topology unchanged, only rewrites point channels, and can describe its work as a `KernelSpec`: may be **fused** with neighbours |
 | `isMerge()` | accepts any number of inputs: trees of merges are flattened into one concatenation |
+| `needsInputs()` | false when `cook` will not use its inputs: they are not planned, cooked or required (`fileCache` in read mode) |
 | `hasVariableInputs()` | the network keeps exactly one free input slot after the last connected one (`merge`) |
 | `childNetwork()` | container (subnet, asset instance) that owns a nested `Network` |
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
 `merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, the point and image nodes
 `generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `boids`, `springs`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail` and `render` (see
-[fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`
+[fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`,
+`fileRead` and `fileCache` ([geometryFiles.md](geometryFiles.md), `src/graph/fileNodes.cpp`; `fileCache` reads without cooking its input through `Node::needsInputs()`),
 and `subnetInput`; assets register more.
 
 **`Network`** owns the nodes in slots (`Node` + its input ids), assigns ids, checks for cycles on `connect`, keeps the

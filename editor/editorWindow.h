@@ -76,6 +76,7 @@ private:
     void applyRange();
     void showViewportMenu();
     void doExportImage();
+    void doSaveGeometry();
     void doLoadAsset();
     void doCreateAsset();
     bool confirmDiscard();

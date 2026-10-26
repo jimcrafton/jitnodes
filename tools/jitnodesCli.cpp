@@ -14,8 +14,11 @@ namespace {
 void usage() {
     std::puts(
         "usage: jitnodesCli <graph.json> [options]\n"
+        "       jitnodesCli --geo-in FILE.jngeo [--svg FILE] [--png FILE] [--size WxH]\n"
         "       jitnodesCli --types\n"
         "options:\n"
+        "  --geo-out FILE  write the cooked geometry as a .jngeo file (see docs/geometryFiles.md)\n"
+        "  --geo-in FILE   use a .jngeo file instead of a graph (for --svg and --png)\n"
         "  --node NAME   cook this node instead of the display node\n"
         "  --time T      playhead in seconds\n"
         "  --threads N   total threads (default: hardware)\n"
@@ -33,7 +36,7 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_;
+    std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_, geoOutPath, geoInPath;
     std::vector<std::string> assetPaths;
     double time = 0.0;
     bool haveTime = false, profile = false, points = false, listTypes = false;
@@ -53,6 +56,8 @@ int main(int argc, char** argv) {
         else if (arg == "--threads") threads = static_cast<size_t>(std::atoi(value().c_str()));
         else if (arg == "--isa") isaName_ = value();
         else if (arg == "--asset") assetPaths.push_back(value());
+        else if (arg == "--geo-out") geoOutPath = value();
+        else if (arg == "--geo-in") geoInPath = value();
         else if (arg == "--svg") svgPath = value();
         else if (arg == "--png") pngPath = value();
         else if (arg == "--size") sizeText = value();
@@ -71,35 +76,45 @@ int main(int argc, char** argv) {
             for (const std::string& type : NodeRegistry::instance().typeNames()) std::puts(type.c_str());
             return 0;
         }
-        if (graphPath.empty()) {
+        if (graphPath.empty() && geoInPath.empty()) {
             usage();
             return 2;
         }
 
-        if (!isaName_.empty()) {
-            Isa isa;
-            if (isaName_ == "sse2") isa = Isa::sse2;
-            else if (isaName_ == "avx2") isa = Isa::avx2;
-            else if (isaName_ == "avx512") isa = Isa::avx512;
-            else throw std::runtime_error("unknown --isa '" + isaName_ + "' (use sse2, avx2 or avx512)");
-            net.compiler().setIsa(isa);
-        }
-        for (const std::string& path : assetPaths) registerAssetFromFile(path);
-        loadNetworkFromFile(net, graphPath);
-        if (haveTime) net.setTime(time);
-        if (!savePath.empty()) saveNetworkToFile(net, savePath);
+        GeometryHandle geo;
+        if (!geoInPath.empty()) {
+            geo = std::make_shared<Geometry>(loadGeometryFromFile(geoInPath));
+            std::printf("%s: %zu points, %zu primitives\n", geoInPath.c_str(), geo->pointCount(), geo->primitiveCount());
+        } else {
+            if (!isaName_.empty()) {
+                Isa isa;
+                if (isaName_ == "sse2") isa = Isa::sse2;
+                else if (isaName_ == "avx2") isa = Isa::avx2;
+                else if (isaName_ == "avx512") isa = Isa::avx512;
+                else throw std::runtime_error("unknown --isa '" + isaName_ + "' (use sse2, avx2 or avx512)");
+                net.compiler().setIsa(isa);
+            }
+            for (const std::string& path : assetPaths) registerAssetFromFile(path);
+            loadNetworkFromFile(net, graphPath);
+            if (haveTime) net.setTime(time);
+            if (!savePath.empty()) saveNetworkToFile(net, savePath);
 
-        NodeId target = net.displayNode();
-        if (!nodeName.empty()) {
-            target = net.findNode(nodeName);
-            if (target == invalidNodeId) throw std::runtime_error("no node named '" + nodeName + "'");
-        }
-        if (target == invalidNodeId) throw std::runtime_error("the graph has no display node; use --node NAME");
+            NodeId target = net.displayNode();
+            if (!nodeName.empty()) {
+                target = net.findNode(nodeName);
+                if (target == invalidNodeId) throw std::runtime_error("no node named '" + nodeName + "'");
+            }
+            if (target == invalidNodeId) throw std::runtime_error("the graph has no display node; use --node NAME");
 
-        GeometryHandle geo = net.cook(target);
-        std::printf("%s: %zu points, %zu primitives, time %g, %zu thread(s), jit %s\n", net.node(target).name().c_str(), geo->pointCount(),
-                    geo->primitiveCount(), net.time(), net.threadCount(),
-                    net.compiler().jitSupported() ? jitnodes::isaName(net.compiler().isa()) : "unavailable (interpreter)");
+            geo = net.cook(target);
+            std::printf("%s: %zu points, %zu primitives, time %g, %zu thread(s), jit %s\n", net.node(target).name().c_str(), geo->pointCount(),
+                        geo->primitiveCount(), net.time(), net.threadCount(),
+                        net.compiler().jitSupported() ? jitnodes::isaName(net.compiler().isa()) : "unavailable (interpreter)");
+        }
+        if (!geoOutPath.empty()) {
+            saveGeometryToFile(*geo, geoOutPath);
+            std::printf("wrote %s\n", geoOutPath.c_str());
+        }
         for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
             for (const auto& [name, array] : geo->attribs(cls))
                 std::printf("  %s attribute %s (%s)\n", cls == AttribClass::point ? "point" : "primitive", name.c_str(),

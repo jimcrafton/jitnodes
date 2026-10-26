@@ -43,6 +43,7 @@ changes. `History` provides undo/redo that only touches the nodes that changed.
 - [docs/wrangle.md](docs/wrangle.md): the wrangle scripting language: syntax, types, operators, functions, examples.
 - [docs/assets.md](docs/assets.md): assets (reusable nodes): how to write them, use them in a graph, in code and in the editor, and update them.
 - [docs/fx.md](docs/fx.md): the point and image nodes (`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `boids`, `springs`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail`, `render`) and the nebula sample.
+- [docs/geometryFiles.md](docs/geometryFiles.md): the `.jngeo` binary geometry format, the `fileRead` and `fileCache` nodes (cache a slow simulation, play back a baked sequence) and the CLI options.
 - [docs/editor.md](docs/editor.md): the newui desktop editor: how to use it and how it is built.
 - [docs/stress-test.md](docs/stress-test.md): `jitnodesStress`, a test with thousands of nodes and tens of thousands of points per node, and what it found.
 - [docs/design.md](docs/design.md): design, research notes and roadmap.

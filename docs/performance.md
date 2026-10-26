@@ -105,6 +105,24 @@ kernels compiled: 1 (0.077 ms), threads: 4
 (transform and line rows omitted: the transforms are fused into the wranglers, the lines were cached. The kernel
 column now includes cloning the channels the kernel writes, which used to be a separate full-geometry copy.)
 
+### Load and cold cook (2026-10-26, release, 24 hardware threads; median of 3 runs in one process)
+Measured for step 0 of "Binary geometry files" in `design.md`: `loadNetwork` from text, then `setTime`, then one cook of the display node.
+
+| Graph | File size | `loadNetwork` (ms) | Cold cook (ms) | Points |
+|---|---|---|---|---|
+| stress chains, 64 x 16 (1110 nodes) | 396 KB | 12.7 | 10.5 | 640k |
+| stress chains, default 64 x 40 (2646 nodes) | 966 KB | 31 | 17.6 | 640k |
+| `examples/graphs/nebula.json` | 6.6 KB | 0.4 | 177 | 646k |
+| `reactionDiffusion` 512 x 512, t = 30 | 0.2 KB | 0.0 | 3480 | 262k |
+| `boids` 900, t = 14 | 0.4 KB | 0.1 | 239 | 900 |
+| `generate` 2M points | 0.1 KB | 0.0 | 6 | 2M |
+
+Parsing is about 12 us per node (30 MB/s), so even the 2646-node graph loads in 31 ms, less than one cook of it; a binary graph
+format would save at most a few tens of milliseconds and is not worth the loss of diffable text. The expensive cooks are
+the stateful simulations (`reactionDiffusion` 3.5 s, `boids` 0.24 s): those are what a geometry cache would save at every load.
+`generate` of 2M points costs 6 ms, so caching it would be slower than recooking (reading 2M x several floats from disk is
+not free), and `nebula` at 0.18 s is borderline.
+
 ## What the numbers show
 
 - **The JIT removes essentially all interpretation cost.** Simple kernels run 80-250x faster than the interpreter

@@ -126,12 +126,15 @@ public:
     virtual bool childDependsOnTime() const { return false; }
     // True for nodes that read the playhead (CookContext::time) themselves, such as a simulation: the network recooks them when the time changes.
     virtual bool dependsOnPlayhead() const { return false; }
+    // Asked while planning a cook: false means cook() will not look at its inputs, so they are neither cooked nor required to be connected.
+    virtual bool needsInputs() { return true; }
     virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
 protected:
     void declareFloat(const std::string& name, float defaultValue);
     void declareString(const std::string& name, const std::string& defaultValue);
     void declareGeometry(const std::string& name);
+    const Network* owner() const { return network_; }
 
 private:
     friend class Network;

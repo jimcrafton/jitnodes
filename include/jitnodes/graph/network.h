@@ -103,6 +103,7 @@ void registerPatternNodes();
 void registerParticleNodes();
 void registerFieldNodes();
 void registerCurveNodes();
+void registerFileNodes();
 void registerSubnetNodes();
 
 class Network {

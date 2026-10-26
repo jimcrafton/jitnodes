@@ -558,7 +558,7 @@ Network::CookTask Network::buildTask(NodeId id) {
     } else if (fusionEnabled() && n.isMerge()) {
         collectMergeInputs(id, task);
         if (task.inputs.empty()) throw std::runtime_error(n.name() + ": no input is connected");
-    } else {
+    } else if (n.needsInputs()) {
         const Slot& s = slot(id);
         for (size_t i = 0; i < s.inputs.size(); ++i) {
             if (s.inputs[i] == invalidNodeId) {
