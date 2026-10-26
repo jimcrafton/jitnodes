@@ -139,44 +139,71 @@ Median of 3 cold cooks (fresh `Network`, load, `setTime`, one cook of the displa
 documented for in `fx.md`. Measured with a small driver like the load test above; the same hardware as in
 "Environment".
 
-| graph (time) | points | 1 thread | all threads | all threads, JIT off | heaviest node (all threads) |
-|---|---:|---:|---:|---:|---|
-| `fxBlur` | 60k | 788 | 623 | 615 | `attribBlur` 4 passes 624 ms |
-| `fxReaction` (30) | 24k | 1480 | 477 | 551 | `reactionDiffusion` 529 / 486 ms |
-| `fxGas` (4) | 7.9k | 474 | 469 | 468 | `particles` 259, `gasField` 213 |
-| `fxFluid` (2.5) | 1.1k | 271 | 269 | 271 | `fluid` 272 |
-| `fxBoids` (14) | 1.8k | 1358 | 296 | 293 | `boids` 294 + 153 |
-| `fxBoidsRocks` (4.8) | 0.9k | 277 | 88 | - | `boids` |
-| `fxGrow` (2.5) | 16k | 178 | 175 | - | `grow` 176 |
-| `fxParticles` (6) | 26k | 124 | 123 | - | `particles` |
-| `fxAttractor` | 1.6M | 874 | 148 | 146 | `attractor` 128 / 115 / 95 / 49 |
-| `fxFlow` | 972k | 235 | 179 | 184 | (not profiled) |
-| `nebula` | 646k | 980 | 186 | 190 | `warp` 76 / 61 / 26, `noise` 30 / 26 |
-| `fxWarp` | 240k | 72 | 19 | 18 | |
-| `fxNoise` | 180k | 46 | 11 | 11 | |
-| `fxTrails` (3) | 18k | 81 | 35 | 35 | |
-| `fxStreamlines` | 12k | 11.4 | 11.4 | - | |
-| `fxColonize` | 4.4k | 27 | 26 | - | |
-| `fxSprings` (3) | 7.7k | 30 | 30 | - | |
-| `fxVoronoi` | 75k | 4.7 | 2.4 | - | |
-| `fxLloyd` | 40k | 3.4 | 2.8 | - | |
-| `fxWave` | 130k | 7.2 | 2.9 | - | |
+The first measurement found that `parallelChunks` split work into chunks of 16,384 points, so any node with fewer
+points than that (or a few times that) ran on one or two threads however heavy its per-point work. It now picks about
+four chunks per thread, between 256 and 16,384 points (`src/graph/nodeUtil.h`). The "before" column is the first
+measurement with the old rule; the other columns are after the change.
 
-All times in ms. Run-to-run spread was under about 5 % except `fxReaction` and `fxWarp` (up to 10 %, a single slow run).
-The loop graphs (`loopsForeach`, `loopsSolver`) cook in under 1 ms.
+| graph (time) | points | 1 thread | all threads | before (all threads) | JIT off, before (all threads) | heaviest node, before |
+|---|---:|---:|---:|---:|---:|---|
+| `fxBlur` | 60k | 790 | 137 | 623 | 615 | `attribBlur` 4 passes 624 ms |
+| `fxReaction` (30) | 24k | 1014 | 270 | 477 | 551 | `reactionDiffusion` 529 / 486 ms |
+| `fxGas` (4) | 7.9k | 469 | 462 | 469 | 468 | `particles` 259, `gasField` 213 |
+| `fxFluid` (2.5) | 1.1k | 272 | 122 | 269 | 271 | `fluid` 272 |
+| `fxBoids` (14) | 1.8k | 1356 | 297 | 296 | 293 | `boids` 294 + 153 |
+| `fxBoidsRocks` (4.8) | 0.9k | 277 | 87 | 88 | - | `boids` |
+| `fxGrow` (2.5) | 16k | 179 | 43 | 175 | - | `grow` 176 |
+| `fxParticles` (6) | 26k | 124 | 56 | 123 | - | `particles` |
+| `fxAttractor` | 1.6M | 871 | 137 | 148 | 146 | `attractor` 128 / 115 / 95 / 49 |
+| `fxFlow` | 972k | 234 | 48 | 179 | 184 | (not profiled) |
+| `nebula` | 646k | 982 | 162 | 186 | 190 | `warp` 76 / 61 / 26, `noise` 30 / 26 |
+| `fxWarp` | 240k | 72 | 15 | 19 | 18 | |
+| `fxNoise` | 180k | 46 | 9.1 | 11 | 11 | |
+| `fxTrails` (3) | 18k | 81 | 35 | 35 | 35 | |
+| `fxStreamlines` | 12k | 12.0 | 11.9 | 11.4 | - | |
+| `fxColonize` | 4.4k | 25 | 25.5 | 26 | - | |
+| `fxSprings` (3) | 7.7k | 30 | 30 | 30 | - | |
+| `fxVoronoi` | 75k | 4.8 | 2.3 | 2.4 | - | |
+| `fxLloyd` | 40k | 3.6 | 2.4 | 2.8 | - | |
+| `fxWave` | 130k | 8.1 | 2.6 | 2.9 | - | |
+
+All times in ms. Run-to-run spread was under about 5 % except `fxReaction`, `fxWarp` and `fxBlur` (up to 10 - 20 %,
+one slow run). The loop graphs (`loopsForeach`, `loopsSolver`) cook in under 1 ms. The 1-thread column did not change.
+The tests (176) pass with the new rule. The "JIT off" column was only measured before the change.
 
 What this shows:
 
 - **The JIT is irrelevant here.** The expensive fx nodes are native C++ operators, not kernels; the only kernel in
-  these graphs is the final `look` wrangle (0.1 ms to compile, 0.1 - 3 ms to run). JIT on and off are within noise,
-  except `fxReaction`, where the 477 vs 551 ms difference is within that graph's run-to-run spread.
-- **Stateful simulations dominate.** `reactionDiffusion` (two 512 x 512 grids to t = 30), `fluid`, `particles`,
-  `gasField`, `boids` and `grow` replay from t = 0 on a cold cook, 0.1 - 0.5 s each. These are the nodes a geometry
-  cache would help.
-- **Threading helps where the node is parallel**: `reactionDiffusion` 3.1x, `boids` 4.6x, `attractor` 5.9x,
-  `nebula` 5.3x, `noise`/`warp` 4x. `fluid`, `gas`, `particles`, `grow`, `colonize` and `streamlines` are serial and
-  gain nothing; `attribBlur` gains only 1.3x and is the worst for its size (60k points, 4 passes, 0.62 s), which makes
-  it the best optimisation candidate in this set.
+  these graphs is the final `look` wrangle (0.1 ms to compile, 0.1 - 3 ms to run). JIT on and off were within noise.
+- **The chunk rule was the main inefficiency.** `fxBlur` 4.5x faster, `fxFluid` 2.2x, `fxGrow` 4.1x, `fxParticles` 2.2x,
+  `fxFlow` 3.7x, `nebula` 1.1x; the nodes that were already above 16k points gained little.
+- **`reactionDiffusion` stencil.** Its 110 x 110 grid was split into 3 chunks and every cell went through a branching
+  wrap function. The interior of each row now runs without wrapping (`__restrict` pointers, min/max instead of clamp)
+  with chunks of about `rows / (4 x threads)`: `fxReaction` went from 1474 to 1014 ms on one thread and from 483 to
+  270 ms on all threads, with identical output (the tests pass). It is still about 3.5 ns per cell, so the loop is
+  probably not fully vectorised; that was not investigated.
+- **Gas solver, red-black ordering (`redBlack` on `gasField`, `gasRedBlack` on `particles`, default off).** The
+  row-by-row Gauss-Seidel sweep has a dependency from each cell to the previous one; the two-colour sweep has none
+  inside a colour. Measured on `fxGas` copies at t = 1 (whole graph, ms, median of 3):
+
+  | `resolution` | off, 1 thread | on, 1 thread | on, all threads |
+  |---:|---:|---:|---:|
+  | 64 | 119 | 86 | 84 |
+  | 128 | 294 | 143 | 141 |
+  | 256 | 1017 | 375 | 351 |
+
+  So it is 1.4 - 2.7x faster even on one thread, and threads add little (7 % at 256, none below 16,384 cells where the
+  solver does not use the pool) because each sweep is too short to pay for waking the pool. The results differ slightly
+  from the row-by-row sweep (a test checks the smoke stays within 0.1 units), and are identical for any thread count.
+- **Still serial:** `gasField` and the gas coupling of `particles` (about 210 and 250 ms in
+  `fxGas` with `redBlack` off), `springs` (23 ms), `streamlines` (10 ms) and `colonize` (26 ms). The gas grids of
+  the example are only about 2,400 cells, so threads would add synchronisation cost; the time is the number of steps
+  (about 1,000 for 4 s) at roughly 0.2 ms each.
+- **Stateful simulations dominate.** `reactionDiffusion` (two 512 x 512 grids to t = 30), `gasField`, `boids`, `fluid`
+  and `particles` replay from t = 0 on a cold cook, 0.05 - 0.5 s each. These are the nodes a geometry cache would
+  help.
+- **Single-thread cost is unchanged.** `attribBlur` still costs about 3.8 ns per neighbour visit on one thread
+  (random memory access); sorting points by grid cell is the remaining idea for it.
 
 ## What the numbers show
 

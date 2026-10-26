@@ -41,6 +41,8 @@ public:
     }
 
     float cellSize() const { return cell_; }
+    // Point indices ordered by cell (row-major), stable within a cell.
+    const std::vector<uint32_t>& cellOrder() const { return items_; }
     // The largest ring around any cell that still touches the grid.
     int maxRing() const { return std::max(cols_, rows_); }
 

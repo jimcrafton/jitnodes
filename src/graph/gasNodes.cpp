@@ -89,7 +89,7 @@ public:
         }
         for (; step_ < target; ++step_) {
             for (const GasSource& s : sources) solver_.addSource(s, dt);
-            solver_.step(dt);
+            solver_.step(dt, ctx.pool);
         }
 
         auto geo = std::make_shared<Geometry>();

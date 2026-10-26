@@ -57,26 +57,47 @@ void seedField(FieldState& st, const GrayScott& g, uint32_t seed, int seedCount,
 void stepField(FieldState& st, const GrayScott& g, ThreadPool* pool) {
     const int w = g.width, h = g.height;
     auto wrapIndex = [&](int i, int n) { return g.periodic ? (i < 0 ? i + n : i >= n ? i - n : i) : std::clamp(i, 0, n - 1); };
-    const size_t rowsPerChunk = std::max<size_t>(1, 4096 / static_cast<size_t>(w));
+    const float* su = st.u.data();
+    const float* sv = st.v.data();
+    float* nu = st.nu.data();
+    float* nv = st.nv.data();
+    auto cell = [&](size_t up, size_t mid, size_t down, size_t l, size_t c, size_t r) {
+        const float u = su[mid + c], v = sv[mid + c];
+        const float lapU = 0.2f * (su[mid + l] + su[mid + r] + su[up + c] + su[down + c]) + 0.05f * (su[up + l] + su[up + r] + su[down + l] + su[down + r]) - u;
+        const float lapV = 0.2f * (sv[mid + l] + sv[mid + r] + sv[up + c] + sv[down + c]) + 0.05f * (sv[up + l] + sv[up + r] + sv[down + l] + sv[down + r]) - v;
+        const float uvv = u * v * v;
+        nu[mid + c] = std::clamp(u + (g.du * lapU - uvv + g.feed * (1.0f - u)) * g.dt, 0.0f, 1.0f);
+        nv[mid + c] = std::clamp(v + (g.dv * lapV + uvv - (g.feed + g.kill) * v) * g.dt, 0.0f, 1.0f);
+    };
+    const size_t width = static_cast<size_t>(w);
+    // The interior of a row needs no wrapping, which lets the compiler vectorise it; chunks are small because the grids are.
     parallelChunks(pool, static_cast<size_t>(h), [&](size_t begin, size_t end) {
         for (size_t row = begin; row < end; ++row) {
             const int y = static_cast<int>(row);
-            const size_t up = static_cast<size_t>(wrapIndex(y - 1, h)) * static_cast<size_t>(w);
-            const size_t mid = row * static_cast<size_t>(w);
-            const size_t down = static_cast<size_t>(wrapIndex(y + 1, h)) * static_cast<size_t>(w);
-            for (int x = 0; x < w; ++x) {
-                const size_t l = static_cast<size_t>(wrapIndex(x - 1, w)), c = static_cast<size_t>(x), r = static_cast<size_t>(wrapIndex(x + 1, w));
-                const float u = st.u[mid + c], v = st.v[mid + c];
-                const float lapU = 0.2f * (st.u[mid + l] + st.u[mid + r] + st.u[up + c] + st.u[down + c]) +
-                                   0.05f * (st.u[up + l] + st.u[up + r] + st.u[down + l] + st.u[down + r]) - u;
-                const float lapV = 0.2f * (st.v[mid + l] + st.v[mid + r] + st.v[up + c] + st.v[down + c]) +
-                                   0.05f * (st.v[up + l] + st.v[up + r] + st.v[down + l] + st.v[down + r]) - v;
+            const size_t up = static_cast<size_t>(wrapIndex(y - 1, h)) * width;
+            const size_t mid = row * width;
+            const size_t down = static_cast<size_t>(wrapIndex(y + 1, h)) * width;
+            cell(up, mid, down, static_cast<size_t>(wrapIndex(-1, w)), 0, static_cast<size_t>(wrapIndex(1, w)));
+            if (w > 1) cell(up, mid, down, width - 2, width - 1, static_cast<size_t>(wrapIndex(w, w)));
+            const float* __restrict uU = su + up;
+            const float* __restrict uM = su + mid;
+            const float* __restrict uD = su + down;
+            const float* __restrict vU = sv + up;
+            const float* __restrict vM = sv + mid;
+            const float* __restrict vD = sv + down;
+            float* __restrict outU = nu + mid;
+            float* __restrict outV = nv + mid;
+            const float du = g.du, dv = g.dv, feed = g.feed, kill = g.kill, dt = g.dt;
+            for (size_t c = 1; c + 1 < width; ++c) {
+                const float u = uM[c], v = vM[c];
+                const float lapU = 0.2f * (uM[c - 1] + uM[c + 1] + uU[c] + uD[c]) + 0.05f * (uU[c - 1] + uU[c + 1] + uD[c - 1] + uD[c + 1]) - u;
+                const float lapV = 0.2f * (vM[c - 1] + vM[c + 1] + vU[c] + vD[c]) + 0.05f * (vU[c - 1] + vU[c + 1] + vD[c - 1] + vD[c + 1]) - v;
                 const float uvv = u * v * v;
-                st.nu[mid + c] = std::clamp(u + (g.du * lapU - uvv + g.feed * (1.0f - u)) * g.dt, 0.0f, 1.0f);
-                st.nv[mid + c] = std::clamp(v + (g.dv * lapV + uvv - (g.feed + g.kill) * v) * g.dt, 0.0f, 1.0f);
+                outU[c] = std::min(std::max(u + (du * lapU - uvv + feed * (1.0f - u)) * dt, 0.0f), 1.0f);
+                outV[c] = std::min(std::max(v + (dv * lapV + uvv - (feed + kill) * v) * dt, 0.0f), 1.0f);
             }
         }
-    }, rowsPerChunk);
+    }, std::max<size_t>(1, static_cast<size_t>(h) / (4 * (pool ? pool->concurrency() : 1))));
     st.u.swap(st.nu);
     st.v.swap(st.nv);
 }

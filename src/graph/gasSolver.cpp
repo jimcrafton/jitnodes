@@ -1,5 +1,7 @@
 #include "gasSolver.h"
 
+#include "nodeUtil.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -90,6 +92,25 @@ void GasSolver::sample(float x, float y, float& vx, float& vy, float& density) c
     density = lerp2(d_);
 }
 
+template <class F>
+void GasSolver::sweep(F&& cell) {
+    if (!config_.redBlack) {
+        for (int j = 1; j <= ny_; ++j)
+            for (int i = 1; i <= nx_; ++i) cell(i, j);
+        return;
+    }
+    // Below this the cost of waking the pool is larger than the sweep.
+    const bool threaded = pool_ && static_cast<size_t>(nx_) * static_cast<size_t>(ny_) >= 16384;
+    for (int colour = 0; colour < 2; ++colour) {
+        auto rows = [&](size_t begin, size_t end) {
+            for (int j = static_cast<int>(begin) + 1; j <= static_cast<int>(end); ++j)
+                for (int i = 1 + (((1 + j) & 1) != colour ? 1 : 0); i <= nx_; i += 2) cell(i, j);
+        };
+        if (threaded) parallelChunks(pool_, static_cast<size_t>(ny_), rows);
+        else rows(0, static_cast<size_t>(ny_));
+    }
+}
+
 void GasSolver::project() {
     for (int j = 1; j <= ny_; ++j)
         for (int i = 1; i <= nx_; ++i) div_[at(i, j)] = 0.5f * h_ * (u_[at(i + 1, j)] - u_[at(i - 1, j)] + v_[at(i, j + 1)] - v_[at(i, j - 1)]);
@@ -103,8 +124,7 @@ void GasSolver::project() {
     };
     pressureBoundary();
     for (int it = 0; it < config_.iterations; ++it) {
-        for (int j = 1; j <= ny_; ++j)
-            for (int i = 1; i <= nx_; ++i) p_[at(i, j)] = (p_[at(i - 1, j)] + p_[at(i + 1, j)] + p_[at(i, j - 1)] + p_[at(i, j + 1)] - div_[at(i, j)]) * 0.25f;
+        sweep([&](int i, int j) { p_[at(i, j)] = (p_[at(i - 1, j)] + p_[at(i + 1, j)] + p_[at(i, j - 1)] + p_[at(i, j + 1)] - div_[at(i, j)]) * 0.25f; });
         pressureBoundary();
     }
     for (int j = 1; j <= ny_; ++j) {
@@ -119,9 +139,9 @@ void GasSolver::project() {
 
 void GasSolver::diffuse(std::vector<float>& a, const std::vector<float>& a0, float k, int kind) {
     for (int it = 0; it < config_.iterations; ++it) {
-        for (int j = 1; j <= ny_; ++j)
-            for (int i = 1; i <= nx_; ++i)
-                a[at(i, j)] = (a0[at(i, j)] + k * (a[at(i - 1, j)] + a[at(i + 1, j)] + a[at(i, j - 1)] + a[at(i, j + 1)])) / (1.0f + 4.0f * k);
+        sweep([&](int i, int j) {
+            a[at(i, j)] = (a0[at(i, j)] + k * (a[at(i - 1, j)] + a[at(i + 1, j)] + a[at(i, j - 1)] + a[at(i, j + 1)])) / (1.0f + 4.0f * k);
+        });
         boundary(a, kind);
     }
 }
@@ -157,7 +177,8 @@ void GasSolver::confineVorticity(float dt) {
     }
 }
 
-void GasSolver::step(float dt) {
+void GasSolver::step(float dt, ThreadPool* pool) {
+    pool_ = pool;
     if (config_.buoyancy != 0.0f || config_.weight != 0.0f) {
         for (int j = 1; j <= ny_; ++j)
             for (int i = 1; i <= nx_; ++i) v_[at(i, j)] += (config_.buoyancy * t_[at(i, j)] - config_.weight * d_[at(i, j)]) * dt;
@@ -218,6 +239,7 @@ GasConfig readGasConfig(const Node& node, const char* prefix, const char* who) {
     c.vorticity = std::max(node.getFloat(gasParamName(prefix, "vorticity")), 0.0f);
     c.iterations = std::clamp(static_cast<int>(node.getFloat(gasParamName(prefix, "iterations"))), 1, 200);
     c.open = node.getFloat(gasParamName(prefix, "open")) != 0.0f;
+    c.redBlack = node.getFloat(gasParamName(prefix, "redBlack")) != 0.0f;
     return c;
 }
 

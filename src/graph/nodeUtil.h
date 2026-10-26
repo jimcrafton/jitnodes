@@ -27,9 +27,11 @@ inline float random01(uint32_t seed, uint32_t index, uint32_t stream) {
 
 inline uint32_t seedOf(float value) { return static_cast<uint32_t>(static_cast<int64_t>(value)); }
 
-// Runs fn(begin, end) over [0, count) in chunks, on the pool when one is given.
-inline void parallelChunks(ThreadPool* pool, size_t count, const std::function<void(size_t, size_t)>& fn, size_t chunk = 16384) {
+// Runs fn(begin, end) over [0, count) in chunks, on the pool when one is given. chunk = 0 aims for about four chunks per thread, between
+// 256 and 16384 points, so heavy per-point work on a few thousand points still spreads over the pool.
+inline void parallelChunks(ThreadPool* pool, size_t count, const std::function<void(size_t, size_t)>& fn, size_t chunk = 0) {
     if (count == 0) return;
+    if (chunk == 0) chunk = pool ? std::clamp<size_t>(count / (4 * pool->concurrency()), 256, 16384) : 16384;
     const size_t chunks = (count + chunk - 1) / chunk;
     if (!pool || chunks == 1) {
         fn(0, count);

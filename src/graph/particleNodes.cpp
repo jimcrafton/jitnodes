@@ -239,7 +239,7 @@ void advance(State& st, const Settings& s, int64_t step, ThreadPool* pool, std::
         if (s.nozzleOn) st.gas.addSource(s.nozzle, dt);
         if (s.gasEmit != 0.0f || s.gasPush != 0.0f)
             for (size_t i = 0; i < n; ++i) st.gas.addBody(st.x[i], st.y[i], st.vx[i], st.vy[i], s.gasEmit, s.gasPush, dt);
-        st.gas.step(dt);
+        st.gas.step(dt, pool);
     }
 
     const float width = s.maxX - s.minX, height = s.maxY - s.minY;

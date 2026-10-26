@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "jitnodes/core/threadPool.h"
 #include "jitnodes/graph/node.h"
 
 namespace jitnodes {
@@ -15,6 +16,7 @@ struct GasConfig {
     float buoyancy = 0.0f, weight = 0.0f, vorticity = 5.0f;
     int iterations = 20;
     bool open = false;  // gas leaves through the walls instead of piling up against them
+    bool redBlack = false;  // red-black Gauss-Seidel: order independent within a colour, so it threads on big grids; results differ slightly
 };
 
 // A gas injected over a disc: `density` and `heat` per second at full weight, and the velocity the gas is blended towards.
@@ -38,7 +40,8 @@ public:
     void addSource(const GasSource& source, float dt);
     // A moving body: density, and a share `push` (per second) of its velocity given to the gas around it.
     void addBody(float x, float y, float vx, float vy, float density, float push, float dt);
-    void step(float dt);
+    // With `pool` and config.redBlack the relaxation sweeps of a large grid run on the pool; the result does not depend on the pool.
+    void step(float dt, ThreadPool* pool = nullptr);
 
     // Bilinear samples at a world position; outside the domain everything is 0.
     void sample(float x, float y, float& vx, float& vy, float& density) const;
@@ -55,7 +58,11 @@ private:
     void diffuse(std::vector<float>& a, const std::vector<float>& a0, float k, int kind);
     void advect(std::vector<float>& dst, const std::vector<float>& src, const std::vector<float>& uu, const std::vector<float>& vv, float dt, int kind);
     void confineVorticity(float dt);
+    // Calls cell(i, j) for every interior cell: row by row, or in two checkerboard colours with rows spread over the pool.
+    template <class F>
+    void sweep(F&& cell);
 
+    ThreadPool* pool_ = nullptr;
     GasConfig config_;
     int nx_ = 0, ny_ = 0;
     float h_ = 1.0f;
@@ -76,6 +83,7 @@ void forEachGasParam(const char* prefix, Fn&& fn) {
     fn(gasParamName(prefix, "vorticity"), 5.0f);
     fn(gasParamName(prefix, "iterations"), 20.0f);
     fn(gasParamName(prefix, "open"), 0.0f);
+    fn(gasParamName(prefix, "redBlack"), 0.0f);
     fn(gasParamName(prefix, "nozzleX"), 0.0f);
     fn(gasParamName(prefix, "nozzleY"), 0.0f);
     fn(gasParamName(prefix, "nozzleAngle"), 90.0f);

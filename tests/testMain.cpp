@@ -3595,6 +3595,22 @@ TEST(gasFieldCarriesSmokeUpwardsAndIsAPureFunctionOfTime) {
     CHECK(cookThrows(smoke.net, smoke.gas));
 }
 
+TEST(gasFieldRedBlackIsThreadIndependentAndAgreesWithTheSerialSweep) {
+    auto configure = [](Smoke& s, bool redBlack) {
+        s.net.node(s.gas).setFloat("resolution", 160.0f);
+        s.net.node(s.gas).setFloat("redBlack", redBlack ? 1.0f : 0.0f);
+    };
+    Smoke one(1), many(4), plain(1);
+    configure(one, true);
+    configure(many, true);
+    configure(plain, false);
+    auto a = one.at(1.0);
+    CHECK(sameGeometry(*many.at(1.0), *a));  // 25600 cells: the 4-thread run really is threaded
+    auto serial = plain.at(1.0);
+    CHECK(!sameGeometry(*serial, *a));
+    CHECK(std::fabs(densityCentreY(*a) - densityCentreY(*serial)) < 0.1f);
+}
+
 TEST(gasFieldBlowsAndKeepsTheVelocityFieldDivergenceFree) {
     Smoke blow;
     blow.net.node(blow.gas).setFloat("nozzleHeat", 0.0f);

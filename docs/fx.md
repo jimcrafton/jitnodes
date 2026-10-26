@@ -414,6 +414,7 @@ thread count (the solver is serial), scrubbing back restarts it.
 | `resolution` | 64 | cells across (8 to 512). Cost per step is cells times (`iterations` * 2 + about 40) operations |
 | `iterations` | 20 | Gauss-Seidel sweeps for the pressure and the viscosity. More means a more divergence free field |
 | `open` | 0 | 0: closed walls, gas piles up and rolls along them. 1: gas flows out through the walls |
+| `redBlack` | 0 | 1: relax the pressure and viscosity in two checkerboard passes instead of row by row. About 1.4 to 2.7 times faster per step (and a little more with threads on grids above 16,384 cells); results differ slightly from 0 and are still the same for any thread count. In `particles` it is `gasRedBlack` |
 | `viscosity` | 0 | diffusion of the velocity (world units squared per second) |
 | `dissipation`, `cooling` | 0.2, 0.5 | density and temperature fade by `exp(-rate * dt)` |
 | `buoyancy`, `weight` | 0, 0 | acceleration up per unit temperature, and down per unit density |
