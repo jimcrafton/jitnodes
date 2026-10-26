@@ -4137,6 +4137,88 @@ TEST(fileReadPlaysABakedSequenceByFrame) {
     std::filesystem::remove_all(dir);
 }
 
+TEST(fileTrailFollowsPointsThroughRecordedFrames) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "jitnodes_test_trail";
+    std::filesystem::create_directories(dir);
+    for (int frame = 1; frame <= 4; ++frame) {
+        Geometry g;
+        g.resizePoints(2);
+        g.x()[0] = static_cast<float>(frame);
+        g.y()[0] = 0.0f;
+        g.x()[1] = 0.0f;
+        g.y()[1] = static_cast<float>(10 * frame);
+        saveGeometryToFile(g, (dir / ("t" + std::to_string(frame) + ".jngeo")).string());
+    }
+    Network net(2);
+    net.setFps(10.0);
+    const NodeId trail = net.addNode("fileTrail");
+    net.node(trail).setString("path", (dir / "t$F.jngeo").string());
+    net.node(trail).setFloat("frames", 3.0f);
+    CHECK(net.dependsOnTime(trail));
+
+    net.setTime(0.4);
+    GeometryHandle geo = net.cook(trail);
+    CHECK(geo->pointCount() == 8);
+    CHECK(geo->primitiveCount() == 2);
+    for (size_t k = 0; k < 4; ++k) {
+        CHECK(geo->x()[k] == static_cast<float>(4 - k));
+        CHECK(geo->y()[4 + k] == static_cast<float>(10 * (4 - k)));
+    }
+
+    net.setTime(0.2);
+    geo = net.cook(trail);
+    CHECK(geo->x()[0] == 2.0f && geo->x()[1] == 1.0f);
+    CHECK(geo->x()[2] == 1.0f && geo->x()[3] == 1.0f);
+
+    net.node(trail).setString("path", (dir / "t0001.jngeo").string());
+    CHECK(cookThrows(net, trail));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(traceRecordsEveryCookedTaskOnceAndChangesNothing) {
+    Branches plain(4, 4, 2000.0f), traced(4, 4, 2000.0f);
+    traced.net.setTraceEnabled(true);
+    CHECK(plain.net.traceEventCount() == 0);
+    const GeometryHandle expected = plain.net.cook(plain.out);
+    const GeometryHandle actual = traced.net.cook(traced.out);
+    CHECK(sameGeometry(*expected, *actual));
+    CHECK(plain.net.traceEventCount() == 0);
+
+    size_t tasks = 0;
+    for (NodeId id : traced.net.nodeIds()) {
+        const NodeStats& st = traced.net.node(id).stats();
+        if (st.cooks > 0 && st.fusedInto == invalidNodeId) ++tasks;
+    }
+    CHECK(tasks > 0);
+    CHECK(traced.net.traceEventCount() == tasks);
+
+    const std::string json = traced.net.traceJson();
+    CHECK(json.find("{\"traceEvents\":[") == 0);
+    size_t phases = 0;
+    for (size_t at = json.find("\"ph\":\"X\""); at != std::string::npos; at = json.find("\"ph\":\"X\"", at + 1)) ++phases;
+    CHECK(phases == tasks);
+    for (NodeId id : traced.net.nodeIds()) {
+        const NodeStats& st = traced.net.node(id).stats();
+        if (st.cooks == 0 || st.fusedInto != invalidNodeId) continue;
+        const std::string key = "\"name\":\"" + traced.net.node(id).name() + "\"";
+        const size_t first = json.find(key);
+        CHECK(first != std::string::npos);
+        CHECK(json.find(key, first + 1) == std::string::npos);
+    }
+
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_trace.json").string();
+    traced.net.writeTrace(path);
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::string onDisk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        CHECK(onDisk == json);
+    }
+    std::filesystem::remove(path);
+
+    traced.net.clearTrace();
+    CHECK(traced.net.traceEventCount() == 0);
+}
+
 TEST(fileCacheSkipsTheUpstreamCookWhenTheFileIsThere) {
     const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_cache.jngeo").string();
     std::filesystem::remove(path);

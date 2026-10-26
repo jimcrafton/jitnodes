@@ -668,6 +668,70 @@ void Network::runTask(const CookTask& task) {
     stats.lastKernelMs = timings.kernelMs;
     stats.lastChainLength = task.chain.empty() ? 1 : task.chain.size();
     stats.fusedInto = invalidNodeId;
+
+    if (traceEnabled()) {
+        static std::atomic<int> nextThread{0};
+        thread_local const int thread = nextThread++;
+        static const auto origin = Clock::now();
+        TraceEvent event;
+        event.name = tail.name();
+        event.type = tail.typeName();
+        event.thread = thread;
+        event.startUs = std::chrono::duration<double, std::micro>(start - origin).count();
+        event.durationUs = total * 1000.0;
+        event.chain = stats.lastChainLength;
+        recordTrace(std::move(event));
+    }
+}
+
+void Network::recordTrace(TraceEvent event) {
+    Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    r.traceEvents_.push_back(std::move(event));
+}
+
+void Network::clearTrace() {
+    Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    r.traceEvents_.clear();
+}
+
+size_t Network::traceEventCount() const {
+    const Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    return r.traceEvents_.size();
+}
+
+std::string Network::traceJson() const {
+    const Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    auto escaped = [](const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '"' || c == '\\') out += '\\';
+            if (static_cast<unsigned char>(c) < 0x20) continue;
+            out += c;
+        }
+        return out;
+    };
+    std::string out = "{\"traceEvents\":[\n";
+    char line[512];
+    for (size_t i = 0; i < r.traceEvents_.size(); ++i) {
+        const TraceEvent& e = r.traceEvents_[i];
+        std::snprintf(line, sizeof(line), "{\"name\":\"%s\",\"cat\":\"%s\",\"ph\":\"X\",\"ts\":%.3f,\"dur\":%.3f,\"pid\":1,\"tid\":%d,\"args\":{\"chain\":%zu}}%s\n",
+                      escaped(e.name).c_str(), escaped(e.type).c_str(), e.startUs, e.durationUs, e.thread, e.chain,
+                      i + 1 < r.traceEvents_.size() ? "," : "");
+        out += line;
+    }
+    return out + "]}\n";
+}
+
+void Network::writeTrace(const std::string& path) const {
+    const std::string json = traceJson();
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (!file) throw std::runtime_error("cannot open '" + path + "' for writing");
+    const bool ok = std::fwrite(json.data(), 1, json.size(), file) == json.size();
+    if (std::fclose(file) != 0 || !ok) throw std::runtime_error("cannot write '" + path + "'");
 }
 
 GeometryHandle Network::cook(NodeId id) {

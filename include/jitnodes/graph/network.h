@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -181,6 +182,15 @@ public:
     std::string profileReport() const;
     void resetProfile();
 
+    // Records one event per cooked task (node, thread, start, duration) while enabled; a subnet's network records into its root's.
+    // writeTrace emits Chrome trace JSON for chrome://tracing and Perfetto. Recording does not change any result.
+    void setTraceEnabled(bool enabled) { root().traceEnabled_ = enabled; }
+    bool traceEnabled() const { return root().traceEnabled_.load(); }
+    void clearTrace();
+    size_t traceEventCount() const;
+    std::string traceJson() const;
+    void writeTrace(const std::string& path) const;
+
     // A network owned by a subnet node shares its parent's kernel cache and thread pool.
     KernelCompiler& compiler() { return parent_ ? parent_->compiler() : ownCompiler_; }
     const KernelCompiler& compiler() const { return parent_ ? parent_->compiler() : ownCompiler_; }
@@ -243,6 +253,15 @@ private:
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
     void appendProfileRows(std::string& out, int depth) const;
     void runTask(const CookTask& task);
+    Network& root() { return parent_ ? parent_->root() : *this; }
+    const Network& root() const { return parent_ ? parent_->root() : *this; }
+    struct TraceEvent {
+        std::string name, type;
+        int thread = 0;
+        double startUs = 0.0, durationUs = 0.0;
+        size_t chain = 1;
+    };
+    void recordTrace(TraceEvent event);
     void collectMergeInputs(NodeId id, CookTask& task);
     bool cancelRequested() const { return parent_ ? parent_->cancelRequested() : cancelRequested_.load(); }
     void evaluateParams(Node& n);
@@ -284,6 +303,9 @@ private:
     std::atomic<bool> cooking_{false};
     std::atomic<bool> cancelRequested_{false};
     std::unique_ptr<ThreadPool> pool_;
+    std::atomic<bool> traceEnabled_{false};
+    mutable std::mutex traceMutex_;
+    std::vector<TraceEvent> traceEvents_;
 };
 
 }  // namespace jitnodes

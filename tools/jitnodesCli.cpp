@@ -30,13 +30,14 @@ void usage() {
         "  --size WxH    PNG size in pixels (default: the render node's width and height)\n"
         "  --save FILE   write the graph back out (normalises formatting)\n"
         "  --profile     print per-node timings\n"
+        "  --trace FILE  write the cook as Chrome trace JSON (chrome://tracing, Perfetto)\n"
         "  --types       list registered node types");
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_, geoOutPath, geoInPath;
+    std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_, geoOutPath, geoInPath, tracePath;
     std::vector<std::string> assetPaths;
     double time = 0.0;
     bool haveTime = false, profile = false, points = false, listTypes = false;
@@ -64,6 +65,7 @@ int main(int argc, char** argv) {
         else if (arg == "--save") savePath = value();
         else if (arg == "--points") points = true;
         else if (arg == "--profile") profile = true;
+        else if (arg == "--trace") tracePath = value();
         else if (arg == "--types") listTypes = true;
         else if (arg == "--help" || arg == "-h") { usage(); return 0; }
         else if (!arg.empty() && arg[0] == '-') { std::fprintf(stderr, "unknown option %s\n", arg.c_str()); usage(); return 2; }
@@ -106,7 +108,12 @@ int main(int argc, char** argv) {
             }
             if (target == invalidNodeId) throw std::runtime_error("the graph has no display node; use --node NAME");
 
+            net.setTraceEnabled(!tracePath.empty());
             geo = net.cook(target);
+            if (!tracePath.empty()) {
+                net.writeTrace(tracePath);
+                std::printf("wrote %s (%zu events)\n", tracePath.c_str(), net.traceEventCount());
+            }
             std::printf("%s: %zu points, %zu primitives, time %g, %zu thread(s), jit %s\n", net.node(target).name().c_str(), geo->pointCount(),
                         geo->primitiveCount(), net.time(), net.threadCount(),
                         net.compiler().jitSupported() ? jitnodes::isaName(net.compiler().isa()) : "unavailable (interpreter)");

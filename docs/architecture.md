@@ -455,7 +455,7 @@ sanitizer run were not measured. The method and the numbers of the earlier run a
   expressions, keyframes and time dependence, subnets and assets (versions, migration, unlock), serialization round
   trips, undo/redo, clips, merge trees, cancellation, topology algorithms.
 - `jitnodesCli graph.json [--time T] [--node NAME] [--threads N] [--isa sse2|avx2|avx512] [--svg out.svg [--points]]
-  [--save out.json] [--profile] [--asset file]...` and `jitnodesCli --types`.
+  [--save out.json] [--profile] [--trace out.json] [--asset file]...` and `jitnodesCli --types`.
 - `jitnodesStress`: thousands of nodes and tens of thousands of points per node, checked against an independent reference and across every configuration; see [stress-test.md](stress-test.md). `ctest` runs its quick size.
 - `editorModelTests` and the newui GUI tests are described in [editor.md](editor.md#testing).
 

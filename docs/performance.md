@@ -23,6 +23,10 @@ out/build/x64-release/kernelBench.exe        # prints the tables below as markdo
 out/build/x64-release/jitnodesCli.exe examples/graphs/wobble.json --profile --isa avx512
 ```
 
+`--trace FILE` writes the cook as a timeline: open it in `chrome://tracing` or <https://ui.perfetto.dev>. Each row is a thread,
+each bar one node (a fused chain is one bar named after its last node). Gaps between bars on a row show where a level waited
+for its slowest branch. The `--profile` table reports the same times as sums.
+
 Run it from an otherwise idle machine, in Release (the program prints a warning if it was built without
 optimisation). `JITNODES_JIT_LOG=1` dumps the generated assembly.
 

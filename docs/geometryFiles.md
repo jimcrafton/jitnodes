@@ -17,7 +17,7 @@ Loading throws `std::runtime_error` ("invalid .jngeo file: ...") for anything th
 copied bit for bit (NaN payloads and -0 included), and saving the loaded geometry gives the same bytes.
 
 ## Nodes
-Both nodes are in `src/graph/fileNodes.cpp` and are palette buttons in the editor (`fileRead`, `fileCache`).
+All are in `src/graph/fileNodes.cpp`. `fileRead` and `fileCache` are palette buttons in the editor; `fileTrail` is added by name.
 
 | Node | Inputs | Parameters | Behaviour |
 |---|---|---|---|
@@ -27,6 +27,18 @@ Both nodes are in `src/graph/fileNodes.cpp` and are palette buttons in the edito
 `$F` in a path is the frame number, `round(time * fps)`, and `$F4` pads it with zeros to 4 digits (any width). A path with a
 token makes the node depend on the playhead, so a baked sequence `sim_$F4.jngeo` plays back as the playhead moves; a path without
 one does not. Relative paths are relative to the process's working directory.
+
+### Recording and history
+`fileCache` with `$F` in the path already records: in `write` mode it saves every frame the playhead visits, and in `auto` mode it
+saves the frames that are missing and reads the ones that exist, so there is no separate `record` mode. Scrubbing or running a
+render loop over the frames bakes the sequence.
+
+`fileTrail` (0 inputs) turns a baked sequence into a recorded trail: parameters `path` (must contain `$F`), `frames` (earlier
+frames in the trail, default 8), `step` (frames between samples, default 1) and `fade` (default 1). Each point of the current frame
+gets a polyline through its positions in the earlier frames, matched by point index, with the `u`, `trail` and `alpha` attributes
+that `trail` writes. A missing frame or a frame before the start repeats the newer one, and a point an older frame does not have
+starts where the newer frame has it, so a trail never jumps. It needs the sequence baked first, so it suits finished
+simulations. Unlike `trail`, which extrapolates the current velocity, it shows where the points were.
 
 The saving is real only because skipping is real: `Node::needsInputs()` (asked while planning a cook) returns false for a
 `fileCache` that will read, so upstream nodes are never planned, cooked or required to be wired. The file does not record what

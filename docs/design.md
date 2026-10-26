@@ -271,11 +271,20 @@ has no GUI test.
 `fileRead` of earlier frames gives any node a history without cooking inputs at other times. A `trail` that reads frames
 `t - k * step` from a sequence is then a real recorded trail. This is the cheap alternative to "cook obstacle inputs at other
 times" for boids obstacles and trails; it needs the sequence to be baked once, so it suits finished sims, not interactive ones.
+*Done, with deviations:* no `record` mode, because `fileCache` with `$F` in the path already writes (`write`) or fills in (`auto`)
+each frame the playhead visits. The history is one new node, `fileTrail` (`path` with `$F`, `frames`, `step`, `fade`), which reads
+the earlier frames itself instead of wiring one `fileRead` per frame into `trail`. Boids obstacles still do not read history; they
+drift with `vx`/`vy`. No palette button yet (the palette is full), so `fileTrail` is added by name. Test:
+`fileTrailFollowsPointsThroughRecordedFrames`.
 
 **Step 4, trace export.** Record `{node, thread, start, end}` for each task in a pre-sized per-thread buffer (no lock on the
 hot path), `Network::writeTrace(path)` emits Chrome trace JSON (`chrome://tracing`, Perfetto), and `jitnodesCli --trace FILE`
 writes it. The profile table in the editor stays as it is. Test: the trace parses as JSON, every task appears once, and
 recording does not change any result.
+*Done, with one deviation:* events go into one vector behind a mutex, taken once per task (a task is a whole node cook, so the cost
+is negligible), not per-thread buffers. `Network::setTraceEnabled`, `traceJson`, `writeTrace`, `clearTrace`; a subnet records into
+its root network. Each event is a complete (`ph:"X"`) event with `args.chain` (fused chain length). Fused intermediate nodes get no
+event, only the task. Test: `traceRecordsEveryCookedTaskOnceAndChangesNothing`.
 
 **Step 5, scheduler refinement (only if step 4 shows barrier gaps).** `Network::cook` runs the tasks one level at a time, so a
 slow node in a level holds back unrelated branches in the next. Replace the level barriers by a dependency counter per task: a

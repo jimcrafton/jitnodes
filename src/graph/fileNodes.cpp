@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -124,6 +125,90 @@ private:
     GeometryHandle pending_;
 };
 
+// A recorded trail: every point of the current frame of a baked sequence gets a polyline through its positions in the `frames` earlier
+// frames (`step` frames apart). Points are matched by index. A frame that is missing or before the start repeats the newer one, and a
+// point an older frame does not have starts where the newer frame has it, so a trail never jumps.
+class FileTrailNode : public Node {
+public:
+    FileTrailNode() : Node("fileTrail", 0) {
+        declareString("path", "");
+        declareFloat("frames", 8.0f);
+        declareFloat("step", 1.0f);
+        declareFloat("fade", 1.0f);
+    }
+
+    bool dependsOnPlayhead() const override { return true; }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>&) override {
+        const std::string& pattern = getString("path");
+        if (!hasFrameToken(pattern)) throw std::runtime_error(name() + ": path needs a $F token");
+        const size_t segments = static_cast<size_t>(std::clamp(getFloat("frames"), 1.0f, 1000.0f));
+        const long long step = std::max<long long>(std::llround(getFloat("step")), 1);
+        const float fade = std::clamp(getFloat("fade"), 0.0f, 1.0f);
+        const double fps = ctx.network ? ctx.network->fps() : 24.0;
+        const long long frame = std::llround(ctx.time * fps);
+
+        const std::string headPath = expandFrame(pattern, frame);
+        Geometry head;
+        try {
+            head = loadGeometryFromFile(headPath);
+        } catch (const std::runtime_error& e) {
+            throw std::runtime_error(name() + ": " + headPath + ": " + e.what());
+        }
+        const size_t n = head.pointCount(), per = segments + 1;
+        if (n * per > 100'000'000) throw std::runtime_error(name() + ": more than 100 million points; lower frames");
+
+        auto geo = std::make_shared<Geometry>();
+        geo->resizePoints(n * per);
+        for (const auto& entry : head.attribs(AttribClass::point)) {
+            if (entry.first == "x" || entry.first == "y") continue;
+            AttribArray& target = geo->attrib(AttribClass::point, entry.first, entry.second.type());
+            for (size_t p = 0; p < n; ++p)
+                for (size_t k = 0; k < per; ++k) {
+                    const size_t i = p * per + k;
+                    if (entry.second.type() == AttribType::float32) target.floats()[i] = entry.second.floats()[p];
+                    else target.ints()[i] = entry.second.ints()[p];
+                }
+        }
+        for (const auto& entry : head.details()) geo->setDetail(entry.first, entry.second);
+
+        float* xs = geo->x();
+        float* ys = geo->y();
+        float* u = geo->attrib(AttribClass::point, "u").floats().data();
+        int32_t* trail = geo->attrib(AttribClass::point, "trail", AttribType::int32).ints().data();
+        float* alpha = geo->attrib(AttribClass::point, "alpha").floats().data();
+        if (!head.findAttrib(AttribClass::point, "alpha")) std::fill(alpha, alpha + n * per, 1.0f);
+
+        std::vector<float> px(std::as_const(head).x(), std::as_const(head).x() + n), py(std::as_const(head).y(), std::as_const(head).y() + n);
+        for (size_t k = 0; k < per; ++k) {
+            if (k > 0 && frame - static_cast<long long>(k) * step >= 0) {
+                const std::string path = expandFrame(pattern, frame - static_cast<long long>(k) * step);
+                if (std::filesystem::exists(path)) {
+                    try {
+                        const Geometry older = loadGeometryFromFile(path);
+                        const size_t m = std::min(older.pointCount(), n);
+                        std::copy(std::as_const(older).x(), std::as_const(older).x() + m, px.begin());
+                        std::copy(std::as_const(older).y(), std::as_const(older).y() + m, py.begin());
+                    } catch (const std::runtime_error& e) {
+                        throw std::runtime_error(name() + ": " + path + ": " + e.what());
+                    }
+                }
+            }
+            const float t = static_cast<float>(k) / static_cast<float>(segments);
+            for (size_t p = 0; p < n; ++p) {
+                const size_t i = p * per + k;
+                xs[i] = px[p];
+                ys[i] = py[p];
+                u[i] = t;
+                trail[i] = static_cast<int32_t>(p);
+                alpha[i] *= 1.0f - fade * t;
+            }
+        }
+        for (size_t p = 0; p < n; ++p) geo->addPrimitive(Primitive{static_cast<uint32_t>(p * per), static_cast<uint32_t>(per), false, PrimKind::polyline});
+        return geo;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -134,6 +219,7 @@ void add(const char* typeName) {
 void registerFileNodes() {
     add<FileReadNode>("fileRead");
     add<FileCacheNode>("fileCache");
+    add<FileTrailNode>("fileTrail");
 }
 
 }  // namespace jitnodes
