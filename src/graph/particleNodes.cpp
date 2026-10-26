@@ -28,6 +28,11 @@ struct Settings {
     float noiseForce = 0.0f, noiseScale = 0.2f, noiseSpeed = 0.2f;
     float attractX = 0.0f, attractY = 0.0f, attract = 0.0f, softening = 0.5f, swirl = 0.0f;
     float repel = 0.0f, repelRadius = 0.3f;
+    float vortexX = 0.0f, vortexY = 0.0f, vortex = 0.0f, vortexRadius = 2.0f;
+    float jetX = 0.0f, jetY = 0.0f, jetDirX = 0.0f, jetDirY = 1.0f, jetForce = 0.0f, jetLength = 3.0f, jetWidth = 1.0f;
+    float windX = 0.0f, windY = 0.0f, windDrag = 0.0f;
+    float follow = 0.0f, followPull = 0.0f, followRadius = 1.0f;
+    bool collide = false;
     float lifetime = 0.0f;
     float initialSpeed = 0.0f, speedVariation = 0.0f, direction = 0.0f, spread = 360.0f;
     Boundary boundary = Boundary::none;
@@ -36,8 +41,113 @@ struct Settings {
     Fractal field;
 };
 
+// The segments of the guide inputs: consecutive points of every primitive (closed ones return to their first point).
+struct Guides {
+    std::vector<float> ax, ay, bx, by;
+    bool empty() const { return ax.empty(); }
+    size_t size() const { return ax.size(); }
+};
+
+Guides gatherGuides(const std::vector<GeometryHandle>& in) {
+    Guides g;
+    for (size_t k = 1; k < in.size(); ++k) {
+        const Geometry& geo = *in[k];
+        const float* px = std::as_const(geo).x();
+        const float* py = std::as_const(geo).y();
+        for (const Primitive& p : geo.primitives()) {
+            const uint32_t segments = p.count < 2 ? 0 : p.closed ? p.count : p.count - 1;
+            for (uint32_t i = 0; i < segments; ++i) {
+                const uint32_t a = p.start + i, b = p.start + (i + 1) % p.count;
+                g.ax.push_back(px[a]);
+                g.ay.push_back(py[a]);
+                g.bx.push_back(px[b]);
+                g.by.push_back(py[b]);
+            }
+        }
+    }
+    return g;
+}
+
+std::vector<float> guideContent(const Guides& g) {
+    std::vector<float> out;
+    out.reserve(g.size() * 4);
+    for (size_t i = 0; i < g.size(); ++i) out.insert(out.end(), {g.ax[i], g.ay[i], g.bx[i], g.by[i]});
+    return out;
+}
+
+// Pulls towards, and along, the nearest guide segment within `radius`, weighted by 1 - distance / radius.
+void followGuides(const Guides& g, const Settings& s, float x, float y, float& ax, float& ay) {
+    float best = s.followRadius * s.followRadius, cx = 0.0f, cy = 0.0f, tx = 0.0f, ty = 0.0f;
+    bool found = false;
+    for (size_t i = 0; i < g.size(); ++i) {
+        const float ex = g.bx[i] - g.ax[i], ey = g.by[i] - g.ay[i];
+        const float len2 = ex * ex + ey * ey;
+        if (!(len2 > 0.0f)) continue;
+        const float t = std::clamp(((x - g.ax[i]) * ex + (y - g.ay[i]) * ey) / len2, 0.0f, 1.0f);
+        const float px = g.ax[i] + ex * t, py = g.ay[i] + ey * t;
+        const float d2 = (x - px) * (x - px) + (y - py) * (y - py);
+        if (d2 < best) {
+            best = d2;
+            cx = px;
+            cy = py;
+            const float inv = 1.0f / std::sqrt(len2);
+            tx = ex * inv;
+            ty = ey * inv;
+            found = true;
+        }
+    }
+    if (!found) return;
+    const float d = std::sqrt(best);
+    const float w = 1.0f - d / s.followRadius;
+    ax += tx * s.follow * w;
+    ay += ty * s.follow * w;
+    if (d > 1e-6f) {
+        ax += (cx - x) / d * s.followPull * w;
+        ay += (cy - y) / d * s.followPull * w;
+    }
+}
+
+// A particle that moved from (ox, oy) to (x, y) through a guide segment is reflected off the first one it crossed.
+void collideGuides(const Guides& g, float ox, float oy, float& x, float& y, float& vx, float& vy, float bounce, float friction) {
+    const float dx = x - ox, dy = y - oy;
+    float bestT = 2.0f;
+    size_t hit = 0;
+    for (size_t i = 0; i < g.size(); ++i) {
+        const float ex = g.bx[i] - g.ax[i], ey = g.by[i] - g.ay[i];
+        const float denom = dx * ey - dy * ex;
+        if (std::fabs(denom) < 1e-12f) continue;
+        const float qx = g.ax[i] - ox, qy = g.ay[i] - oy;
+        const float t = (qx * ey - qy * ex) / denom;
+        const float u = (qx * dy - qy * dx) / denom;
+        if (t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f && t < bestT) {
+            bestT = t;
+            hit = i;
+        }
+    }
+    if (bestT > 1.0f) return;
+    const float ex = g.bx[hit] - g.ax[hit], ey = g.by[hit] - g.ay[hit];
+    const float inv = 1.0f / std::hypot(ex, ey);
+    float nx = -ey * inv, ny = ex * inv;
+    if (nx * dx + ny * dy > 0.0f) {
+        nx = -nx;
+        ny = -ny;
+    }
+    const float remX = (1.0f - bestT) * dx, remY = (1.0f - bestT) * dy;
+    const float along = remX * nx + remY * ny;
+    x = ox + bestT * dx + remX - 2.0f * along * nx + nx * 1e-4f;
+    y = oy + bestT * dy + remY - 2.0f * along * ny + ny * 1e-4f;
+    const float vn = vx * nx + vy * ny;
+    if (vn < 0.0f) {
+        const float tx = vx - vn * nx, ty = vy - vn * ny;
+        vx = tx * (1.0f - friction) - bounce * vn * nx;
+        vy = ty * (1.0f - friction) - bounce * vn * ny;
+    }
+}
+
 struct State {
     GeometryHandle source;
+    Guides guides;
+    std::vector<float> guideSnapshot;  // content of the guides when the run started: equal content keeps the run
     std::vector<float> signature;
     std::string boundary;
     int64_t step = -1;  // -1: nothing simulated yet
@@ -135,14 +245,43 @@ void advance(State& st, const Settings& s, int64_t step, ThreadPool* pool, std::
                 ax += cx * s.noiseForce;
                 ay += cy * s.noiseForce;
             }
+            if (s.vortex != 0.0f) {
+                const float dx = x - s.vortexX, dy = y - s.vortexY;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                if (d > 1e-6f && d < s.vortexRadius) {
+                    const float w = 1.0f - d / s.vortexRadius;
+                    const float k = s.vortex * w * w / d;
+                    ax -= dy * k;
+                    ay += dx * k;
+                }
+            }
+            if (s.jetForce != 0.0f) {
+                const float dx = x - s.jetX, dy = y - s.jetY;
+                const float along = dx * s.jetDirX + dy * s.jetDirY;
+                const float lateral = std::fabs(-dx * s.jetDirY + dy * s.jetDirX);
+                const float half = 0.5f * s.jetWidth;
+                if (along >= 0.0f && along < s.jetLength && lateral < half) {
+                    const float k = s.jetForce * (1.0f - along / s.jetLength) * (1.0f - lateral / half);
+                    ax += s.jetDirX * k;
+                    ay += s.jetDirY * k;
+                }
+            }
+            if (s.windDrag != 0.0f) {
+                const float k = std::clamp(s.windDrag * dt, 0.0f, 1.0f) / dt;
+                ax += (s.windX - vx) * k;
+                ay += (s.windY - vy) * k;
+            }
+            if (s.follow != 0.0f || s.followPull != 0.0f) followGuides(st.guides, s, x, y, ax, ay);
             if (repelOn) {
                 ax += pushX[i];
                 ay += pushY[i];
             }
             vx = (vx + ax * dt) * s.dragFactor;
             vy = (vy + ay * dt) * s.dragFactor;
+            const float fromX = x, fromY = y;
             x += vx * dt;
             y += vy * dt;
+            if (s.collide && !st.guides.empty()) collideGuides(st.guides, fromX, fromY, x, y, vx, vy, s.bounce, s.friction);
 
             if (s.boundary == Boundary::bounce) {
                 if (x < s.minX) {
@@ -214,6 +353,23 @@ public:
         declareFloat("swirl", 0.0f);
         declareFloat("repel", 0.0f);
         declareFloat("repelRadius", 0.3f);
+        declareFloat("vortexX", 0.0f);
+        declareFloat("vortexY", 0.0f);
+        declareFloat("vortex", 0.0f);
+        declareFloat("vortexRadius", 2.0f);
+        declareFloat("jetX", 0.0f);
+        declareFloat("jetY", 0.0f);
+        declareFloat("jetAngle", 90.0f);
+        declareFloat("jetForce", 0.0f);
+        declareFloat("jetLength", 3.0f);
+        declareFloat("jetWidth", 1.0f);
+        declareFloat("windX", 0.0f);
+        declareFloat("windY", 0.0f);
+        declareFloat("windDrag", 0.0f);
+        declareFloat("follow", 0.0f);
+        declareFloat("followPull", 0.0f);
+        declareFloat("followRadius", 1.0f);
+        declareFloat("collide", 0.0f);
         declareFloat("lifetime", 0.0f);
         declareFloat("initialSpeed", 0.0f);
         declareFloat("speedVariation", 0.0f);
@@ -229,6 +385,7 @@ public:
     }
 
     bool dependsOnPlayhead() const override { return true; }
+    bool hasVariableInputs() const override { return true; }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
         const std::string& boundary = getString("boundary");
@@ -252,6 +409,24 @@ public:
         s.swirl = getFloat("swirl");
         s.repel = getFloat("repel");
         s.repelRadius = getFloat("repelRadius");
+        s.vortexX = getFloat("vortexX");
+        s.vortexY = getFloat("vortexY");
+        s.vortex = getFloat("vortex");
+        s.vortexRadius = std::max(getFloat("vortexRadius"), 1e-3f);
+        s.jetX = getFloat("jetX");
+        s.jetY = getFloat("jetY");
+        s.jetDirX = std::cos(getFloat("jetAngle") * (twoPi / 360.0f));
+        s.jetDirY = std::sin(getFloat("jetAngle") * (twoPi / 360.0f));
+        s.jetForce = getFloat("jetForce");
+        s.jetLength = std::max(getFloat("jetLength"), 1e-3f);
+        s.jetWidth = std::max(getFloat("jetWidth"), 1e-3f);
+        s.windX = getFloat("windX");
+        s.windY = getFloat("windY");
+        s.windDrag = std::max(getFloat("windDrag"), 0.0f);
+        s.follow = getFloat("follow");
+        s.followPull = getFloat("followPull");
+        s.followRadius = std::max(getFloat("followRadius"), 1e-3f);
+        s.collide = getFloat("collide") != 0.0f;
         s.lifetime = std::max(getFloat("lifetime"), 0.0f);
         s.initialSpeed = getFloat("initialSpeed");
         s.speedVariation = getFloat("speedVariation");
@@ -274,10 +449,14 @@ public:
 
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
+        Guides guides = gatherGuides(in);
+        std::vector<float> snapshot = guideContent(guides);
         State& st = state_;
-        if (st.step < 0 || st.source != in[0] || st.signature != signature || st.boundary != boundary || target < st.step) {
+        if (st.step < 0 || st.source != in[0] || st.guideSnapshot != snapshot || st.signature != signature || st.boundary != boundary || target < st.step) {
             st = State();
             st.source = in[0];
+            st.guides = std::move(guides);
+            st.guideSnapshot = std::move(snapshot);
             st.signature = std::move(signature);
             st.boundary = boundary;
             initialise(st, *in[0], s);

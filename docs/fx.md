@@ -342,7 +342,7 @@ Feed the result to `voronoi` to draw the cells.
 with its Voronoi outlines (`voronoi` with `closed` 0, walked by `scatter lineCount`). The cells go from a mix of tiny and huge to
 nearly uniform.
 
-### particles (one input)
+### particles (the particles, plus any number of guide inputs)
 
 A particle simulation. The input points are the particles at `startTime`; the result is where they are at the playhead, after
 fixed steps of force integration (semi-implicit Euler at `stepsPerSecond`). It is the one node that reads the playhead itself, so it
@@ -357,11 +357,24 @@ recooks as soon as the time changes and needs no `time` expression. Press play a
 | `attract`, `attractX`, `attractY`, `attractSoftening` | 0, 0, 0, 0.5 | pull towards a point: `attract * d / (r^2 + softening^2)^1.5`, an inverse-square force that does not blow up at the centre |
 | `swirl` | 0 | the same force turned a quarter turn: acceleration around the attractor point |
 | `repel`, `repelRadius` | 0, 0.3 | particles closer than `repelRadius` push each other apart (soft collisions); the strongest push is `repel` at distance 0. This builds a grid every step, so it is the expensive force |
+| `vortex`, `vortexX`, `vortexY`, `vortexRadius` | 0, 0, 0, 2 | a point vortex: acceleration around the centre (counter-clockwise for positive `vortex`) of `vortex * (1 - d / vortexRadius)^2`, zero beyond the radius. Unlike `swirl` it has a finite reach |
+| `jetForce`, `jetX`, `jetY`, `jetAngle`, `jetLength`, `jetWidth` | 0, 0, 0, 90, 3, 1 | a fan: inside the rectangle that starts at (`jetX`, `jetY`), points along `jetAngle` degrees and is `jetLength` long and `jetWidth` wide, particles are accelerated along `jetAngle` by `jetForce`, fading linearly to 0 at the far end and at the sides |
+| `windX`, `windY`, `windDrag` | 0, 0, 0 | drag towards the velocity (`windX`, `windY`): `windDrag * (wind - v)` per second, so a particle ends up carried at the wind speed instead of accelerating forever |
+| `follow`, `followPull`, `followRadius` | 0, 0, 1 | guide curves (see below): within `followRadius` of the nearest guide segment, acceleration along the curve's direction (`follow`) and towards it (`followPull`), both weighted by `1 - distance / followRadius` |
+| `collide` | 0 | 1 makes the guide curves walls: a particle whose step crosses a guide segment is reflected with `bounce` and `friction` as at the box |
 | `lifetime` | 0 | seconds a particle lives (0: forever). When it ends the particle restarts from its input position and velocity. Starting ages are staggered, so the respawns are spread over the lifetime instead of all happening at once |
 | `initialSpeed`, `speedVariation`, `direction`, `spread` | 0, 0, 90, 360 | emission velocity added to the particle's own: speed (with a random fraction `speedVariation` either way), heading in degrees from +x and the cone width in degrees. A particle gets a new random velocity at each respawn |
 | `boundary` | `none` | `none`; `bounce` (reflect at the box with the velocity scaled by `bounce`, and `friction` slows the sliding velocity); `wrap` (leave on one side and come back on the other) |
 | `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box for `bounce` and `wrap` |
 | `bounce`, `friction` | 0.6, 0 | restitution and sliding friction at the box |
+
+**Guide curves.** Every input after the first is a guide: the consecutive points of each of its primitives form the segments (a closed
+primitive also joins its last point to its first, and a cubic primitive counts as its control polygon, so pass it through `resample` or
+`curveSample` first). `follow` and `followPull` look for the nearest segment of all guides, `collide` tests every segment, so both cost
+particles times segments per step; keep guides to a few hundred segments for tens of thousands of particles. Guides are read when a run
+starts, and the run restarts when their content changes, not when a re-cook only makes new geometry objects; a guide that moves with the
+playhead therefore restarts the run when it moves, and a moving wall needs the sampling that `boids` has (`obstacleTime`, not done here).
+A particle crossing two segments in one step is reflected off the first only.
 
 Input attributes `vx` and `vy` give each particle a starting velocity (a wrangle can set them, as in the orbit example); the
 output has `vx`, `vy`, `age` (seconds since the last respawn), `life` (`age / lifetime`, 0 to 1, 0 without a lifetime) and `speed`,

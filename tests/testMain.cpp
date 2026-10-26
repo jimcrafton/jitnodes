@@ -3376,6 +3376,153 @@ TEST(particlesSimulateDeterministicallyAndFollowThePlayhead) {
     CHECK(cookThrows(net, sim));
 }
 
+namespace {
+
+struct OneParticle {
+    Network net{2};
+    NodeId gen, sim;
+
+    OneParticle(float x, float y) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 1.0f);
+        net.node(gen).setFloat("cx", x);
+        net.node(gen).setFloat("cy", y);
+        net.node(gen).setFloat("width", 0.0f);
+        net.node(gen).setFloat("height", 0.0f);
+        sim = net.addNode("particles");
+        net.connect(gen, sim);
+        net.node(sim).setFloat("gravityY", 0.0f);
+        net.node(sim).setFloat("drag", 0.0f);
+    }
+
+    GeometryHandle at(double t) {
+        net.setTime(t);
+        return net.cook(sim);
+    }
+};
+
+}  // namespace
+
+TEST(particleVortexJetAndWindForcesMoveParticlesAsDescribed) {
+    // A positive vortex pushes counter-clockwise, only inside its radius.
+    OneParticle v(1.0f, 0.0f);
+    v.net.node(v.sim).setFloat("vortex", 8.0f);
+    v.net.node(v.sim).setFloat("vortexRadius", 2.0f);
+    auto swirled = v.at(0.05);
+    CHECK(swirled->findAttrib(AttribClass::point, "vy")->at(0) > 0.05f);
+    CHECK(std::fabs(swirled->findAttrib(AttribClass::point, "vx")->at(0)) < 1e-4f);
+    OneParticle outside(3.0f, 0.0f);
+    outside.net.node(outside.sim).setFloat("vortex", 8.0f);
+    outside.net.node(outside.sim).setFloat("vortexRadius", 2.0f);
+    CHECK_NEAR(outside.at(0.5)->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+    v.net.node(v.sim).setFloat("vortex", -8.0f);
+    CHECK(v.at(0.05)->findAttrib(AttribClass::point, "vy")->at(0) < -0.05f);
+
+    // A jet along +x accelerates what is in front of it and inside its width, and nothing else.
+    for (float y : {0.0f, 0.3f, 0.9f, -0.3f}) {
+        OneParticle j(1.0f, y);
+        j.net.node(j.sim).setFloat("jetAngle", 0.0f);
+        j.net.node(j.sim).setFloat("jetForce", 10.0f);
+        j.net.node(j.sim).setFloat("jetLength", 3.0f);
+        j.net.node(j.sim).setFloat("jetWidth", 2.0f);
+        const float vx = j.at(0.1)->findAttrib(AttribClass::point, "vx")->at(0);
+        const float vy = j.at(0.1)->findAttrib(AttribClass::point, "vy")->at(0);
+        CHECK(vx > 0.0f);
+        CHECK_NEAR(vy, 0.0f);
+        CHECK(vx <= 10.0f * 0.1f + 1e-4f);
+    }
+    for (std::pair<float, float> p : {std::pair{-1.0f, 0.0f}, {5.0f, 0.0f}, {1.0f, 1.5f}}) {
+        OneParticle j(p.first, p.second);
+        j.net.node(j.sim).setFloat("jetAngle", 0.0f);
+        j.net.node(j.sim).setFloat("jetForce", 10.0f);
+        j.net.node(j.sim).setFloat("jetWidth", 2.0f);
+        CHECK_NEAR(j.at(0.1)->findAttrib(AttribClass::point, "vx")->at(0), 0.0f);
+    }
+
+    // Wind drags the velocity to the wind's: exponentially, whatever the start.
+    OneParticle w(0.0f, 0.0f);
+    w.net.node(w.sim).setFloat("windX", 3.0f);
+    w.net.node(w.sim).setFloat("windY", -1.0f);
+    w.net.node(w.sim).setFloat("windDrag", 4.0f);
+    auto gusted = w.at(2.0);
+    CHECK(std::fabs(gusted->findAttrib(AttribClass::point, "vx")->at(0) - 3.0f) < 0.05f);
+    CHECK(std::fabs(gusted->findAttrib(AttribClass::point, "vy")->at(0) + 1.0f) < 0.05f);
+}
+
+TEST(particlesFollowAndCollideWithGuideCurves) {
+    // A guide polyline from x = 0 to 10 along y = 0, reversed by a mirror in x for the second case.
+    OneParticle p(5.0f, 0.5f);
+    NodeId guide = p.net.addNode("line");
+    p.net.node(guide).setFloat("count", 11.0f);
+    p.net.node(guide).setFloat("length", 10.0f);
+    p.net.connect(guide, p.sim, 1);
+    p.net.node(p.sim).setFloat("follow", 4.0f);
+    p.net.node(p.sim).setFloat("followRadius", 1.0f);
+    auto along = p.at(0.2);
+    CHECK(along->findAttrib(AttribClass::point, "vx")->at(0) > 0.1f);
+    CHECK_NEAR(along->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+
+    NodeId flip = p.net.addNode("transform");
+    p.net.connect(guide, flip);
+    p.net.node(flip).setFloat("sx", -1.0f);
+    p.net.connect(flip, p.sim, 1);
+    p.net.node(p.gen).setFloat("cx", -5.0f);
+    CHECK(p.at(0.2)->findAttrib(AttribClass::point, "vx")->at(0) < -0.1f);
+
+    // Pulling towards the guide closes the distance; outside the radius nothing happens.
+    p.net.node(p.sim).setFloat("follow", 0.0f);
+    p.net.node(p.sim).setFloat("followPull", 6.0f);
+    CHECK(p.at(0.2)->findAttrib(AttribClass::point, "vy")->at(0) < -0.1f);
+    p.net.node(p.gen).setFloat("cy", 3.0f);
+    CHECK_NEAR(p.at(0.2)->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+
+    // A floor made of a guide line: a falling particle never gets below it and bounces back up.
+    OneParticle f(5.0f, 0.0f);
+    NodeId floor = f.net.addNode("line");
+    f.net.node(floor).setFloat("count", 11.0f);
+    f.net.node(floor).setFloat("length", 10.0f);
+    f.net.node(floor).setFloat("y", -1.0f);
+    f.net.connect(floor, f.sim, 1);
+    f.net.node(f.sim).setFloat("gravityY", -10.0f);
+    f.net.node(f.sim).setFloat("collide", 1.0f);
+    f.net.node(f.sim).setFloat("bounce", 1.0f);
+    float lowest = 1e9f, highestAfter = -1e9f;
+    for (double t = 0.0; t <= 2.0; t += 0.01) {
+        const float y = f.at(t)->y()[0];
+        lowest = std::min(lowest, y);
+        if (t > 0.6) highestAfter = std::max(highestAfter, y);
+    }
+    CHECK(lowest >= -1.0f);
+    CHECK(highestAfter > -0.5f);  // it came back up after the first impact at t = 0.447 s
+    f.net.node(f.sim).setFloat("collide", 0.0f);
+    CHECK(f.at(2.0)->y()[0] < -10.0f);
+
+    // Running to a time is the same as playing up to it, with guides too, and a guide that is rebuilt with the same lines keeps the run.
+    OneParticle g(5.0f, 0.0f);
+    NodeId floor2 = g.net.addNode("line");
+    g.net.node(floor2).setFloat("count", 11.0f);
+    g.net.node(floor2).setFloat("length", 10.0f);
+    g.net.node(floor2).setFloat("y", -1.0f);
+    g.net.connect(floor2, g.sim, 1);
+    for (const char* name : {"gravityY"}) g.net.node(g.sim).setFloat(name, -10.0f);
+    g.net.node(g.sim).setFloat("collide", 1.0f);
+    g.net.node(g.sim).setFloat("bounce", 0.8f);
+    auto played = [&] {
+        for (double t = 0.0; t < 1.5; t += 0.1) g.at(t);
+        return g.at(1.5);
+    }();
+    OneParticle h(5.0f, 0.0f);
+    NodeId floor3 = h.net.addNode("line");
+    h.net.node(floor3).setFloat("count", 11.0f);
+    h.net.node(floor3).setFloat("length", 10.0f);
+    h.net.node(floor3).setFloat("y", -1.0f);
+    h.net.connect(floor3, h.sim, 1);
+    h.net.node(h.sim).setFloat("gravityY", -10.0f);
+    h.net.node(h.sim).setFloat("collide", 1.0f);
+    h.net.node(h.sim).setFloat("bounce", 0.8f);
+    CHECK(sameGeometry(*played, *h.at(1.5)));
+}
+
 double alignmentOf(const Geometry& geo) {
     double sx = 0.0, sy = 0.0, total = 0.0;
     for (size_t i = 0; i < geo.pointCount(); ++i) {

@@ -469,7 +469,10 @@ reactionDiffusion, lsystem, curveSample, ribbon, trail, file nodes, string nodes
    Advect by Volume). The reverse coupling (particles inject velocity into the grid) as an option `emit`. This is the piece that makes "blow gas into
    a particle sim" work; it needs the same time-sampling answer as item C for a grid that is itself time-stepped, so do C's sampler or let `particles`
    and `gasField` share one stepped state (a single `gasParticles` node is the simpler first version).
-3. **More forces on `particles`**: vortex (point vortex with falloff), directional wind with turbulence, drag relative to a fan/jet region (Houdini's Fan,
+3. **More forces on `particles`** (*done, 152 tests, ASan clean, uncommitted:* `vortex*`, `jet*` (a fan rectangle), `windX/Y` + `windDrag` (drag towards a wind velocity, no
+   turbulence: `noiseForce` already adds that), `follow`/`followPull` along guide curves and `collide` against them; the guides are extra inputs (`particles` now has
+   variable inputs), brute force over segments, content-compared so a re-cook does not restart the run; tests `particleVortexJetAndWindForcesMoveParticlesAsDescribed`,
+   `particlesFollowAndCollideWithGuideCurves`; moving guides and a spatial grid for many segments are not done; details in `fx.md`). Original: vortex (point vortex with falloff), directional wind with turbulence, drag relative to a fan/jet region (Houdini's Fan,
    Magnet and Drag forces), a curve-following force (flow along a polyline using `curveSample`), a "collide with polylines" boundary. Small parameters
    on the existing node, each testable by analytic motion.
 4. **Position-based fluid (`fluid`)**: particles with a density constraint (Macklin and Müller-Fischer, *Position Based Fluids*): neighbour grid (the
