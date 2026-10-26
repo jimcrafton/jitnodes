@@ -380,7 +380,12 @@ safe:
    (patches single table fields and ids), the truncation/byte-flip/valid-checksum tests repeated on a string file, `stringTextThatIsNotUtf8IsNotSaved`,
    `graphJsonKeepsStringAttributesOfInlineGeometry`. Format described in `geometryFiles.md`. Original plan text:
    `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
-5. `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,
+5. *Done* (147 tests, ASan clean, stress `dag`/`dagmath`/`edits`/`subnets` pass): `attribCreate type=string` with `text`, `attribString`
+   (`pattern`/`ints`/`group` sources) and `groupByString` in `src/graph/stringNodes.cpp`, SVG `id`/`class` from primitive string attributes,
+   no palette button (by name only), docs in the new `strings.md`. The stress DAG gives every source a `label` string attribute (own table, so
+   merges remap) and mixes `attribString` (ints source, bounded table) and `groupByString` in; `leafDigests` calls `checkStrings`. Tests:
+   `stringNodesCreateSetAndGroupAttributes`, `svgExportWritesStringAttributesAsIdAndClass`. Original plan text:
+   `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,
    `geometryFiles.md`, `fx.md` or a new `strings.md`).
 
 *Decisions for the user:*

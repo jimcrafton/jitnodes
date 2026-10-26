@@ -4328,6 +4328,7 @@ TEST(everyNodeTypeKeepsStringAttributesConsistent) {
             for (const auto& [name, array] : out->attribs(cls)) {
                 if (array.type() != AttribType::string) continue;
                 ++kept;
+                if (type == "attribString") continue;  // makes new text by design
                 for (size_t i = 0; i < array.size(); ++i) CHECK(std::find(words.begin(), words.end(), array.stringAt(i)) != words.end());
             }
         }
@@ -4548,6 +4549,127 @@ TEST(stringTextThatIsNotUtf8IsNotSaved) {
         threw = true;
     }
     CHECK(threw);
+}
+
+namespace {
+
+GeometryHandle cookNodeOn(const std::string& type, const std::vector<std::pair<std::string, std::string>>& params, const Geometry& input) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId node = net.addNode(type, "under");
+    for (const auto& [name, value] : params) net.node(node).setString(name, value);
+    net.connect(in, node);
+    return net.cook(node);
+}
+
+std::vector<std::string> textsOf(const Geometry& g, AttribClass cls, const std::string& name) {
+    std::vector<std::string> out;
+    const AttribArray* a = g.findAttrib(cls, name);
+    for (size_t i = 0; i < g.count(cls); ++i) out.push_back(a->stringAt(i));
+    return out;
+}
+
+std::vector<int> membersOf(const Geometry& g, AttribClass cls, const std::string& group) {
+    std::vector<int> out;
+    for (size_t i = 0; i < g.count(cls); ++i) out.push_back(g.inGroup(cls, group, i) ? 1 : 0);
+    return out;
+}
+
+}  // namespace
+
+TEST(stringNodesCreateSetAndGroupAttributes) {
+    Geometry input = labelled({"tree", "rock", "treehouse", "", "a tree"}, {});
+    input.attrib(AttribClass::point, "kind", AttribType::int32);
+    const int kinds[] = {0, 1, 2, 5, -1};
+    for (size_t i = 0; i < 5; ++i) input.attrib(AttribClass::point, "kind", AttribType::int32).ints()[i] = kinds[i];
+    input.createGroup(AttribClass::point, "top").ints()[1] = 1;
+    input.createGroup(AttribClass::point, "top").ints()[4] = 1;
+    input.addPrimitive({0, 3, false, PrimKind::polyline});
+    input.addPrimitive({3, 2, false, PrimKind::polyline});
+
+    const auto created = cookNodeOn("attribCreate", {{"name", "tag"}, {"type", "string"}, {"text", "wood"}}, input);
+    created->checkStrings();
+    CHECK(textsOf(*created, AttribClass::point, "tag") == std::vector<std::string>(5, "wood"));
+    CHECK(created->findAttrib(AttribClass::point, "tag")->table().strings == std::vector<std::string>({"", "wood"}));
+
+    const auto named = cookNodeOn("attribString", {{"name", "type"}, {"source", "ints"}, {"from", "kind"}, {"names", "rock, tree ,bush"}}, input);
+    named->checkStrings();
+    CHECK(textsOf(*named, AttribClass::point, "type") == std::vector<std::string>({"rock", "tree", "bush", "", ""}));
+
+    const auto numbered = cookNodeOn("attribString", {{"name", "pt"}, {"source", "pattern"}, {"text", "id$P-$P"}}, input);
+    CHECK(textsOf(*numbered, AttribClass::point, "pt") == std::vector<std::string>({"id0-0", "id1-1", "id2-2", "id3-3", "id4-4"}));
+
+    const auto grouped = cookNodeOn("attribString", {{"name", "label"}, {"source", "group"}, {"group", "top"}, {"text", "top"}}, input);
+    grouped->checkStrings();
+    CHECK(textsOf(*grouped, AttribClass::point, "label") == std::vector<std::string>({"tree", "top", "treehouse", "", "top"}));
+
+    const auto prims = cookNodeOn("attribString", {{"name", "class"}, {"class", "primitive"}, {"text", "road$P"}}, input);
+    CHECK(textsOf(*prims, AttribClass::primitive, "class") == std::vector<std::string>({"road0", "road1"}));
+
+    const auto equals = cookNodeOn("groupByString", {{"attrib", "label"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*equals, AttribClass::point, "g") == std::vector<int>({1, 0, 0, 0, 0}));
+    const auto starts = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "startsWith"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*starts, AttribClass::point, "g") == std::vector<int>({1, 0, 1, 0, 0}));
+    const auto contains = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "contains"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*contains, AttribClass::point, "g") == std::vector<int>({1, 0, 1, 0, 1}));
+    const auto blank = cookNodeOn("groupByString", {{"attrib", "label"}, {"text", ""}, {"group", "g"}}, input);
+    CHECK(membersOf(*blank, AttribClass::point, "g") == std::vector<int>({0, 0, 0, 1, 0}));
+    const auto blankStarts = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "startsWith"}, {"text", ""}, {"group", "g"}}, input);
+    CHECK(membersOf(*blankStarts, AttribClass::point, "g") == std::vector<int>({1, 1, 1, 1, 1}));
+    CHECK(blank->findAttrib(AttribClass::point, "label")->stringAt(2) == "treehouse");
+
+    const auto missing = [&](const std::string& type, const std::vector<std::pair<std::string, std::string>>& params) {
+        try {
+            cookNodeOn(type, params, input);
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(missing("groupByString", {{"attrib", "kind"}}));
+    CHECK(missing("groupByString", {{"attrib", "nothing"}}));
+    CHECK(missing("groupByString", {{"attrib", "label"}, {"match", "sounds like"}}));
+    CHECK(missing("attribString", {{"name", "kind"}, {"source", "pattern"}}));
+    CHECK(missing("attribString", {{"name", "t"}, {"source", "ints"}, {"from", "label"}}));
+    CHECK(missing("attribString", {{"name", "t"}, {"source", "invented"}}));
+    CHECK(missing("attribCreate", {{"name", "t"}, {"type", "text"}}));
+
+    // The result feeds a wrangle comparison like any other string attribute.
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId named2 = net.addNode("attribString", "named");
+    net.node(named2).setString("name", "type");
+    net.node(named2).setString("source", "ints");
+    net.node(named2).setString("from", "kind");
+    net.node(named2).setString("names", "rock, tree, bush");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", "hit = type == \"tree\";");
+    net.connect(in, named2);
+    net.connect(named2, w);
+    const GeometryHandle out = net.cook(w);
+    CHECK(out->findAttrib(AttribClass::point, "hit")->at(1) == 1.0f && out->findAttrib(AttribClass::point, "hit")->at(0) == 0.0f);
+}
+
+TEST(svgExportWritesStringAttributesAsIdAndClass) {
+    Geometry g = labelled({"", "", "", "", "", ""}, {});
+    g.addPrimitive({0, 2, false, PrimKind::polyline});
+    g.addPrimitive({2, 2, true, PrimKind::polyline});
+    g.addPrimitive({4, 2, false, PrimKind::polyline});
+    AttribArray& id = g.attrib(AttribClass::primitive, "id", AttribType::string);
+    id.ints()[0] = id.intern("a&b\"<c>");
+    id.ints()[1] = id.intern("plain");
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road main");
+    cls.ints()[1] = cls.intern("tab\tline\nbreak");
+    const std::string svg = geometryToSvg(g, SvgOptions{});
+    CHECK(svg.find("<polyline id=\"a&amp;b&quot;&lt;c&gt;\" class=\"road main\" points=") != std::string::npos);
+    CHECK(svg.find("<polygon id=\"plain\" class=\"tab&#9;line&#10;break\" points=") != std::string::npos);
+    CHECK(svg.find("<polyline points=") != std::string::npos);
+
+    const std::string without = geometryToSvg(labelled({"x"}, {}), SvgOptions{});
+    CHECK(without.find(" id=") == std::string::npos);
 }
 
 TEST(graphJsonKeepsStringAttributesOfInlineGeometry) {

@@ -136,17 +136,20 @@ public:
         declareString("class", "point");
         declareString("type", "float");
         declareFloat("value", 0.0f);
+        declareString("text", "");
     }
 
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
         auto geo = std::make_shared<Geometry>(*in[0]);
         const std::string& type = getString("type");
-        if (type != "float" && type != "int") throw std::runtime_error("attribCreate: type must be 'float' or 'int'");
+        if (type != "float" && type != "int" && type != "string") throw std::runtime_error("attribCreate: type must be 'float', 'int' or 'string'");
         AttribArray& a = geo->attrib(parseAttribClass(getString("class")), getString("name"),
-                                     type == "int" ? AttribType::int32 : AttribType::float32);
+                                     type == "float" ? AttribType::float32 : type == "int" ? AttribType::int32 : AttribType::string);
         const float v = getFloat("value");
+        const int32_t id = a.type() == AttribType::string ? a.intern(getString("text")) : 0;
         for (size_t i = 0; i < a.size(); ++i) {
-            if (a.type() == AttribType::int32) a.ints()[i] = static_cast<int32_t>(v);
+            if (a.type() == AttribType::string) a.ints()[i] = id;
+            else if (a.type() == AttribType::int32) a.ints()[i] = static_cast<int32_t>(v);
             else a.floats()[i] = v;
         }
         return geo;
@@ -182,6 +185,7 @@ void registerBuiltinNodes() {
     registerFieldNodes();
     registerCurveNodes();
     registerFileNodes();
+    registerStringNodes();
     registerSubnetNodes();
 }
 

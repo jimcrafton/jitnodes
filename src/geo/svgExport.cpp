@@ -5,6 +5,40 @@
 
 namespace jitnodes {
 
+namespace {
+
+std::string escapeXml(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\n': out += "&#10;"; break;
+            case '\t': out += "&#9;"; break;
+            case '\r': out += "&#13;"; break;
+            default:
+                if (static_cast<unsigned char>(c) >= 0x20 || c < 0) out += c;  // other control characters are not allowed in XML
+        }
+    }
+    return out;
+}
+
+// ` id="..." class="..."` from the primitive string attributes of those names; empty text is left out.
+std::string identity(const Geometry& geo, size_t prim) {
+    std::string out;
+    for (const char* name : {"id", "class"}) {
+        const AttribArray* a = geo.findAttrib(AttribClass::primitive, name);
+        if (a == nullptr || a->type() != AttribType::string || prim >= a->size()) continue;
+        const std::string& text = a->stringAt(prim);
+        if (!text.empty()) out += std::string(" ") + name + "=\"" + escapeXml(text) + "\"";
+    }
+    return out;
+}
+
+}  // namespace
+
 std::string geometryToSvg(const Geometry& geo, const SvgOptions& options) {
     const float* x = geo.x();
     const float* y = geo.y();
@@ -36,10 +70,13 @@ std::string geometryToSvg(const Geometry& geo, const SvgOptions& options) {
     out += buf;
     if (!options.background.empty()) out += "  <rect width=\"100%\" height=\"100%\" fill=\"" + options.background + "\"/>\n";
 
-    for (const Primitive& p : geo.primitives()) {
+    for (size_t primIndex = 0; primIndex < geo.primitiveCount(); ++primIndex) {
+        const Primitive& p = geo.primitives()[primIndex];
         if (p.count == 0) continue;
+        const std::string ident = identity(geo, primIndex);
         if (const uint32_t segments = cubicSegments(p)) {
-            std::snprintf(buf, sizeof(buf), "  <path d=\"M%.6g,%.6g", px(p.start), py(p.start));
+            out += "  <path" + ident;
+            std::snprintf(buf, sizeof(buf), " d=\"M%.6g,%.6g", px(p.start), py(p.start));
             out += buf;
             for (uint32_t s = 0; s < segments; ++s) {
                 const size_t i = p.start + 3 * s;
@@ -52,7 +89,7 @@ std::string geometryToSvg(const Geometry& geo, const SvgOptions& options) {
             out += buf;
             continue;
         }
-        out += p.closed ? "  <polygon points=\"" : "  <polyline points=\"";
+        out += (p.closed ? "  <polygon" : "  <polyline") + ident + " points=\"";
         for (uint32_t j = 0; j < p.count; ++j) {
             std::snprintf(buf, sizeof(buf), "%s%.6g,%.6g", j ? " " : "", px(p.start + j), py(p.start + j));
             out += buf;

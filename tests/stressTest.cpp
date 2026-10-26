@@ -670,7 +670,11 @@ struct DagGraph {
 std::vector<uint64_t> leafDigests(Network& net, const std::vector<NodeId>& leaves) {
     std::vector<uint64_t> out;
     out.reserve(leaves.size());
-    for (NodeId id : leaves) out.push_back(digest(*net.cook(id)));  // cached after the display cook
+    for (NodeId id : leaves) {
+        const GeometryHandle g = net.cook(id);  // cached after the display cook
+        g->checkStrings();
+        out.push_back(digest(*g));
+    }
     return out;
 }
 
@@ -718,6 +722,14 @@ DagGraph buildDag(const Options& opt, Rng& rng, bool transcendental) {
             net.connect(id, ac);
             id = ac;
         }
+        // Every source also has a string attribute with its own table, so merges have to remap ids.
+        static const char* words[] = {"tree", "rock", "bush", "moss"};
+        NodeId label = net.addNode("attribCreate");
+        net.node(label).setString("name", "label");
+        net.node(label).setString("type", "string");
+        net.node(label).setString("text", words[rng.index(4)]);
+        net.connect(id, label);
+        id = label;
         add(id, count, {});
     }
     while (g.ids.size() < opt.dagNodes) {
@@ -742,7 +754,16 @@ DagGraph buildDag(const Options& opt, Rng& rng, bool transcendental) {
             net.connect(g.ids[in], id);
             add(id, g.points[in], {in});
         } else if (r < 0.86) {
-            id = net.addNode("null");
+            const size_t kind = rng.index(3);
+            id = net.addNode(kind == 0 ? "null" : kind == 1 ? "attribString" : "groupByString");
+            if (kind == 1) {
+                net.node(id).setString("source", "ints");
+                net.node(id).setString("from", rng.chance(0.5) ? "i1" : "i2");
+                net.node(id).setString("names", rng.chance(0.5) ? "tree, rock, bush" : "moss, tree, tree, rock");
+            } else if (kind == 2) {
+                net.node(id).setString("match", "contains");
+                net.node(id).setString("text", "t");
+            }
             net.connect(g.ids[in], id);
             add(id, g.points[in], {in});
         } else if (r < 0.90) {

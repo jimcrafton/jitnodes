@@ -105,6 +105,7 @@ void registerParticleNodes();
 void registerFieldNodes();
 void registerCurveNodes();
 void registerFileNodes();
+void registerStringNodes();
 void registerSubnetNodes();
 
 class Network {
