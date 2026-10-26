@@ -4652,6 +4652,123 @@ TEST(stringNodesCreateSetAndGroupAttributes) {
     CHECK(out->findAttrib(AttribClass::point, "hit")->at(1) == 1.0f && out->findAttrib(AttribClass::point, "hit")->at(0) == 0.0f);
 }
 
+namespace {
+
+Geometry symmetrySample() {
+    Geometry g;
+    g.resizePoints(3);
+    const float xs[] = {1, 3, 2}, ys[] = {2, 4, 5};
+    for (size_t i = 0; i < 3; ++i) {
+        g.x()[i] = xs[i];
+        g.y()[i] = ys[i];
+        g.attrib(AttribClass::point, "vx").floats()[i] = static_cast<float>(i) + 1.0f;
+        g.attrib(AttribClass::point, "vy").floats()[i] = 10.0f;
+        g.attrib(AttribClass::point, "N.x").floats()[i] = 1.0f;
+        g.attrib(AttribClass::point, "N.y").floats()[i] = 0.0f;
+        g.attrib(AttribClass::point, "w").floats()[i] = 7.0f + static_cast<float>(i);
+    }
+    g.addPrimitive({0, 3, true, PrimKind::polyline});
+    g.attrib(AttribClass::primitive, "area").floats()[0] = 5.0f;
+    AttribArray& label = g.attrib(AttribClass::primitive, "label", AttribType::string);
+    label.ints()[0] = label.intern("tree");
+    return g;
+}
+
+bool nearly(float a, float b) { return std::fabs(a - b) < 1e-4f; }
+
+}  // namespace
+
+TEST(symmetryMirrorsRotatesAndKeepsAttributes) {
+    const Geometry in = symmetrySample();
+    SymmetryOptions o;
+    const Geometry m = symmetry(in, o);
+    CHECK(m.pointCount() == 6 && m.primitiveCount() == 2);
+    m.checkStrings();
+    CHECK(nearly(m.x()[0], 1) && nearly(m.x()[3], -1) && nearly(m.y()[3], 2) && nearly(m.x()[4], -3));
+    CHECK(m.primitives()[1].start == 3 && m.primitives()[1].count == 3 && m.primitives()[1].closed);
+    const AttribArray* vx = m.findAttrib(AttribClass::point, "vx");
+    CHECK(nearly(vx->at(1), 2) && nearly(vx->at(4), -2) && nearly(m.findAttrib(AttribClass::point, "vy")->at(4), 10));
+    CHECK(nearly(m.findAttrib(AttribClass::point, "N.x")->at(3), 1));  // not listed in `vectors`, so unchanged
+    CHECK(nearly(m.findAttrib(AttribClass::point, "w")->at(4), 8));
+    CHECK(nearly(m.findAttrib(AttribClass::primitive, "area")->at(1), 5));
+    CHECK(m.findAttrib(AttribClass::primitive, "label")->stringAt(1) == "tree");
+
+    o.vectors = {"N"};
+    const Geometry withNormals = symmetry(in, o);
+    CHECK(nearly(withNormals.findAttrib(AttribClass::point, "N.x")->at(3), -1) && nearly(withNormals.findAttrib(AttribClass::point, "N.x")->at(0), 1));
+
+    // The reflected copy alone, twice, is the input again.
+    o.keepOriginal = false;
+    const Geometry twice = symmetry(symmetry(in, o), o);
+    CHECK(twice.pointCount() == 3);
+    for (size_t i = 0; i < 3; ++i) CHECK(nearly(twice.x()[i], in.x()[i]) && nearly(twice.y()[i], in.y()[i]) && nearly(twice.findAttrib(AttribClass::point, "vx")->at(i), in.findAttrib(AttribClass::point, "vx")->at(i)));
+
+    // Other axes: 0 degrees flips y, 45 swaps x and y, an origin moves the line.
+    SymmetryOptions flat;
+    flat.angle = 0.0f;
+    flat.keepOriginal = false;
+    CHECK(nearly(symmetry(in, flat).y()[0], -2) && nearly(symmetry(in, flat).x()[0], 1));
+    flat.angle = 45.0f;
+    CHECK(nearly(symmetry(in, flat).x()[1], 4) && nearly(symmetry(in, flat).y()[1], 3));
+    SymmetryOptions shifted;
+    shifted.originX = 2.0f;
+    shifted.keepOriginal = false;
+    CHECK(nearly(symmetry(in, shifted).x()[0], 3) && nearly(symmetry(in, shifted).x()[1], 1));
+
+    SymmetryOptions turn;
+    turn.mode = SymmetryMode::rotate;
+    turn.folds = 4;
+    const Geometry fourFold = symmetry(in, turn);
+    CHECK(fourFold.pointCount() == 12 && fourFold.primitiveCount() == 4);
+    CHECK(nearly(fourFold.x()[3], -2) && nearly(fourFold.y()[3], 1));  // (1,2) turned 90 degrees
+    CHECK(nearly(fourFold.findAttrib(AttribClass::point, "vx")->at(3), -10) && nearly(fourFold.findAttrib(AttribClass::point, "vy")->at(3), 1));
+    turn.keepOriginal = false;
+    CHECK(symmetry(in, turn).pointCount() == 9);
+    turn.folds = 1;
+    CHECK(symmetry(in, turn).pointCount() == 0);
+
+    SymmetryOptions kal;
+    kal.mode = SymmetryMode::kaleidoscope;
+    kal.folds = 3;
+    const Geometry six = symmetry(in, kal);
+    CHECK(six.pointCount() == 18 && six.primitiveCount() == 6);
+    six.checkStrings();
+    // Every copy keeps its distances to the origin, and the whole set maps onto itself when mirrored.
+    for (size_t i = 0; i < 18; ++i) CHECK(nearly(std::hypot(six.x()[i], six.y()[i]), std::hypot(in.x()[i % 3], in.y()[i % 3])));
+    const Geometry again = symmetry(six, SymmetryOptions{});
+    std::multiset<std::pair<long, long>> seen;
+    for (size_t i = 0; i < 18; ++i) seen.insert({std::lround(six.x()[i] * 1000), std::lround(six.y()[i] * 1000)});
+    for (size_t i = 18; i < 36; ++i) CHECK(seen.count({std::lround(again.x()[i] * 1000), std::lround(again.y()[i] * 1000)}) > 0);
+
+    CHECK(symmetry(Geometry(), SymmetryOptions{}).pointCount() == 0);
+}
+
+TEST(mirrorNodeReadsItsParametersAndRejectsABadMode) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(symmetrySample())});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId node = net.addNode("mirror", "m");
+    net.connect(in, node);
+    CHECK(net.cook(node)->pointCount() == 6);
+    net.node(node).setString("mode", "kaleidoscope");
+    net.node(node).setFloat("folds", 5.0f);
+    CHECK(net.cook(node)->pointCount() == 30);
+    net.node(node).setString("mode", "rotate");
+    net.node(node).setFloat("keepOriginal", 0.0f);
+    CHECK(net.cook(node)->pointCount() == 12);
+    net.node(node).setString("mode", "mirror");
+    net.node(node).setString("vectors", " N , ");
+    CHECK(nearly(net.cook(node)->findAttrib(AttribClass::point, "N.x")->at(0), -1.0f));  // keepOriginal is still off: only the reflected copy
+    net.node(node).setString("mode", "fold");
+    bool threw = false;
+    try {
+        net.cook(node);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 TEST(svgExportWritesStringAttributesAsIdAndClass) {
     Geometry g = labelled({"", "", "", "", "", ""}, {});
     g.addPrimitive({0, 2, false, PrimKind::polyline});

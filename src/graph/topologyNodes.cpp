@@ -99,6 +99,44 @@ public:
     }
 };
 
+class MirrorNode : public Node {
+public:
+    MirrorNode() : Node("mirror", 1) {
+        declareString("mode", "mirror");
+        declareFloat("originX", 0.0f);
+        declareFloat("originY", 0.0f);
+        declareFloat("angle", 90.0f);
+        declareFloat("folds", 2.0f);
+        declareFloat("keepOriginal", 1.0f);
+        declareString("vectors", "");
+    }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        SymmetryOptions o;
+        const std::string& mode = getString("mode");
+        if (mode == "mirror") o.mode = SymmetryMode::mirror;
+        else if (mode == "rotate") o.mode = SymmetryMode::rotate;
+        else if (mode == "kaleidoscope") o.mode = SymmetryMode::kaleidoscope;
+        else throw std::runtime_error("mirror: mode must be 'mirror', 'rotate' or 'kaleidoscope', got '" + mode + "'");
+        o.originX = getFloat("originX");
+        o.originY = getFloat("originY");
+        o.angle = getFloat("angle");
+        o.folds = static_cast<int>(std::clamp(getFloat("folds"), 1.0f, 64.0f));
+        o.keepOriginal = getFloat("keepOriginal") != 0.0f;
+        const std::string& list = getString("vectors");
+        for (size_t start = 0; start <= list.size();) {
+            size_t end = list.find(',', start);
+            if (end == std::string::npos) end = list.size();
+            size_t from = start, to = end;
+            while (from < to && list[from] == ' ') ++from;
+            while (to > from && list[to - 1] == ' ') --to;
+            if (to > from) o.vectors.push_back(list.substr(from, to - from));
+            start = end + 1;
+        }
+        return std::make_shared<Geometry>(symmetry(*in[0], o, ctx.pool));
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -113,6 +151,7 @@ void registerTopologyNodes() {
     add<FlattenNode>("flatten");
     add<CopyToPointsNode>("copyToPoints");
     add<BlastNode>("blast");
+    add<MirrorNode>("mirror");
 }
 
 }  // namespace jitnodes

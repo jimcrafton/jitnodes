@@ -405,7 +405,11 @@ asset or node information, so it is a data file, not a replacement for graph fil
 ## Next batch (planned 2026-10-26, nothing started)
 Four items asked for after the format work, plus a research pass for more nodes. Each is one commit; order below is the recommended one.
 
-**A. Mirror / symmetry node (`mirror`, half a day, no engine change).** Reflection or rotation copies of the input in one node.
+**A. Mirror / symmetry node (`mirror`, half a day, no engine change).** *Done (149 tests, ASan clean, uncommitted):* `symmetry()` in `topology.cpp`,
+node in `topologyNodes.cpp`, tests `symmetryMirrorsRotatesAndKeepsAttributes` and `mirrorNodeReadsItsParametersAndRejectsABadMode`. Deviations: no
+`weld`, because a primitive owns a contiguous point range, so two primitives cannot share a point; angles are in degrees (the mirror line's direction, 90 =
+vertical through the origin); `folds` is 1..64; with `keepOriginal` off and one fold the result is empty. Parameters: `mode`, `originX/Y`, `angle`,
+`folds`, `keepOriginal`, `vectors`. No palette button yet (item B). Original plan: Reflection or rotation copies of the input in one node.
 - `mode = mirror | rotate | kaleidoscope`. `mirror`: reflect across a line through (`originX`, `originY`) at `angle` degrees, keep the
   original (`keepOriginal`) and append the reflected copy. `rotate`: `folds` copies at 360/folds degrees (n-fold symmetry). `kaleidoscope`:
   `folds` wedges, each rotated copy followed by its mirror (dihedral symmetry D_n, what mandala tools do).
