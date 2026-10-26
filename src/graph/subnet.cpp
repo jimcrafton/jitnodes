@@ -28,6 +28,10 @@ SubnetNode::SubnetNode(std::string typeName, int inputCount) : Node(std::move(ty
 
 GeometryHandle SubnetNode::cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) {
     if (!ctx.network) throw std::runtime_error("subnet cooked outside a network");
+    return cookInner(*ctx.network, ctx.time, inputs, false);
+}
+
+GeometryHandle SubnetNode::cookInner(const Network& outer, double time, const std::vector<GeometryHandle>& externals, bool refresh) {
     struct PropagationGuard {
         Network& net;
         bool previous;
@@ -35,13 +39,13 @@ GeometryHandle SubnetNode::cook(CookContext& ctx, const std::vector<GeometryHand
         ~PropagationGuard() { net.setPropagateToParent(previous); }
     } guard(inner_);
 
-    inner_.setFps(ctx.network->fps());
-    inner_.setTime(ctx.time);
-    inner_.setExternalInputs(inputs);
+    inner_.setFps(outer.fps());
+    inner_.setTime(time);
+    inner_.setExternalInputs(externals);
 
     std::vector<float> spare;
     for (const std::string& name : spareNames()) spare.push_back(getFloat(name));
-    if (!cooked_ || spare != lastSpare_) inner_.invalidateReferencesTo("parent");
+    if (refresh || !cooked_ || spare != lastSpare_) inner_.invalidateReferencesTo("parent");
     lastSpare_ = std::move(spare);
     cooked_ = true;
 

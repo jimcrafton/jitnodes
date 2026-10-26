@@ -141,6 +141,9 @@ protected:
     void declareString(const std::string& name, const std::string& defaultValue);
     void declareGeometry(const std::string& name);
     const Network* owner() const { return network_; }
+    // For container nodes that hand a value to the graph inside them (the loop counter, read there as `parent.name`): sets a declared
+    // parameter during a cook without marking the node dirty.
+    void publishFloat(const std::string& name, float value);
 
 private:
     friend class Network;

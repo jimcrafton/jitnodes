@@ -63,6 +63,7 @@ add_library(jitnodes STATIC
   src/graph/shapeNodes.cpp
   src/graph/fileNodes.cpp
   src/graph/stringNodes.cpp
+  src/graph/loopNodes.cpp
   src/graph/subnet.cpp
   src/graph/serialize.cpp
   src/graph/history.cpp

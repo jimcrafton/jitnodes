@@ -34,6 +34,12 @@ Geometry subdividePolylines(const Geometry& in, int iterations);
 Geometry copyToPoints(const Geometry& source, const Geometry& targets, float scale, float angle);
 Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bool keepGroup);
 
+// The listed primitives (indices into `in`, in that order) with their points, attributes and detail values; curve kinds are kept. Points that
+// belong to no listed primitive are dropped.
+Geometry extractPrimitives(const Geometry& in, const std::vector<uint32_t>& prims);
+// The listed points (in that order) with their attributes and detail values, and no primitives.
+Geometry extractPoints(const Geometry& in, const std::vector<uint32_t>& points);
+
 enum class SymmetryMode { mirror, rotate, kaleidoscope };
 
 struct SymmetryOptions {

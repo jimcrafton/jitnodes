@@ -1,0 +1,37 @@
+// A foreach node in copies mode: a small ring is cooked 12 times, and parent.iteration / parent.numIterations place and
+// scale each copy on a larger circle. Parallel is on, so the copies cook on all threads.
+//   jitnodesCli examples/graphs/loopsForeach.json --svg loopsForeach.svg
+// See docs/loops.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 3,
+  nodes: [
+    { id: 1, type: "circle", name: "ring", floats: { count: 48, radius: 1 }, inputs: [] },
+    {
+      id: 2, type: "foreach", name: "around",
+      floats: { count: 12, parallel: 1 },
+      strings: { mode: "copies" },
+      inputs: [1],
+      graph: {
+        fps: 24,
+        display: 2,
+        nodes: [
+          { id: 1, type: "subnetInput", name: "in", floats: { index: 0 }, inputs: [] },
+          {
+            id: 2, type: "transform", name: "place",
+            expressions: {
+              sx: "0.4 + 0.6 * (parent.iteration + 1) / parent.numIterations",
+              sy: "0.4 + 0.6 * (parent.iteration + 1) / parent.numIterations",
+              tx: "cos(2 * pi * parent.iteration / parent.numIterations) * 5",
+              ty: "sin(2 * pi * parent.iteration / parent.numIterations) * 5",
+            },
+            inputs: [1],
+          },
+        ],
+      },
+    },
+    { id: 3, type: "null", name: "out", inputs: [2] },
+  ],
+}

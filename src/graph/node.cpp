@@ -46,6 +46,11 @@ void Node::setFloat(const std::string& name, float value) {
     markChanged();
 }
 
+void Node::publishFloat(const std::string& name, float value) {
+    FloatParam& p = floatParam(name);
+    p.value = p.resolved = value;
+}
+
 float Node::getFloat(const std::string& name) const { return floatParam(name).resolved; }
 
 float Node::baseFloat(const std::string& name) const { return floatParam(name).value; }

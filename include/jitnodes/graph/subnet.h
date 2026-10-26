@@ -26,6 +26,11 @@ public:
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) override;
 
+protected:
+    // Cooks the child network at `time` with `externals` as its subnetInput geometry. `refresh` recooks every node that reads `parent.`
+    // values (a loop node changes them between calls).
+    GeometryHandle cookInner(const Network& outer, double time, const std::vector<GeometryHandle>& externals, bool refresh);
+
 private:
     Network inner_{1};
     std::vector<float> lastSpare_;

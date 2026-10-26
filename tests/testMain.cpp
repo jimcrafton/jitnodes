@@ -5976,6 +5976,176 @@ TEST(polarBendsARowIntoARingAndBackAgain) {
     CHECK(cookThrows(rig.net, rig.node));
 }
 
+// Four primitives of three points each; point (p, j) sits at x = p * 10 + j, and the primitive attribute "kind" is 0, 1, 0, 1.
+GeometryHandle loopInput() {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(12);
+    for (uint32_t p = 0; p < 4; ++p) {
+        for (uint32_t j = 0; j < 3; ++j) {
+            geo->x()[p * 3 + j] = static_cast<float>(p * 10 + j);
+            geo->y()[p * 3 + j] = 0.0f;
+        }
+        geo->addPrimitive({p * 3, 3, false, PrimKind::polyline});
+    }
+    AttribArray& kind = geo->attrib(AttribClass::primitive, "kind");
+    for (size_t p = 0; p < 4; ++p) kind.floats()[p] = static_cast<float>(p % 2);
+    return geo;
+}
+
+// input -> loop node -> null, with `subnetInput -> transform` inside the loop node. Returns the transform's network for edits.
+struct LoopRig {
+    Network net{1};
+    NodeId in, loop, out, inInner, xf;
+    explicit LoopRig(const char* type) {
+        net.setExternalInputs({loopInput()});
+        in = net.addNode("subnetInput", "in");
+        loop = net.addNode(type, "loop");
+        out = net.addNode("null", "out");
+        Network& inner = dynamic_cast<SubnetNode&>(net.node(loop)).network();
+        inInner = inner.addNode("subnetInput", "in");
+        xf = inner.addNode("transform", "xf");
+        inner.connect(inInner, xf);
+        inner.setDisplayNode(xf);
+        net.connect(in, loop);
+        net.connect(loop, out);
+        net.setDisplayNode(out);
+    }
+    Network& inner() { return dynamic_cast<SubnetNode&>(net.node(loop)).network(); }
+};
+
+TEST(foreachCooksTheChildGraphOncePerPrimitiveAndKnowsTheIteration) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration + 1");
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12 && out->primitiveCount() == 4);
+    for (size_t p = 0; p < 4; ++p) {
+        CHECK(out->primitives()[p].start == p * 3);
+        for (size_t j = 0; j < 3; ++j) {
+            CHECK_NEAR(out->x()[p * 3 + j], static_cast<float>(p * 10 + j));
+            CHECK_NEAR(out->y()[p * 3 + j], static_cast<float>(p + 1));
+        }
+    }
+    CHECK_NEAR(out->findAttrib(AttribClass::primitive, "kind")->floats()[3], 1.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("iteration") == 0.0f && rig.net.node(rig.loop).getFloat("numIterations") == 0.0f);
+
+    rig.net.cookDisplay();
+    CHECK(rig.net.node(rig.loop).cookCount() == 1);
+    rig.inner().node(rig.xf).setExpression("ty", "parent.numIterations");
+    CHECK_NEAR(rig.net.cookDisplay()->y()[7], 4.0f);
+}
+
+TEST(foreachGroupsPrimitivesByAnAttributeAndWalksPoints) {
+    LoopRig rig("foreach");
+    rig.net.node(rig.loop).setString("pieceAttrib", "kind");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration * 5");
+    auto out = rig.net.cookDisplay();
+    CHECK(out->primitiveCount() == 4);
+    const auto& kind = out->findAttrib(AttribClass::primitive, "kind")->floats();
+    CHECK(kind[0] == 0.0f && kind[1] == 0.0f && kind[2] == 1.0f && kind[3] == 1.0f);
+    CHECK_NEAR(out->y()[0], 0.0f);
+    CHECK_NEAR(out->y()[11], 5.0f);
+    CHECK_NEAR(out->x()[3], 20.0f);  // the first piece holds primitives 0 and 2
+
+    rig.net.node(rig.loop).setString("pieceAttrib", "missing");
+    CHECK(cookThrows(rig.net, rig.out));
+
+    rig.net.node(rig.loop).setString("pieceAttrib", "");
+    rig.net.node(rig.loop).setString("mode", "points");
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12 && out->primitiveCount() == 0);
+    CHECK_NEAR(out->y()[11], 55.0f);
+}
+
+TEST(foreachCopiesAndFeedbackRepeatTheChildGraph) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setFloat("tx", 100.0f);
+    rig.net.node(rig.loop).setString("mode", "copies");
+    rig.net.node(rig.loop).setFloat("count", 3.0f);
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 36 && out->primitiveCount() == 12);
+    CHECK_NEAR(out->x()[12], 100.0f);
+
+    rig.net.node(rig.loop).setString("mode", "feedback");
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12);
+    CHECK_NEAR(out->x()[0], 300.0f);
+    rig.net.node(rig.loop).setFloat("count", 0.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 0.0f);
+    rig.net.node(rig.loop).setFloat("count", 1e7f);
+    CHECK(cookThrows(rig.net, rig.out));
+    rig.net.node(rig.loop).setString("mode", "sideways");
+    CHECK(cookThrows(rig.net, rig.out));
+}
+
+TEST(foreachCooksPiecesInParallelWithTheSameResultAsSerially) {
+    LoopRig rig("foreach");
+    rig.net.setThreadCount(4);
+    rig.net.node(rig.loop).setString("mode", "points");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration * 2 + parent.numIterations");
+    auto expected = rig.net.cookDisplay();
+
+    rig.net.node(rig.loop).setFloat("parallel", 1.0f);
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12);
+    for (size_t i = 0; i < 12; ++i) {
+        CHECK_NEAR(out->x()[i], expected->x()[i]);
+        CHECK_NEAR(out->y()[i], expected->y()[i]);
+    }
+    CHECK_NEAR(out->y()[5], 22.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("iteration") == 0.0f && rig.net.node(rig.loop).getFloat("numIterations") == 0.0f);
+
+    rig.inner().node(rig.xf).setFloat("tx", 100.0f);
+    out = rig.net.cookDisplay();
+    CHECK_NEAR(out->x()[3], 110.0f);
+    CHECK_NEAR(out->y()[11], 34.0f);
+
+    rig.net.node(rig.loop).setString("mode", "copies");
+    rig.net.node(rig.loop).setFloat("count", 6.0f);
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 72);
+    CHECK_NEAR(out->y()[12 * 5], 16.0f);
+}
+
+TEST(foreachSurvivesSavingAndLoading) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration");
+    rig.net.node(rig.loop).setString("mode", "points");
+    const std::string text = saveNetwork(rig.net);
+    Network copy(1);
+    loadNetwork(copy, text);
+    CHECK(saveNetwork(copy) == text);
+    copy.setExternalInputs({loopInput()});
+    auto out = copy.cookDisplay();
+    CHECK(out->pointCount() == 12 && copy.node(copy.findNode("loop")).typeName() == "foreach");
+    CHECK_NEAR(out->y()[11], 11.0f);
+}
+
+TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
+    LoopRig rig("solver");
+    rig.net.node(rig.loop).setFloat("stepsPerSecond", 10.0f);
+    rig.inner().node(rig.xf).setFloat("tx", 1.0f);
+    rig.net.setTime(0.0);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 0.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 0);
+    rig.net.setTime(0.5);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 5.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 5);
+    rig.net.setTime(0.7);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 7.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 7);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[4], 18.0f);
+
+    rig.net.setTime(0.3);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 3.0f);
+    rig.inner().node(rig.xf).setFloat("tx", 2.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
+
+    rig.inner().node(rig.xf).setExpression("tx", "parent.step");
+    rig.net.setTime(0.4);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 10.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("step") == 0.0f);
+}
+
 }  // namespace
 
 int main() {

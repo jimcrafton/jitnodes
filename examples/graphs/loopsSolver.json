@@ -1,0 +1,32 @@
+// A solver node: a ring of points spirals inwards while a wind that changes with time pushes it sideways. Each step
+// applies the wrangle to the previous state; the result at time t is the state after t * stepsPerSecond steps.
+//   jitnodesCli examples/graphs/loopsSolver.json --time 3 --svg loopsSolver.svg
+// See docs/loops.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 3,
+  nodes: [
+    { id: 1, type: "circle", name: "ring", floats: { count: 64, radius: 4 }, inputs: [] },
+    {
+      id: 2, type: "solver", name: "spiral",
+      floats: { stepsPerSecond: 24 },
+      inputs: [1],
+      graph: {
+        fps: 24,
+        display: 2,
+        nodes: [
+          { id: 1, type: "subnetInput", name: "in", floats: { index: 0 }, inputs: [] },
+          {
+            id: 2, type: "wrangle", name: "step",
+            strings: { code: "nx = x * 0.995 - y * 0.04; ny = y * 0.995 + x * 0.04; x = nx + a; y = ny;" },
+            expressions: { a:"0.03 * cos(time * 2)" },
+            inputs: [1],
+          },
+        ],
+      },
+    },
+    { id: 3, type: "null", name: "out", inputs: [2] },
+  ],
+}

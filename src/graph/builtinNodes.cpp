@@ -209,6 +209,7 @@ void registerBuiltinNodes() {
     registerFluidNodes();
     registerFileNodes();
     registerStringNodes();
+    registerLoopNodes();
     registerSubnetNodes();
 }
 

@@ -110,6 +110,7 @@ void registerGenerativeNodes();
 void registerFluidNodes();
 void registerFileNodes();
 void registerStringNodes();
+void registerLoopNodes();
 void registerSubnetNodes();
 
 class Network {

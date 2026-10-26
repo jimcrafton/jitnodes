@@ -371,4 +371,29 @@ Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bo
     return out;
 }
 
+Geometry extractPrimitives(const Geometry& in, const std::vector<uint32_t>& prims) {
+    std::vector<PointSample> samples;
+    for (uint32_t pi : prims) {
+        const Primitive& p = in.primitives()[pi];
+        for (uint32_t j = 0; j < p.count; ++j) samples.push_back({p.start + j, p.start + j, 0.0f});
+    }
+    Geometry out = gatherPoints(in, samples);
+    uint32_t next = 0;
+    for (uint32_t pi : prims) {
+        Primitive p = in.primitives()[pi];
+        p.start = next;
+        next += p.count;
+        out.addPrimitive(p);
+    }
+    transferPrimAttribs(in, out, prims);
+    return out;
+}
+
+Geometry extractPoints(const Geometry& in, const std::vector<uint32_t>& points) {
+    std::vector<PointSample> samples;
+    samples.reserve(points.size());
+    for (uint32_t i : points) samples.push_back({i, i, 0.0f});
+    return gatherPoints(in, samples);
+}
+
 }  // namespace jitnodes
