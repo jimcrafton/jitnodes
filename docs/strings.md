@@ -28,4 +28,4 @@ to make the text and a wrangle to act on it.
 A primitive string attribute named `id` or `class` becomes the `id` / `class` of that primitive's SVG element (XML escaped, empty
 text left out), for example `<polyline id="road7" class="main" points="...">`.
 
-Point attributes are not exported; there is no palette button for the new nodes (add them by name).
+Point attributes are not exported. `attribString` and `groupByString` (palette label `groupByStr`) have palette buttons.

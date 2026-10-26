@@ -420,7 +420,12 @@ vertical through the origin); `folds` is 1..64; with `keepOriginal` off and one 
 - Tests: reflecting twice gives the input back; `rotate` with folds 1 is the identity; point and primitive counts; `vx`/`vy` reflected;
   string attributes survive; a symmetric result is invariant under its own mirror (sorted point set).
 
-**B. Palette room for the new nodes (`attribString`, `groupByString`, `fileTrail`, `mirror`, ...).** 35 buttons in 18 rows of 18 px, the last
+**B. Palette room for the new nodes.** *Done (uncommitted; editor builds, `--check` 94 views, editor model tests 52, library tests 150; the GUI tests were
+NOT run):* rows are 16 px (20 rows of 16 + 1 = 340 px, the same height as 18 rows of 18 + 1), four buttons added (`attribString`, `groupByString` labelled
+`groupByStr`, `mirror`, `fileTrail`), so 39 buttons end at y = 486 instead of 488 and everything below moved up 2 px. The search idea became a small
+toolbar field `addByName` (Enter adds the type named exactly, or by a unique prefix or substring; ambiguity and misses go to the status line) because a
+results list has no vertical room in the palette; it also reaches types without a button and assets. GUI test additions (not run): the four buttons in
+`test_every_fx_palette_button_adds_its_node`, `test_add_node_by_name_takes_exact_names_and_unique_prefixes`. Original analysis: 35 buttons in 18 rows of 18 px, the last
 ends at y = 623 of 640. Options: (1) a third column (costs width of the side panel, buttons need shorter labels); (2) 16 px rows (about 9% more
 rows, still readable, gives 2 rows); (3) a scrolling list (newui has scroll view classes, to be checked against the palette's `FlexLayout`);
 (4) a type-to-search "Add node" box (Tab or a field above the list) that lists every registered type, so the palette no longer has to be

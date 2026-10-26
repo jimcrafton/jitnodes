@@ -1,5 +1,6 @@
 #include "editorWindow.h"
 
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -30,6 +31,7 @@ const std::vector<PaletteEntry> palette = {
     {"addLine", "line"}, {"addTransform", "transform"}, {"addWrangle", "wrangle"}, {"addMerge", "merge"},
     {"addAttribCreate", "attribCreate"}, {"addResample", "resample"}, {"addSubdivide", "subdivide"},
     {"addCopyToPoints", "copyToPoints"}, {"addBlast", "blast"}, {"addSubnet", "subnet"}, {"addSubnetInput", "subnetInput"}, {"addNull", "null"},
+    {"addAttribString", "attribString"}, {"addGroupByString", "groupByString"}, {"addMirror", "mirror"}, {"addFileTrail", "fileTrail"},
     {"addGenerate", "generate"}, {"addScatter", "scatter"}, {"addNoise", "noise"}, {"addWarp", "warp"}, {"addColorRamp", "colorRamp"},
     {"addRelax", "relax"}, {"addAttribBlur", "attribBlur"}, {"addWave", "wave"}, {"addAttractor", "attractor"}, {"addFlow", "flow"},
     {"addVoronoi", "voronoi"}, {"addLloyd", "lloyd"}, {"addParticles", "particles"}, {"addBoids", "boids"},
@@ -39,6 +41,30 @@ const std::vector<PaletteEntry> palette = {
 };
 
 const std::vector<const char*> displayOnlyViews = {};
+
+// The registered node type a typed name stands for: an exact match (any case), else the only type that starts with it, else the only type
+// that contains it. Throws with the candidates when it is ambiguous or matches nothing.
+std::string resolveNodeType(const std::string& typed) {
+    const auto lower = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    const std::string wanted = lower(typed);
+    const std::vector<std::string> types = NodeRegistry::instance().typeNames();
+    std::vector<std::string> starts, contains;
+    for (const std::string& type : types) {
+        const std::string t = lower(type);
+        if (t == wanted) return type;
+        if (t.compare(0, wanted.size(), wanted) == 0) starts.push_back(type);
+        else if (t.find(wanted) != std::string::npos) contains.push_back(type);
+    }
+    const std::vector<std::string>& found = !starts.empty() ? starts : contains;
+    if (found.size() == 1) return found.front();
+    if (found.empty()) throw std::runtime_error("no node type matches '" + typed + "'");
+    std::string list;
+    for (size_t i = 0; i < found.size() && i < 6; ++i) list += (i ? ", " : "") + found[i];
+    throw std::runtime_error("'" + typed + "' could be " + list + (found.size() > 6 ? ", ..." : ""));
+}
 
 std::string format(const char* pattern, double value) {
     char buf[64];
@@ -285,6 +311,16 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
             edited();
         });
     }
+    view<newui::TextField>("addByName").onReturnPressed.add(std::function<newui::SyncReturn(newui::TextField&)>([this](newui::TextField& field) {
+        guarded([&] {
+            const std::string typed = newui::wideToUtf8(field.text());
+            if (typed.empty()) return;
+            model_.addNode(resolveNodeType(typed));
+            field.setText(L"");
+            edited();
+        });
+        return newui::SyncReturn::Handled;
+    }));
 
     view<newui::Button>("playButton").onClick.add(std::function<newui::SyncReturn(newui::Control&)>([this](newui::Control&) {
         model_.setPlaying(!model_.playing());

@@ -50,8 +50,11 @@ Sample graphs in `examples/graphs/`: `clouds.json` (sprites: sky, sun, drifting 
 ![The editor window](img/editor-layout.svg)
 
 - **Toolbar:** New, Open, Save (graph files are JSON5, see [architecture.md](architecture.md#persistence-undo-and-clips)),
-  Undo / Redo, Play with a time slider, and the global engine settings: fusion on/off, thread count, instruction set.
-- **Palette:** one button per node type. Clicking one adds a node and wires the *selected* node into its first input,
+  Undo / Redo, Play with a time slider, the **add node by name** field, and the global engine settings: fusion on/off, thread
+  count, instruction set. Type a node type in the field and press Enter: an exact name (any case) adds it, so does a prefix
+  or part of a name that only one type has (`groupbys`); an ambiguous or unknown text is reported in the status line with the
+  candidates. It reaches every registered type, including the ones without a palette button and loaded assets.
+- **Palette:** one button per common node type (39, in rows of 16 px). Clicking one adds a node and wires the *selected* node into its first input,
   makes it the display node and selects it, so building a chain is "click, click, click". The last twenty-one buttons
   (generate, scatter, noise, warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, ribbon, trail, render) are the [fx nodes](fx.md). The Assets section lists registered
   assets.

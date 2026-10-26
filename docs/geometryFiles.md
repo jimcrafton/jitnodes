@@ -17,7 +17,7 @@ Loading throws `std::runtime_error` ("invalid .jngeo file: ...") for anything th
 copied bit for bit (NaN payloads and -0 included), and saving the loaded geometry gives the same bytes.
 
 ## Nodes
-All are in `src/graph/fileNodes.cpp`. `fileRead` and `fileCache` are palette buttons in the editor; `fileTrail` is added by name.
+All are in `src/graph/fileNodes.cpp`. `fileRead`, `fileCache` and `fileTrail` are palette buttons in the editor.
 
 | Node | Inputs | Parameters | Behaviour |
 |---|---|---|---|

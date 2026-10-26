@@ -18,6 +18,7 @@
   .toolbar .spacer { flex-grow: 1; }
   .toolbar .timeLabel { width: 70px; color: var(--muted); text-align: right; }
   .toolbar input[type=range] { width: 240px; }
+  .toolbar input[type=text] { width: 170px; color: #202020; }
 
   .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
 
@@ -27,7 +28,7 @@
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
-  .palette .nodeRow button { flex-grow: 1; height: 18px; }
+  .palette .nodeRow button { flex-grow: 1; height: 16px; }
   #assetListHost { height: 28px; background: var(--panelAlt); }
   #assetDetails { height: 30px; font-size: 11px; color: var(--muted); }
 
@@ -84,6 +85,8 @@
     <button id="playButton">Play</button>
     <input id="timeSlider" type="range" min="0" max="100" value="0">
     <span id="timeLabel" class="timeLabel">0.00 s</span>
+    <div class="sep"></div>
+    <input id="addByName" type="text" placeholder="add node by name">
     <div class="spacer"></div>
     <label><input id="fusionToggle" type="checkbox" checked> Fusion</label>
     <span class="muted">Threads</span>
@@ -97,21 +100,23 @@
       <div class="nodeList">
       <div class="nodeRow"><button id="addLine">line</button><button id="addTransform">transform</button></div>
       <div class="nodeRow"><button id="addWrangle">wrangle</button><button id="addMerge">merge</button></div>
-      <div class="nodeRow"><button id="addAttribCreate">attribCreate</button><button id="addResample">resample</button></div>
+      <div class="nodeRow"><button id="addAttribCreate">attribCreate</button><button id="addAttribString">attribString</button></div>
+      <div class="nodeRow"><button id="addGroupByString">groupByStr</button><button id="addResample">resample</button></div>
       <div class="nodeRow"><button id="addSubdivide">subdivide</button><button id="addCopyToPoints">copyToPoints</button></div>
-      <div class="nodeRow"><button id="addBlast">blast</button><button id="addSubnet">subnet</button></div>
-      <div class="nodeRow"><button id="addSubnetInput">subnetInput</button><button id="addNull">null</button></div>
-      <div class="nodeRow"><button id="addGenerate">generate</button><button id="addScatter">scatter</button></div>
-      <div class="nodeRow"><button id="addNoise">noise</button><button id="addWarp">warp</button></div>
-      <div class="nodeRow"><button id="addColorRamp">colorRamp</button><button id="addRelax">relax</button></div>
-      <div class="nodeRow"><button id="addAttribBlur">attribBlur</button><button id="addWave">wave</button></div>
-      <div class="nodeRow"><button id="addAttractor">attractor</button><button id="addFlow">flow</button></div>
-      <div class="nodeRow"><button id="addVoronoi">voronoi</button><button id="addLloyd">lloyd</button></div>
-      <div class="nodeRow"><button id="addParticles">particles</button><button id="addBoids">boids</button></div>
-      <div class="nodeRow"><button id="addSprings">springs</button><button id="addReaction">reaction</button></div>
-      <div class="nodeRow"><button id="addLsystem">lsystem</button><button id="addCurveSample">curveSample</button></div>
-      <div class="nodeRow"><button id="addRibbon">ribbon</button><button id="addTrail">trail</button></div>
-      <div class="nodeRow"><button id="addFileRead">fileRead</button><button id="addFileCache">fileCache</button></div>
+      <div class="nodeRow"><button id="addBlast">blast</button><button id="addMirror">mirror</button></div>
+      <div class="nodeRow"><button id="addSubnet">subnet</button><button id="addSubnetInput">subnetInput</button></div>
+      <div class="nodeRow"><button id="addNull">null</button><button id="addGenerate">generate</button></div>
+      <div class="nodeRow"><button id="addScatter">scatter</button><button id="addNoise">noise</button></div>
+      <div class="nodeRow"><button id="addWarp">warp</button><button id="addColorRamp">colorRamp</button></div>
+      <div class="nodeRow"><button id="addRelax">relax</button><button id="addAttribBlur">attribBlur</button></div>
+      <div class="nodeRow"><button id="addWave">wave</button><button id="addAttractor">attractor</button></div>
+      <div class="nodeRow"><button id="addFlow">flow</button><button id="addVoronoi">voronoi</button></div>
+      <div class="nodeRow"><button id="addLloyd">lloyd</button><button id="addParticles">particles</button></div>
+      <div class="nodeRow"><button id="addBoids">boids</button><button id="addSprings">springs</button></div>
+      <div class="nodeRow"><button id="addReaction">reaction</button><button id="addLsystem">lsystem</button></div>
+      <div class="nodeRow"><button id="addCurveSample">curveSample</button><button id="addRibbon">ribbon</button></div>
+      <div class="nodeRow"><button id="addTrail">trail</button><button id="addFileRead">fileRead</button></div>
+      <div class="nodeRow"><button id="addFileCache">fileCache</button><button id="addFileTrail">fileTrail</button></div>
       <div class="nodeRow"><button id="addRender">render</button></div>
       </div>
       <hr>

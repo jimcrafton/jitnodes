@@ -131,12 +131,27 @@ class Palette(EditorCase):
 
     def test_every_fx_palette_button_adds_its_node(self):
         buttons = ["addGenerate", "addScatter", "addNoise", "addWarp", "addColorRamp", "addRelax", "addAttribBlur",
-                   "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addLsystem", "addCurveSample", "addRibbon", "addTrail", "addFileRead", "addFileCache", "addRender"]
+                   "addWave", "addAttractor", "addFlow", "addVoronoi", "addLloyd", "addParticles", "addBoids", "addSprings", "addReaction", "addLsystem", "addCurveSample", "addRibbon", "addTrail", "addFileRead", "addFileCache", "addRender",
+                   "addAttribString", "addGroupByString", "addMirror", "addFileTrail"]
         for count, button in enumerate(buttons, 1):
             with self.subTest(button=button):
                 self.app.click(button)
                 expected = "%d node%s" % (count, "" if count == 1 else "s")
                 self.assertTrue(self.status().startswith(expected), self.status())
+
+    def test_add_node_by_name_takes_exact_names_and_unique_prefixes(self):
+        self.setField("addByName", "mirror")
+        self.assertTrue(self.status().startswith("1 node"), self.status())
+        self.assertEqual("mirror1", self.title())
+        self.setField("addByName", "groupbys")      # any case, unique prefix
+        self.assertTrue(self.status().startswith("2 nodes"), self.status())
+        self.assertEqual("groupByString1", self.title())
+        self.setField("addByName", "nonesuch")
+        self.assertTrue(self.status().startswith("2 nodes"), self.status())
+        self.assertIn("no node type matches", self.label("statusText"))
+        self.setField("addByName", "attrib")         # attribBlur, attribCreate, attribString: ambiguous
+        self.assertTrue(self.status().startswith("2 nodes"), self.status())
+        self.assertIn("could be", self.label("statusText"))
 
     def test_undo_and_redo(self):
         self.add("addLine", "addTransform", "undoButton")
