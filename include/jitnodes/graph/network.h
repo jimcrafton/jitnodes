@@ -102,6 +102,7 @@ void registerFxNodes();
 void registerPatternNodes();
 void registerParticleNodes();
 void registerFieldNodes();
+void registerCurveNodes();
 void registerSubnetNodes();
 
 class Network {

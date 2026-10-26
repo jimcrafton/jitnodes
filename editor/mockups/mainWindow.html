@@ -21,13 +21,13 @@
 
   .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
 
-  .nodeList { display: flex; flex-direction: column; gap: 2px; }
+  .nodeList { display: flex; flex-direction: column; gap: 1px; }
   .nodeRow { display: flex; flex-direction: row; gap: 4px; }
   .palette { display: flex; flex-direction: column; gap: 3px; width: 190px; padding: 8px; background: var(--panel); border-radius: 4px; }
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
-  .palette .nodeRow button { flex-grow: 1; height: 20px; }
+  .palette .nodeRow button { flex-grow: 1; height: 19px; }
   #assetListHost { height: 36px; background: var(--panelAlt); }
   #assetDetails { height: 42px; font-size: 11px; color: var(--muted); }
 
@@ -109,6 +109,7 @@
       <div class="nodeRow"><button id="addVoronoi">voronoi</button><button id="addLloyd">lloyd</button></div>
       <div class="nodeRow"><button id="addParticles">particles</button><button id="addBoids">boids</button></div>
       <div class="nodeRow"><button id="addSprings">springs</button><button id="addReaction">reaction</button></div>
+      <div class="nodeRow"><button id="addLsystem">lsystem</button><button id="addCurveSample">curveSample</button></div>
       <div class="nodeRow"><button id="addRender">render</button></div>
       </div>
       <hr>

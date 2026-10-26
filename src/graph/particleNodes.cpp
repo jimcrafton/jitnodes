@@ -347,6 +347,7 @@ struct BoidsSettings {
     float minSpeed = 1.0f, maxSpeed = 3.0f, maxForce = 6.0f;
     float goalX = 0.0f, goalY = 0.0f, goal = 0.0f;
     float wander = 0.0f, wanderScale = 0.2f, wanderSpeed = 0.2f;
+    float avoid = 3.0f, avoidDistance = 1.0f, obstacleRadius = 0.5f;
     Boundary boundary = Boundary::wrap;
     float minX = -10.0f, maxX = 10.0f, minY = -6.0f, maxY = 6.0f;
     uint32_t seed = 1;
@@ -355,11 +356,30 @@ struct BoidsSettings {
 
 struct BoidsState {
     GeometryHandle source;
+    std::vector<GeometryHandle> obstacleSources;
     std::vector<float> signature;
     std::string boundary;
     int64_t step = -1;
     std::vector<float> x, y, vx, vy, nx, ny, nvx, nvy, neighbors;
+    std::vector<float> ox, oy, orad;
+    PointGrid obstacleGrid;
 };
+
+// Circles from the points of the obstacle inputs: the point's `radius` attribute, or `fallback` for points without one.
+void gatherObstacles(BoidsState& st, const std::vector<GeometryHandle>& in, const BoidsSettings& s) {
+    float reach = 0.0f;
+    for (size_t k = 1; k < in.size(); ++k) {
+        const Geometry& g = *in[k];
+        const AttribArray* radius = g.findAttrib(AttribClass::point, "radius");
+        for (size_t i = 0; i < g.pointCount(); ++i) {
+            st.ox.push_back(std::as_const(g).x()[i]);
+            st.oy.push_back(std::as_const(g).y()[i]);
+            st.orad.push_back(radius ? std::max(radius->at(i), 0.0f) : s.obstacleRadius);
+            reach = std::max(reach, st.orad.back());
+        }
+    }
+    if (!st.ox.empty()) st.obstacleGrid.build(st.ox.data(), st.oy.data(), st.ox.size(), std::max(reach + s.avoidDistance, 1e-3f));
+}
 
 void initialiseBoids(BoidsState& st, const Geometry& in, const BoidsSettings& s) {
     const size_t n = in.pointCount();
@@ -395,6 +415,7 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
     grid.build(st.x.data(), st.y.data(), n, s.radius);
     const float r2 = s.radius * s.radius, sr2 = s.separationRadius * s.separationRadius;
     const float width = s.maxX - s.minX, height = s.maxY - s.minY;
+    const bool haveObstacles = !st.ox.empty();
     parallelChunks(pool, n, [&](size_t begin, size_t end) {
         for (size_t i = begin; i < end; ++i) {
             const float px = st.x[i], py = st.y[i];
@@ -434,6 +455,19 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
                 ax += fx * s.goal;
                 ay += fy * s.goal;
             }
+            if (haveObstacles && s.avoid != 0.0f) {
+                st.obstacleGrid.forEachNear(px, py, [&](uint32_t j) {
+                    const float dx = px - st.ox[j], dy = py - st.oy[j];
+                    const float d = std::sqrt(dx * dx + dy * dy);
+                    const float reach = st.orad[j] + s.avoidDistance;
+                    if (!(d < reach)) return;
+                    const float weight = d <= st.orad[j] ? 1.0f : (reach - d) / std::max(s.avoidDistance, 1e-6f);
+                    float awayX = d > 1e-9f ? dx : 1.0f, awayY = d > 1e-9f ? dy : 0.0f;
+                    steer(awayX, awayY, vx, vy, s.maxSpeed, s.maxForce, fx, fy);
+                    ax += fx * s.avoid * weight;
+                    ay += fy * s.avoid * weight;
+                });
+            }
             if (s.wander != 0.0f) {
                 float cx, cy;
                 curlOf(s.field, px * s.wanderScale, py * s.wanderScale, simTime * s.wanderSpeed, 0.02f, cx, cy);
@@ -455,6 +489,22 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
                 }
             }
             float x = px + vx * s.dt, y = py + vy * s.dt;
+            if (haveObstacles) {
+                // A boid that ends up inside an obstacle is moved to its surface and loses the velocity into it.
+                st.obstacleGrid.forEachNear(x, y, [&](uint32_t j) {
+                    const float dx = x - st.ox[j], dy = y - st.oy[j];
+                    const float d = std::sqrt(dx * dx + dy * dy);
+                    if (!(d < st.orad[j])) return;
+                    const float nx = d > 1e-9f ? dx / d : 1.0f, ny = d > 1e-9f ? dy / d : 0.0f;
+                    x = st.ox[j] + nx * (st.orad[j] + 1e-3f);
+                    y = st.oy[j] + ny * (st.orad[j] + 1e-3f);
+                    const float inward = vx * nx + vy * ny;
+                    if (inward < 0.0f) {
+                        vx -= inward * nx;
+                        vy -= inward * ny;
+                    }
+                });
+            }
             if (s.boundary == Boundary::bounce) {
                 if (x < s.minX || x > s.maxX) {
                     vx = -vx;
@@ -485,7 +535,7 @@ void advanceBoids(BoidsState& st, const BoidsSettings& s, int64_t step, ThreadPo
 // plus an optional goal and wander noise, between `minSpeed` and `maxSpeed`. Cached and stepped like `particles`: a pure function of time.
 class BoidsNode : public Node {
 public:
-    BoidsNode() : Node("boids", 1) {
+    BoidsNode() : Node("boids", 2) {
         declareFloat("startTime", 0.0f);
         declareFloat("stepsPerSecond", 60.0f);
         declareFloat("seed", 1.0f);
@@ -503,6 +553,9 @@ public:
         declareFloat("wander", 0.0f);
         declareFloat("wanderScale", 0.2f);
         declareFloat("wanderSpeed", 0.2f);
+        declareFloat("avoid", 3.0f);
+        declareFloat("avoidDistance", 1.0f);
+        declareFloat("obstacleRadius", 0.5f);
         declareString("boundary", "wrap");
         declareFloat("boundsMinX", -10.0f);
         declareFloat("boundsMaxX", 10.0f);
@@ -511,6 +564,7 @@ public:
     }
 
     bool dependsOnPlayhead() const override { return true; }
+    bool hasVariableInputs() const override { return true; }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
         const std::string& boundary = getString("boundary");
@@ -535,6 +589,9 @@ public:
         s.wander = getFloat("wander");
         s.wanderScale = getFloat("wanderScale");
         s.wanderSpeed = getFloat("wanderSpeed");
+        s.avoid = getFloat("avoid");
+        s.avoidDistance = std::max(getFloat("avoidDistance"), 0.0f);
+        s.obstacleRadius = std::max(getFloat("obstacleRadius"), 0.0f);
         s.boundary = boundary == "bounce" ? Boundary::bounce : boundary == "wrap" ? Boundary::wrap : Boundary::none;
         s.minX = getFloat("boundsMinX");
         s.maxX = getFloat("boundsMaxX");
@@ -548,12 +605,15 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         BoidsState& st = state_;
-        if (st.step < 0 || st.source != in[0] || st.signature != signature || st.boundary != boundary || target < st.step) {
+        const std::vector<GeometryHandle> obstacleSources(in.begin() + 1, in.end());
+        if (st.step < 0 || st.source != in[0] || st.obstacleSources != obstacleSources || st.signature != signature || st.boundary != boundary || target < st.step) {
             st = BoidsState();
             st.source = in[0];
+            st.obstacleSources = obstacleSources;
             st.signature = std::move(signature);
             st.boundary = boundary;
             initialiseBoids(st, *in[0], s);
+            gatherObstacles(st, in, s);
         }
         for (int64_t step = st.step + 1; step <= target; ++step) advanceBoids(st, s, step, ctx.pool);
         st.step = target;
@@ -716,6 +776,7 @@ public:
         declareFloat("restScale", 1.0f);
         declareFloat("neighborRadius", 0.0f);
         declareFloat("pinEnds", 0.0f);
+        declareString("output", "points");
         declareFloat("windForce", 0.0f);
         declareFloat("windScale", 0.2f);
         declareFloat("windSpeed", 0.3f);
@@ -729,6 +790,8 @@ public:
     bool dependsOnPlayhead() const override { return true; }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const std::string& output = getString("output");
+        if (output != "points" && output != "springs") throw std::runtime_error("springs: output must be 'points' or 'springs', got '" + output + "'");
         SpringSettings s;
         const float stepsPerSecond = std::clamp(getFloat("stepsPerSecond"), 10.0f, 2000.0f);
         s.dt = 1.0f / stepsPerSecond;
@@ -793,7 +856,49 @@ public:
                 strain[i] = count[i] > 0.0f ? sum[i] / count[i] : 0.0f;
             }
         });
-        return geo;
+        if (output == "points") return geo;
+
+        // One two-point line per spring, so a mesh can be drawn, sampled with scatter or measured; each end keeps its point's attributes.
+        auto lines = std::make_shared<Geometry>();
+        const size_t springCount = st.springs.size();
+        lines->resizePoints(2 * springCount);
+        for (const auto& entry : geo->attribs(AttribClass::point)) {
+            const AttribArray& source = entry.second;
+            AttribArray& destination = lines->attrib(AttribClass::point, entry.first, source.type());
+            if (source.type() == AttribType::float32) {
+                float* dst = destination.floats().data();
+                const float* src = source.floats().data();
+                parallelChunks(ctx.pool, springCount, [&](size_t begin, size_t end) {
+                    for (size_t k = begin; k < end; ++k) {
+                        dst[2 * k] = src[st.springs[k].a];
+                        dst[2 * k + 1] = src[st.springs[k].b];
+                    }
+                });
+            } else {
+                int32_t* dst = destination.ints().data();
+                const int32_t* src = source.ints().data();
+                parallelChunks(ctx.pool, springCount, [&](size_t begin, size_t end) {
+                    for (size_t k = begin; k < end; ++k) {
+                        dst[2 * k] = src[st.springs[k].a];
+                        dst[2 * k + 1] = src[st.springs[k].b];
+                    }
+                });
+            }
+        }
+        for (const auto& entry : geo->details()) lines->setDetail(entry.first, entry.second);
+        if (springCount == 0) return lines;
+        float* springStrain = lines->attrib(AttribClass::point, "strain").floats().data();
+        int32_t* springIndex = lines->attrib(AttribClass::point, "spring", AttribType::int32).ints().data();
+        parallelChunks(ctx.pool, springCount, [&](size_t begin, size_t end) {
+            for (size_t k = begin; k < end; ++k) {
+                const Spring& sp = st.springs[k];
+                const float e = sp.rest > 1e-9f ? (std::hypot(st.x[sp.b] - st.x[sp.a], st.y[sp.b] - st.y[sp.a]) - sp.rest) / sp.rest : 0.0f;
+                springStrain[2 * k] = springStrain[2 * k + 1] = e;
+                springIndex[2 * k] = springIndex[2 * k + 1] = static_cast<int32_t>(k);
+            }
+        });
+        for (size_t k = 0; k < springCount; ++k) lines->addPrimitive({static_cast<uint32_t>(2 * k), 2u, false, PrimKind::polyline});
+        return lines;
     }
 
 private:

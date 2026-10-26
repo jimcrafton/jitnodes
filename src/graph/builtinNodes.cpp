@@ -178,6 +178,7 @@ void registerBuiltinNodes() {
     registerPatternNodes();
     registerParticleNodes();
     registerFieldNodes();
+    registerCurveNodes();
     registerSubnetNodes();
 }
 

@@ -3510,6 +3510,205 @@ TEST(springsHangAChainThatKeepsItsLengthAndHonoursPins) {
     CHECK(cookThrows(net, sim));
 }
 
+TEST(springsCanOutputTheirSpringsAsLines) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 20.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "tag = x * 2;");
+    NodeId sim = net.addNode("springs");
+    net.connect(wr, sim);
+    net.node(sim).setFloat("pinEnds", 1.0f);
+    net.setTime(2.0);
+    auto points = net.cook(sim);
+    net.node(sim).setString("output", "springs");
+    auto lines = net.cook(sim);
+    CHECK(lines->pointCount() == 38 && lines->primitiveCount() == 19);
+    for (const Primitive& p : lines->primitives()) CHECK(p.count == 2 && !p.closed);
+    const AttribArray* tag = lines->findAttrib(AttribClass::point, "tag");
+    CHECK(tag && lines->hasAttrib(AttribClass::point, "strain") && lines->hasAttrib(AttribClass::point, "spring"));
+    // Spring k joins points k and k + 1: its ends sit where the points are and carry their attributes.
+    for (size_t k = 0; k < 19; ++k) {
+        CHECK_NEAR(lines->x()[2 * k], points->x()[k]);
+        CHECK_NEAR(lines->y()[2 * k + 1], points->y()[k + 1]);
+        CHECK_NEAR(tag->at(2 * k), points->findAttrib(AttribClass::point, "tag")->at(k));
+        CHECK_NEAR(tag->at(2 * k + 1), points->findAttrib(AttribClass::point, "tag")->at(k + 1));
+        CHECK(lines->findAttrib(AttribClass::point, "spring")->ints()[2 * k] == static_cast<int32_t>(k));
+    }
+    // Lines from neighborRadius come from the mesh, not from primitives.
+    net.node(sim).setFloat("neighborRadius", 1.2f);
+    CHECK(net.cook(sim)->primitiveCount() > 19);
+    net.node(sim).setString("output", "mesh");
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(boidsAvoidObstaclesFromTheirExtraInputs) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId sim = net.addNode("boids");
+    net.connect(gen, sim);
+    net.node(sim).setFloat("radius", 1.5f);
+    net.node(sim).setFloat("boundsMinX", -8.0f);
+    net.node(sim).setFloat("boundsMaxX", 8.0f);
+    net.node(sim).setFloat("boundsMinY", -8.0f);
+    net.node(sim).setFloat("boundsMaxY", 8.0f);
+    auto insideCount = [&](const Geometry& g, float radius) {
+        size_t inside = 0;
+        for (size_t i = 0; i < g.pointCount(); ++i) inside += std::hypot(g.x()[i], g.y()[i]) < radius ? 1 : 0;
+        return inside;
+    };
+    net.setTime(4.0);
+    CHECK(insideCount(*net.cook(sim), 2.0f) > 0);  // without an obstacle the flock flies through the middle
+
+    NodeId rock = net.addNode("generate");
+    net.node(rock).setFloat("count", 1.0f);
+    net.node(rock).setFloat("width", 0.0f);
+    net.node(rock).setFloat("height", 0.0f);
+    net.connect(rock, sim, 1);
+    net.node(sim).setFloat("obstacleRadius", 2.0f);
+    for (double t : {0.5, 1.0, 4.0}) {
+        net.setTime(t);
+        CHECK(insideCount(*net.cook(sim), 2.0f - 0.01f) == 0);
+    }
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), r2 = threaded.addNode("generate"), s2 = threaded.addNode("boids");
+    threaded.connect(g2, s2);
+    threaded.connect(r2, s2, 1);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"count", "width", "height"}) threaded.node(r2).setFloat(p, net.node(rock).getFloat(p));
+    for (const char* p : {"radius", "boundsMinX", "boundsMaxX", "boundsMinY", "boundsMaxY", "obstacleRadius"}) threaded.node(s2).setFloat(p, net.node(sim).getFloat(p));
+    threaded.setTime(4.0);
+    net.setTime(4.0);
+    CHECK(sameGeometry(*net.cook(sim), *threaded.cook(s2)));
+
+    // An obstacle's own radius attribute wins over the parameter.
+    NodeId sized = net.addNode("wrangle");
+    net.connect(rock, sized);
+    net.node(sized).setString("code", "radius = 4;");
+    net.connect(sized, sim, 1);
+    CHECK(insideCount(*net.cook(sim), 4.0f - 0.01f) == 0);
+}
+
+TEST(lsystemGrowsPlantsAndReportsBadRules) {
+    Network net(1);
+    NodeId ls = net.addNode("lsystem");
+    net.node(ls).setString("axiom", "F");
+    net.node(ls).setString("rules", "F=FF");
+    net.node(ls).setFloat("iterations", 3.0f);
+    net.node(ls).setFloat("length", 0.5f);
+    auto trunk = net.cook(ls);
+    CHECK(trunk->pointCount() == 9 && trunk->primitiveCount() == 1);
+    CHECK_NEAR(trunk->x()[8], 0.0f);
+    CHECK_NEAR(trunk->y()[8], 4.0f);  // 8 steps of 0.5 straight up
+    CHECK_NEAR(trunk->findAttrib(AttribClass::point, "u")->at(8), 1.0f);
+
+    // Four right-angle turns close a square; a branch starts a new stroke one level deeper.
+    net.node(ls).setString("axiom", "F+F+F+F");
+    net.node(ls).setString("rules", "");
+    net.node(ls).setFloat("angle", 90.0f);
+    net.node(ls).setFloat("length", 1.0f);
+    auto square = net.cook(ls);
+    CHECK(square->pointCount() == 5);
+    CHECK_NEAR(square->x()[4], square->x()[0]);
+    CHECK_NEAR(square->y()[4], square->y()[0]);
+    net.node(ls).setString("axiom", "F[+F]F");
+    auto branched = net.cook(ls);
+    CHECK(branched->primitiveCount() == 3);
+    bool sawDeep = false;
+    for (size_t i = 0; i < branched->pointCount(); ++i) sawDeep |= branched->findAttrib(AttribClass::point, "depth")->ints()[i] == 1;
+    CHECK(sawDeep);
+
+    // A plant: deterministic, and random rule choices and jitter depend on the seed only.
+    net.node(ls).setString("axiom", "X");
+    net.node(ls).setString("rules", "X=F[+X][-X]FX; X=F[+X]F[-X]; F=FF");
+    net.node(ls).setFloat("iterations", 6.0f);
+    net.node(ls).setFloat("angleJitter", 8.0f);
+    net.node(ls).setFloat("lengthJitter", 0.2f);
+    net.node(ls).setFloat("branchScale", 0.9f);
+    auto plant = net.cook(ls);
+    CHECK(plant->pointCount() > 1000 && plant->primitiveCount() > 100);
+    Network other(4);
+    NodeId l2 = other.addNode("lsystem");
+    for (const char* p : {"iterations", "angleJitter", "lengthJitter", "branchScale", "angle", "length"}) other.node(l2).setFloat(p, net.node(ls).getFloat(p));
+    for (const char* p : {"axiom", "rules"}) other.node(l2).setString(p, net.node(ls).getString(p));
+    CHECK(sameGeometry(*plant, *other.cook(l2)));
+    net.node(ls).setFloat("seed", 2.0f);
+    CHECK(!sameGeometry(*plant, *net.cook(ls)));
+
+    net.node(ls).setString("rules", "XY=F");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("rules", "F=FF");
+    net.node(ls).setString("axiom", "F]");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("axiom", "");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("axiom", "F");
+    net.node(ls).setFloat("iterations", 30.0f);
+    CHECK(cookThrows(net, ls));  // 2^30 symbols is over the limit
+}
+
+TEST(curveSampleSpacesPointsAlongCurvesWithFramesAndAttributes) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 11.0f);
+    net.node(line).setFloat("length", 10.0f);
+    net.node(line).setFloat("y", 3.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "w = x * 2;");
+    NodeId cs = net.addNode("curveSample");
+    net.connect(wr, cs);
+    net.node(cs).setFloat("count", 5.0f);
+    auto even = net.cook(cs);
+    CHECK(even->pointCount() == 5 && even->primitiveCount() == 0);
+    for (size_t i = 0; i < 5; ++i) {
+        CHECK_NEAR(even->x()[i], 2.5f * static_cast<float>(i));
+        CHECK_NEAR(even->y()[i], 3.0f);
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "u")->at(i), 0.25f * static_cast<float>(i));
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "w")->at(i), 5.0f * static_cast<float>(i));  // interpolated between points
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "tx")->at(i), 1.0f);
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "ny")->at(i), 1.0f);
+        CHECK(even->findAttrib(AttribClass::point, "curve")->ints()[i] == 0);
+    }
+
+    net.node(cs).setFloat("offset", 0.5f);
+    CHECK_NEAR(net.cook(cs)->y()[2], 3.5f);  // along the normal, to the left of the direction of travel
+    net.node(cs).setFloat("offset", 0.0f);
+
+    net.node(cs).setFloat("spacing", 2.0f);
+    auto spaced = net.cook(cs);
+    CHECK(spaced->pointCount() == 6);
+    CHECK_NEAR(spaced->x()[5], 10.0f);
+
+    net.node(cs).setFloat("spacing", 0.0f);
+    net.node(cs).setFloat("count", 400.0f);
+    net.node(cs).setFloat("random", 1.0f);
+    auto scattered = net.cook(cs);
+    CHECK(scattered->pointCount() == 400);
+    for (size_t i = 0; i < 400; ++i) {
+        CHECK(scattered->x()[i] >= 0.0f && scattered->x()[i] <= 10.0f);
+        CHECK_NEAR(scattered->findAttrib(AttribClass::point, "w")->at(i), scattered->x()[i] * 2.0f);
+    }
+    Network other(4);
+    NodeId l2 = other.addNode("line"), w2 = other.addNode("wrangle"), c2 = other.addNode("curveSample");
+    other.connect(l2, w2);
+    other.connect(w2, c2);
+    other.node(l2).setFloat("count", 11.0f);
+    other.node(l2).setFloat("y", 3.0f);
+    other.node(w2).setString("code", "w = x * 2;");
+    other.node(c2).setFloat("count", 400.0f);
+    other.node(c2).setFloat("random", 1.0f);
+    CHECK(sameGeometry(*scattered, *other.cook(c2)));
+
+    net.node(line).setFloat("count", 1.0f);
+    CHECK(net.cook(cs)->pointCount() == 0);  // nothing to sample on a single point
+}
+
 TEST(reactionDiffusionGrowsPatternsDeterministicallyAndStaysBounded) {
     auto build = [](Network& net, NodeId& sim) {
         sim = net.addNode("reactionDiffusion");

@@ -1,8 +1,8 @@
 # Generating points and drawing pictures with them
 
-Seventeen nodes turn jitnodes into a small particle-image tool: three make points (`reactionDiffusion` makes a grid), thirteen shape
-them (noise, warp, colour, spacing, smoothing, waves, strange attractors, flow lines, Voronoi cells, Lloyd relaxation, and four
-simulations: particles, boids, springs), and one (`render`) says
+Nineteen nodes turn jitnodes into a small particle-image tool: four make points (`reactionDiffusion` makes a grid and `lsystem`
+plants), fourteen shape them (noise, warp, colour, spacing, sampling curves, smoothing, waves, strange attractors, flow lines,
+Voronoi cells, Lloyd relaxation, and three simulations: particles, boids, springs), and one (`render`) says
 how the points become an image. Together they draw pictures such as the nebula in
 `examples/graphs/nebula.json` (about 650,000 sprites; cooking and drawing it takes about 0.35 s).
 
@@ -13,8 +13,8 @@ jitnodesEditor examples/graphs/nebula.json
 
 ![The nebula graph rendered by jitnodesCli](images/nebula.png)
 
-In the editor the seventeen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
-attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, render): select a
+In the editor the nineteen nodes are buttons in the palette (generate, scatter, noise, warp, colorRamp, relax,
+attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, render): select a
 node, click a button and the new node is wired to the selected one. Each example below is a small graph in
 `examples/graphs/fx/`, rendered with `jitnodesCli <graph> --png <file>`; load it in the editor to change its
 parameters and watch the picture change (the `render` node switches the viewport to the image view; double-click the
@@ -80,6 +80,28 @@ primitive, 0 for a closed one). Input attributes are not carried over: scatter c
 `count` = 20000 (left); `line` bent into a wave and walked with `lineCount` = 12000 and `spread` = 0.25 (right, tinted
 by `u`, the position along the curve). A `scatter` with both kinds of primitive in its input does both at once; set
 `count` or `lineCount` to 0 to switch one off.
+
+### curveSample (one input)
+
+Places points along the input curves and gives each one a frame and the curve's attributes. Open curves get a point at each end;
+closed ones do not repeat the first point. Unlike `scatter`, which only keeps `rand`, `u` and `srcPrim`, every point attribute of
+the curve (`Cd`, `radius`, `speed`, `strain`, ...) is **interpolated** along the segment it falls on (integer attributes take the
+nearer end), so a colour, a size or a simulation attribute survives and the result can be coloured, warped or rendered afterwards.
+Cubic curves are flattened first (`tolerance`, as in `scatter`).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `count` | 100 | points per curve (ignored when `spacing` is above 0) |
+| `spacing` | 0 | if above 0, one point every `spacing` units of length along each curve (a curve of length L gets `floor(L / spacing) + 1` points, `floor(L / spacing)` if closed) |
+| `random` | 0 | 1: random positions along the curve instead of even ones (`count` per curve, from `seed`) |
+| `offset` | 0 | moves each point this far along its normal (to the left of the direction of travel); negative moves it right |
+| `seed`, `tolerance` | 1, 0.1 | random seed; curve flattening tolerance |
+
+The output has points only (no primitives), with `x`, `y`, every input point attribute, and: `u` (0 to 1 along the curve), `tx`, `ty`
+(unit tangent), `nx`, `ny` (unit normal, the tangent turned a quarter turn left) and `curve` (the input primitive's index). Curves
+with fewer than two points or no length produce nothing. The cost is linear in the samples and the attributes (2 million samples
+of a curve with 8 attributes take about 50 ms) and the result is the same on any thread count. Use it after `springs` (`output` `springs`), `lsystem`,
+`flow` or any other node that makes polylines, to turn lines into points that the renderer and `colorRamp` can use.
 
 ### noise (one input)
 
@@ -361,7 +383,7 @@ the nozzle, `initialSpeed` 11 in a 50 degree cone, gravity -9.8, a bouncing floo
 particles on a disc around an attractor of strength 30, each given 55% of the circular speed by a wrangle (`vx`, `vy`); by t = 6 the
 disc has wound up into concentric shells, coloured by `speed`. In the editor, press play and both move.
 
-### boids (one input)
+### boids (a flock input and any number of obstacle inputs)
 
 A flock. Every input point is a boid that steers by Reynolds' three rules, looking only at the boids within `radius`: **separation**
 (move away from those closer than `separationRadius`), **alignment** (match their heading) and **cohesion** (move towards their
@@ -377,6 +399,7 @@ state, so the thread count does not matter).
 | `separation`, `alignment`, `cohesion` | 1.5, 1, 1 | weight of each rule; 0 switches a rule off |
 | `minSpeed`, `maxSpeed`, `maxForce` | 1, 3, 6 | speed limits and the strongest steering acceleration of a single rule |
 | `goal`, `goalX`, `goalY` | 0, 0, 0 | weight of a steering force towards a point (0: none) |
+| `avoid`, `avoidDistance`, `obstacleRadius` | 3, 1, 0.5 | steering away from obstacles (see below): weight, how far outside an obstacle's edge it starts, and the radius of obstacles that have no `radius` attribute |
 | `wander`, `wanderScale`, `wanderSpeed` | 0, 0.2, 0.2 | a curl-noise acceleration that keeps the flock from settling: strength, feature size and evolution speed |
 | `boundary` | `wrap` | `wrap` (leave one side, return on the other), `bounce` (reflect at the box) or `none` |
 | `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box for `wrap` and `bounce` |
@@ -386,11 +409,27 @@ Input attributes `vx` and `vy` give the initial velocities; without them every b
 `colorRamp`) and `neighbors` (how many boids it sees), and keeps every other attribute. Cost is boids times the boids within
 `radius`, per step: the two flocks below (900 boids, 14 s, 840 steps) take 290 ms for the clustered flock and 150 ms for the sparse one.
 
+**Obstacles.** The first input is the flock. Every further input (a new empty one appears whenever you connect one, as on `merge`)
+is a set of obstacles: each of its points is a circle centred on the point, with the radius of its `radius` attribute, or
+`obstacleRadius` if the point has none. A boid within `avoidDistance` of a circle's edge steers away from it, more strongly the
+closer it is (`avoid` is the weight), and a boid that ends a step inside a circle is moved to its surface and loses the velocity
+into it, so nothing ever sits inside a rock. The obstacles are read when the simulation starts and stay where they are: an
+obstacle input that changes with time restarts the simulation at every new time, which still gives the right picture but costs a
+simulation from the start each frame. Because `render` also draws a point with its `radius`, the same points can be merged into the
+picture as discs, as in the example.
+
 ![two flocks: swarms and a gas](images/fxBoids.png)
 
 `examples/graphs/fx/fxBoids.json` at `--time 14`. Left, `alignment` 3 and `cohesion` 1.2 gather the boids into several swarms
 that circle together (colour is the heading, so a swarm shows the whole colour wheel while it turns). Right, `alignment` and
 `cohesion` 0 and `separation` 2.5 keep the boids evenly spread with random headings, like a gas.
+
+![a flock splitting round rocks](images/fxBoidsRocks.png)
+
+`examples/graphs/fx/fxBoidsRocks.json` at `--time 4.8`: 900 boids start on the left and are pulled towards a goal far to the right
+(`goal` 1.5). Seven rocks (a `generate` plus a wrangle that sets `radius` from `rand`) are the second input of `boids` (`avoid` 6,
+`avoidDistance` 1.2) and are merged into the picture as soft discs. The front of the flock has split in two round the cluster of
+rocks and streams through the gaps. Colour is the heading.
 
 ### springs (one input)
 
@@ -409,15 +448,20 @@ stays stable however stiff the springs are and never explodes. Cached and steppe
 | `restScale` | 1 | rest length as a fraction of the initial length (below 1 the springs are tense, above 1 the body sags) |
 | `neighborRadius` | 0 | also join points that start closer than this (limit: 20 million springs) |
 | `pinEnds` | 0 | 1: the first point of every open primitive stays where it is |
+| `output` | `points` | `points`: the input geometry with moved points. `springs`: one two-point line per spring (see below) |
 | `windForce`, `windScale`, `windSpeed` | 0, 0.2, 0.3 | a curl-noise acceleration (flutter): strength, feature size and evolution speed |
 | `useBounds`, `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | 0, -10, 10, -6, 6 | 1 keeps the points inside the box (a floor and walls) |
 
 Points whose `pin` attribute is not 0 never move (a wrangle can set it, for example `pin = y > 3;` for the top edge of a cloth).
 Input attributes `vx` and `vy` give the initial velocities. The output keeps the input geometry, so open primitives still draw as
 lines, and has `vx`, `vy`, `speed` and `strain` (the average of the relative stretch `(length - rest) / rest` of the springs at a
-point: positive stretched, negative squeezed). Springs are not output as geometry: to draw a chain, run `scatter lineCount` on it
-(`scatter` does not carry `vx`, `speed` or `strain`, so colour with `colorRamp` on `u`, or `colorRamp` the points before and draw them
-as points).
+point: positive stretched, negative squeezed).
+
+With `output` set to `springs` the node returns the springs as geometry instead: one open two-point line per spring (so a mesh made
+with `neighborRadius` can be drawn, which the points output cannot show), 2 points per spring, each end carrying all the attributes
+of the point it belongs to, and `strain` replaced by the spring's own relative stretch (the same on both ends) plus `spring` (the
+spring's index). The same simulation runs either way, so you can switch between the two. Put `curveSample` after it to turn the
+lines into points that keep `strain`, `speed` and the rest; `scatter` would drop them.
 
 Springs are solved in order on one thread, so the cost is springs times `iterations` times steps, about 10 ns per spring per pass:
 3,000 points joined to their neighbours within 0.5 (45,000 springs) at 8 iterations cost 0.48 s per animated second. Scrubbing
@@ -426,9 +470,10 @@ backwards re-simulates from the start, so a body with tens of thousands of sprin
 ![a swinging chain and a jelly hitting the floor](images/fxSprings.png)
 
 `examples/graphs/fx/fxSprings.json` at `--time 1.1`. Left, an 80-point `line` pinned at one end with `pinEnds`, released horizontal
-under gravity -9 and drawn with `scatter lineCount`, coloured along its length by `u`. Right, a disc of 500 random points joined
-with `neighborRadius` 0.45 (about 16 neighbours per point, 4,000 springs) and `stiffness` 0.35, falling at gravity -24 onto a floor at y = -6
-(`useBounds`), just after impact: the bottom is squeezed (red) and the top stretched (green), coloured by `strain`.
+under gravity -9, then `curveSample` (spacing 0.025) so the points keep `speed`, which colours it. Right, a disc of 160 random
+points joined with `neighborRadius` 1 (1,032 springs) and `stiffness` 0.35, falling at gravity -24 onto a floor at y = -6
+(`useBounds`), just after impact. Its `output` is `springs`, `curveSample` (spacing 0.1) puts points along every spring and a
+`colorRamp` on `strain` colours them (red squeezed, green stretched).
 
 ### reactionDiffusion (no input)
 
@@ -463,6 +508,47 @@ example) take about 480 ms, and a 512 x 512 grid costs about 35 ms per 100 steps
 
 `examples/graphs/fx/fxReaction.json` at `--time 30` (12,000 steps of two 110 x 110 grids), the same seed and the same chemistry
 except `feed` and `kill`. Left, 0.055 / 0.062 grows branching coral; right, 0.037 / 0.065 gives evenly spaced spots.
+
+### lsystem (no input)
+
+A Lindenmayer system: start from the `axiom` string, rewrite it `iterations` times with the `rules`, then draw the result with a
+turtle that starts at (`startX`, `startY`) facing `startAngle` degrees from +x (90: up). Plants, trees, snowflakes and the
+Sierpinski triangle all come from a few short rules.
+
+| Symbol | Meaning |
+|---|---|
+| `F`, `G` | move forward `length` and draw a line |
+| `f` | move forward without drawing (starts a new stroke) |
+| `+`, `-` | turn left, turn right by `angle` degrees |
+| `\|` | turn around (180 degrees) |
+| `[`, `]` | save the turtle and start a branch, restore the turtle (the branch ends) |
+| anything else (`X`, `A`, ...) | does nothing when drawing; it exists to be rewritten by the rules |
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `axiom` | `X` | the start string; spaces are ignored |
+| `rules` | `X=F[+X][-X]FX; F=FF` | rewrite rules `S=replacement`, separated by `;` or line breaks. `S` is one character. Several rules for the same `S` make the rewriting stochastic: one is picked at random for every occurrence, from `seed` |
+| `iterations` | 5 | rewriting steps (0 to 30); the string is limited to 50 million symbols and the drawing to 20 million points |
+| `angle`, `length` | 25, 0.1 | turn angle in degrees and the length of an `F` step |
+| `branchScale` | 1 | every `[` multiplies the step length of that branch by this: 0.8 makes each generation of branches shorter |
+| `angleJitter`, `lengthJitter` | 0, 0 | random variation of every turn (plus or minus this many degrees) and of every step (plus or minus this fraction), from `seed` |
+| `seed` | 1 | seed of the random rule choice and the jitter |
+| `startX`, `startY`, `startAngle` | 0, 0, 90 | where the turtle starts and which way it faces |
+
+The output is one open polyline per stroke, that is per run of `F` between a `[`, `]` or `f` (a branch starts a new line at the
+branch point, and the trunk continues in a new line after it). Every point has `depth` (the bracket depth, 0 for the trunk, an
+integer attribute), `stroke` (the stroke's index) and `u` (0 to 1 in drawing order, so it grows with the plant). Run
+`curveSample` on it to get points that keep these and colour them with `colorRamp` on `depth` or `u`. It is deterministic: the same
+axiom, rules and seed always give the same drawing. The three plants below take 0.15 ms each to rewrite and draw (about 2,400,
+540 and 2,200 points); the string grows by the size of the rules per iteration, so 8 iterations of a rule that doubles it is 256
+times the work of none.
+
+![three L-systems: a fern, a tree and the Sierpinski triangle](images/fxLsystem.png)
+
+`examples/graphs/fx/fxLsystem.json`. Left: `X=F+[[X]-X]-F[-FX]+X; F=FF` at 25 degrees, 5 iterations, a fern-like plant coloured by
+`depth`. Middle: three alternative rules for `X` at 24 degrees with `angleJitter` 9, `lengthJitter` 0.25 and `branchScale` 0.82, so
+every branch is shorter than its parent and no two look alike. Right: `F=F-G+F+G-F; G=GG` at 120 degrees, the Sierpinski
+triangle, coloured along its stroke by `u`. Each is sampled with `curveSample` and `spacing` 0.04 to 0.05.
 
 ### render (one input)
 
