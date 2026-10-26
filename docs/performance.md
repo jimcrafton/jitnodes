@@ -47,11 +47,12 @@ optimisation). `JITNODES_JIT_LOG=1` dumps the generated assembly.
 
 | | |
 |---|---|
-| CPU | AMD Ryzen 9 7900X (12 cores / 24 threads), AVX2 and AVX-512 (Zen 4) |
-| OS / compiler | Windows 11, MSVC (Visual Studio 2026), Release `/O2` |
+| CPU | AMD Ryzen 9 7900X (Zen 4), 12 cores / 24 threads, 4.7 GHz max, 64 MB L3, AVX2 and AVX-512 |
+| Memory | 64 GB DDR5-4800 (2 x 32 GB) |
+| OS / compiler | Windows 11 Pro (10.0.26100), MSVC (Visual Studio 2026), Release `/O2` |
 | asmjit | 1.21, static |
-| Date | 2026-10-16 |
-| Multi-threaded rows | 4 threads total (caller + 3 workers) |
+| Date | kernel and network tables 2026-10-16, rerun 2026-10-26; fx table 2026-10-26 |
+| Multi-threaded rows | 4 threads total (caller + 3 workers); fx table "all threads" = 8 (the default pool) |
 
 Only this one machine was measured. Other CPUs (in particular Intel parts that lower their clock under AVX-512),
 ARM and Debug builds were not.
@@ -59,6 +60,11 @@ ARM and Debug builds were not.
 ## Results
 
 ### Kernels, 4M points (ms per run)
+
+Rerun on 2026-10-26 (three more `kernelBench` runs): all rows reproduced within the ranges above (for example
+JIT off 65 - 68 / 97 - 100 / 194 - 196 / 71 - 72 / 121 ms, avx2 0.53 - 0.77 / 0.79 - 0.86 / 0.80 - 0.94 / 4.3 - 4.4 /
+13.0 - 13.3 ms) and the network rows too (fusion + JIT 1.90 - 1.94 ms, 8 branches JIT on 20.7 - 21.3 ms on one thread,
+16.3 - 20.0 ms on 4); the tables keep the original ranges.
 
 | kernel | JIT off | native C++ | sse2 | avx2 | avx512 | best, 4 threads | best vs off |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -126,6 +132,51 @@ format would save at most a few tens of milliseconds and is not worth the loss o
 the stateful simulations (`reactionDiffusion` 3.5 s, `boids` 0.24 s): those are what a geometry cache would save at every load.
 `generate` of 2M points costs 6 ms, so caching it would be slower than recooking (reading 2M x several floats from disk is
 not free), and `nebula` at 0.18 s is borderline.
+
+### fx nodes, cold cook of the example graphs (2026-10-26)
+
+Median of 3 cold cooks (fresh `Network`, load, `setTime`, one cook of the display node), at the time each graph is
+documented for in `fx.md`. Measured with a small driver like the load test above; the same hardware as in
+"Environment".
+
+| graph (time) | points | 1 thread | all threads | all threads, JIT off | heaviest node (all threads) |
+|---|---:|---:|---:|---:|---|
+| `fxBlur` | 60k | 788 | 623 | 615 | `attribBlur` 4 passes 624 ms |
+| `fxReaction` (30) | 24k | 1480 | 477 | 551 | `reactionDiffusion` 529 / 486 ms |
+| `fxGas` (4) | 7.9k | 474 | 469 | 468 | `particles` 259, `gasField` 213 |
+| `fxFluid` (2.5) | 1.1k | 271 | 269 | 271 | `fluid` 272 |
+| `fxBoids` (14) | 1.8k | 1358 | 296 | 293 | `boids` 294 + 153 |
+| `fxBoidsRocks` (4.8) | 0.9k | 277 | 88 | - | `boids` |
+| `fxGrow` (2.5) | 16k | 178 | 175 | - | `grow` 176 |
+| `fxParticles` (6) | 26k | 124 | 123 | - | `particles` |
+| `fxAttractor` | 1.6M | 874 | 148 | 146 | `attractor` 128 / 115 / 95 / 49 |
+| `fxFlow` | 972k | 235 | 179 | 184 | (not profiled) |
+| `nebula` | 646k | 980 | 186 | 190 | `warp` 76 / 61 / 26, `noise` 30 / 26 |
+| `fxWarp` | 240k | 72 | 19 | 18 | |
+| `fxNoise` | 180k | 46 | 11 | 11 | |
+| `fxTrails` (3) | 18k | 81 | 35 | 35 | |
+| `fxStreamlines` | 12k | 11.4 | 11.4 | - | |
+| `fxColonize` | 4.4k | 27 | 26 | - | |
+| `fxSprings` (3) | 7.7k | 30 | 30 | - | |
+| `fxVoronoi` | 75k | 4.7 | 2.4 | - | |
+| `fxLloyd` | 40k | 3.4 | 2.8 | - | |
+| `fxWave` | 130k | 7.2 | 2.9 | - | |
+
+All times in ms. Run-to-run spread was under about 5 % except `fxReaction` and `fxWarp` (up to 10 %, a single slow run).
+The loop graphs (`loopsForeach`, `loopsSolver`) cook in under 1 ms.
+
+What this shows:
+
+- **The JIT is irrelevant here.** The expensive fx nodes are native C++ operators, not kernels; the only kernel in
+  these graphs is the final `look` wrangle (0.1 ms to compile, 0.1 - 3 ms to run). JIT on and off are within noise,
+  except `fxReaction`, where the 477 vs 551 ms difference is within that graph's run-to-run spread.
+- **Stateful simulations dominate.** `reactionDiffusion` (two 512 x 512 grids to t = 30), `fluid`, `particles`,
+  `gasField`, `boids` and `grow` replay from t = 0 on a cold cook, 0.1 - 0.5 s each. These are the nodes a geometry
+  cache would help.
+- **Threading helps where the node is parallel**: `reactionDiffusion` 3.1x, `boids` 4.6x, `attractor` 5.9x,
+  `nebula` 5.3x, `noise`/`warp` 4x. `fluid`, `gas`, `particles`, `grow`, `colonize` and `streamlines` are serial and
+  gain nothing; `attribBlur` gains only 1.3x and is the worst for its size (60k points, 4 passes, 0.62 s), which makes
+  it the best optimisation candidate in this set.
 
 ## What the numbers show
 
