@@ -203,7 +203,17 @@ What this shows:
   and `particles` replay from t = 0 on a cold cook, 0.05 - 0.5 s each. These are the nodes a geometry cache would
   help.
 - **Single-thread cost is unchanged.** `attribBlur` still costs about 3.8 ns per neighbour visit on one thread
-  (random memory access); sorting points by grid cell is the remaining idea for it.
+  (random memory access). Sorting the points by grid cell before blurring was tried and dropped: radius 3, 4 iterations,
+  `generate` input, median of 5 cooks of the blur node alone.
+
+  | Points | Threads | Unsorted (ms) | Cell-sorted (ms) |
+  |---|---|---|---|
+  | 200k | 1 | 313 | 313 |
+  | 200k | 8 | 53 | 69 |
+  | 1M | 1 | 1,681 | 1,606 |
+  | 1M | 8 | 373 | 358 |
+
+  The gain is at most 4 % at 1M points, and the extra grid build and copies make 200k points on 8 threads 30 % slower.
 
 ## What the numbers show
 
