@@ -402,6 +402,86 @@ top of 2), 5 and 6 only on evidence. Nothing here changes the JSON graph format,
 file's age in its status text, and the docs warn); files from a newer build are rejected, never half-read; `.jngeo` carries no
 asset or node information, so it is a data file, not a replacement for graph files.
 
+## Next batch (planned 2026-10-26, nothing started)
+Four items asked for after the format work, plus a research pass for more nodes. Each is one commit; order below is the recommended one.
+
+**A. Mirror / symmetry node (`mirror`, half a day, no engine change).** Reflection or rotation copies of the input in one node.
+- `mode = mirror | rotate | kaleidoscope`. `mirror`: reflect across a line through (`originX`, `originY`) at `angle` degrees, keep the
+  original (`keepOriginal`) and append the reflected copy. `rotate`: `folds` copies at 360/folds degrees (n-fold symmetry). `kaleidoscope`:
+  `folds` wedges, each rotated copy followed by its mirror (dihedral symmetry D_n, what mandala tools do).
+- Built on the existing gather/concat path (`Geometry::concat`), so every attribute, string table and group is carried; only vector pairs
+  change: `vectors = "v"` lists base names whose `.x/.y` (and the `vx`/`vy` pair) are reflected or rotated with the points (default `vx/vy`).
+  Primitives keep their point order (a reflection is affine, cubic segments stay valid); `weld` (tolerance, default 0) merges the points
+  that land on the axis so a mirrored open curve becomes one closed outline when its end points sit on the axis.
+- Tests: reflecting twice gives the input back; `rotate` with folds 1 is the identity; point and primitive counts; `vx`/`vy` reflected;
+  string attributes survive; a symmetric result is invariant under its own mirror (sorted point set).
+
+**B. Palette room for the new nodes (`attribString`, `groupByString`, `fileTrail`, `mirror`, ...).** 35 buttons in 18 rows of 18 px, the last
+ends at y = 623 of 640. Options: (1) a third column (costs width of the side panel, buttons need shorter labels); (2) 16 px rows (about 9% more
+rows, still readable, gives 2 rows); (3) a scrolling list (newui has scroll view classes, to be checked against the palette's `FlexLayout`);
+(4) a type-to-search "Add node" box (Tab or a field above the list) that lists every registered type, so the palette no longer has to be
+complete. Recommendation: (4) plus the four buttons squeezed in with option (2); (4) also makes the asset library and future nodes reachable
+without a layout change. Steps: edit `editor/mockups/mainWindow.html`, reconvert with `html-mockup-to-newui`, extend the palette table in
+`editorWindow.cpp`, add the buttons to the every-palette-button GUI test. GUI tests need the user's go-ahead (they send input).
+
+**C. Boids obstacles cooked at other times.** The real defect today: an obstacle input that depends on the playhead gets a new
+`GeometryHandle` every frame, `BoidsNode::cook` compares handles (`st.obstacleSources != obstacleSources`), so the whole flock re-simulates
+from `startTime` each frame, and all earlier steps see the obstacle at the *current* time. Obstacles that move through `vx`/`vy` attributes work
+(`placeObstacles`) because their input is static. Options:
+1. *Sampler clone* (pure function of time, what the node promises): the boids node keeps a private `Network` built from the upstream
+   sub-graph of its obstacle inputs (copied through the snapshot machinery of `history.cpp`), set to the step's time and cooked per step (or per
+   few steps with interpolation). Needs `Network::cookAt`-style isolation; cost is the upstream cook per sampled step. Risks: subnet external
+   inputs, assets, dirty tracking when the upstream is edited; about 1.5 days.
+2. *Recorded snapshots* (cheap, not pure): remember `{time, obstacle positions}` each time the node cooks and interpolate between them for the steps
+   in between. Exact when the playhead advances frame by frame, approximate on jumps, and the result depends on the visit history, which breaks
+   "same time, same picture". Only acceptable as an opt-in.
+3. *Bake it* (already available, `fileCache` with `$F` and `fileRead`): documented in step 3 above; no engine change.
+Recommendation: first fix the restart-every-frame defect by comparing obstacle *content* (point count, radii) instead of handle identity when the
+obstacles depend on time, then implement option 1 behind a parameter `obstacleTime = start | sampled` so existing graphs do not change. Ask the user before
+choosing option 2.
+
+**D. Research pass: further nodes** (web, standard search, 2026-10-26; sources listed at the end). Existing coverage is generate, scatter, noise,
+warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles (gravity, drag, noise, attract, swirl, repel), boids, springs,
+reactionDiffusion, lsystem, curveSample, ribbon, trail, file nodes, string nodes. Candidates, ranked by value for the effort, with the missing piece:
+1. **Gas / velocity field (`gasField`)**, the "blow gas into a particle sim" request. A 2D grid solver after Stam's *Stable Fluids* with
+   Fedkiw's vorticity confinement: semi-Lagrangian advection, implicit diffusion, pressure projection (Jacobi or red-black Gauss-Seidel, 20-40
+   iterations), sources from input points (`density`, `temperature`, velocity from `vx/vy`), buoyancy from temperature, vorticity confinement strength
+   to restore the curl that semi-Lagrangian damping removes, dissipation, optional obstacle points. Stateful and cached like `reactionDiffusion`
+   (a pure function of time via stepping). Outputs: a point grid with `density`, `temperature`, `vx`, `vy` (so `colorRamp`/`render` show smoke),
+   and a second mode that outputs nothing but the field for the next node. Houdini's equivalent is the gas microsolver family (Gas External Forces,
+   Gas Advect, Gas Turbulence, Gas Vortex Confinement, Gas Disturb).
+2. **Field force on particles (`fieldForce`, or an optional second input on `particles` and `boids`)**: samples the gas grid's velocity at each
+   particle (bilinear) and applies it as a force or drag-to-velocity (`influence`, `drag`), which is how Houdini couples POP and gas (Field Force,
+   Advect by Volume). The reverse coupling (particles inject velocity into the grid) as an option `emit`. This is the piece that makes "blow gas into
+   a particle sim" work; it needs the same time-sampling answer as item C for a grid that is itself time-stepped, so do C's sampler or let `particles`
+   and `gasField` share one stepped state (a single `gasParticles` node is the simpler first version).
+3. **More forces on `particles`**: vortex (point vortex with falloff), directional wind with turbulence, drag relative to a fan/jet region (Houdini's Fan,
+   Magnet and Drag forces), a curve-following force (flow along a polyline using `curveSample`), a "collide with polylines" boundary. Small parameters
+   on the existing node, each testable by analytic motion.
+4. **Position-based fluid (`fluid`)**: particles with a density constraint (Macklin and Müller-Fischer, *Position Based Fluids*): neighbour grid (the
+   `PointGrid` of boids), iterative lambda solve, artificial pressure for surface tension, XSPH viscosity, vorticity confinement as a velocity
+   post-process. Reuses the stepping and boundary code of `particles`. About 2 days; gives splashes and a "liquid" look nothing else here has.
+5. **Differential growth (`grow`)**: polylines whose nodes repel neighbours, attract their chain neighbours and midpoint, and split long
+   segments (the Spaghetti Bones / Blender geometry-nodes setups use exactly these three forces); stepped like `springs`. Strong generative-art
+   payoff, reuses `PointGrid` and the polyline subdivision of `resample`.
+6. **Space colonization (`colonize`)**: grows branching curves towards attractor points (leaf venation, trees); output polylines with a `depth`
+   attribute for `ribbon` widths. Complements `lsystem`.
+7. **Flow-field lines (`streamlines`)**: integrates polylines through a vector field (`noise` curl, or the gas field), Tyler Hobbs's flow-field
+   technique with spacing control so lines do not crowd. `trail` is a straight streak; this is the curved, field-driven version.
+8. Smaller: `smooth` for curves (Chaikin or Laplacian), `offset` / `stroke` (open since the topology list), `sort`, `join`, `bevel`, `polar`
+   (cartesian to polar warp), `twist`, `lattice` deform, `peak`, a `switch` node, `foreach` over primitives (copies and per-piece processing) and
+   `solver` as a feedback loop with a previous-frame input, which would let users build the stateful nodes above from wrangles.
+Suggested order after A to C: 3 (cheap), then 1 with 2 together as one project (the gas and the coupling), then 5 and 7, then 4.
+
+Sources: SideFX Houdini documentation on [Gas External Forces](https://sidefx.com/docs/houdini/nodes/dop/gasexternalforces.html) and
+[directing particle fluids](https://sidefx.com/docs/houdini/fluid/directingparticlefluid.html); Macklin and Müller-Fischer,
+[Position Based Fluids](https://history.siggraph.org/?p=108378); the Cornell [CS 5643 PBF assignment](https://www.cs.cornell.edu/courses/cs5643/2014sp/a1PositionBasedFluids/index.html)
+and Northwestern [assignment 3](https://users.cs.northwestern.edu/~sco590/cs140/assignment3.html) (vorticity confinement after Fedkiw et al.);
+[differential growth in Geometry Nodes](https://www.blendernation.com/2023/07/25/differential-growth-in-geometry-nodes/) and the
+[JavaScript walkthrough](https://medium.com/@jason.webb/exploring-2d-differential-growth-with-javascript-1843fd51b0ce); Tyler Hobbs on
+[flow fields](https://www.tylerxhobbs.com/words/flow-fields). Stam's *Stable Fluids* (1999) was not in the results and is cited from memory.
+The search did not return a full list of POP force nodes or an SPH node-graph reference, so items 3 and 4 follow general knowledge of Houdini and the PBF paper.
+
 ## Threading and profiling
 - `ThreadPool::parallelFor(count, fn)`: the caller takes part and idle workers help, so it can be called from inside a
   pool task (nested parallelism) and with zero workers (runs inline). The first exception is rethrown once all indices
@@ -532,7 +612,9 @@ Remaining 3D work: indexed polygon/triangle primitives (vertex indirection), mat
    plugin ABI, the editor front end (newui, see "Editor UI"), Blend2D output.
 9. **Binary geometry files (planned)**: see "Binary geometry files and other follow-ups from the format research" above:
    measure, `.jngeo` format with checksum, `fileRead` / `fileCache` nodes and CLI, baked sequences, trace export, then a
-   dependency-counting scheduler and string attributes if the evidence asks for them.
+   dependency-counting scheduler and string attributes if the evidence asks for them. *Done except the scheduler (measured, 8%,
+   deferred).* The follow-on batch (mirror node, palette room, boids obstacles at other times, further nodes such as a gas solver and
+   particle coupling) is planned in "Next batch" above.
 
 ## Editor UI
 - Decision: the editor is built on [newui](https://github.com/jimcrafton/newui) (checkout `D:\code\newui`; Win32,
