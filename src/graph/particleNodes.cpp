@@ -353,6 +353,14 @@ void advance(State& st, const Settings& s, int64_t step, ThreadPool* pool, std::
     });
 }
 
+// The parameters that only act on the steps still to be taken (forces, gas injection, guide following), not on the state set up at the start.
+bool isLiveTunable(const std::string& name) {
+    static const char* const prefixes[] = {"vortex", "jet", "wind", "follow", "gasNozzle", "gasInfluence", "gasEmit", "gasPush", "collide"};
+    for (const char* prefix : prefixes)
+        if (name.rfind(prefix, 0) == 0) return true;
+    return false;
+}
+
 // A particle simulation: the input points are the particles at time `startTime`, and the result is where they are at the playhead after
 // fixed steps of force integration. The state of the latest cook is kept, so playing forward only advances the new steps; scrubbing back
 // or changing anything restarts from the input. The same time always gives the same result.
@@ -392,6 +400,7 @@ public:
         declareFloat("followPull", 0.0f);
         declareFloat("followRadius", 1.0f);
         declareFloat("collide", 0.0f);
+        declareFloat("live", 0.0f);
         declareFloat("gas", 0.0f);
         declareFloat("gasInfluence", 3.0f);
         declareFloat("gasEmit", 0.0f);
@@ -482,14 +491,19 @@ public:
         const int64_t target = elapsed <= 0.0 ? 0 : static_cast<int64_t>(std::floor(elapsed * stepsPerSecond + 1e-4));
         if (target > maxSimulationSteps) throw std::runtime_error("particles: " + std::to_string(target) + " steps to simulate; the limit is " + std::to_string(maxSimulationSteps));
 
+        // Live: the forces, the gas injection and the guides are read afresh at every step, so editing them keeps the run (and
+        // its gas); the history is then not replayable, so there are no checkpoints.
+        const bool live = getFloat("live") != 0.0f;
         std::vector<float> signature;
-        for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
+        for (const std::string& name : floatNames())
+            if (!live || !isLiveTunable(name)) signature.push_back(getFloat(name));
         Guides guides = gatherGuides(in);
         std::vector<float> snapshot = guideContent(guides);
         State& st = state_;
-        const bool changed = st.step < 0 || st.source != in[0] || st.guideSnapshot != snapshot || st.signature != signature || st.boundary != boundary;
-        if (changed) checkpoints_.clear();
-        const auto* saved = !changed ? checkpoints_.resumeFor(st.step, target) : nullptr;
+        const bool changed = st.step < 0 || st.source != in[0] || (!live && st.guideSnapshot != snapshot) || st.signature != signature || st.boundary != boundary;
+        if (changed || live) checkpoints_.clear();
+        if (live && !changed) st.guides = guides;
+        const auto* saved = !changed && !live ? checkpoints_.resumeFor(st.step, target) : nullptr;
         if (saved) {
             st = saved->state;
             st.step = saved->step;
@@ -501,12 +515,12 @@ public:
             st.signature = std::move(signature);
             st.boundary = boundary;
             initialise(st, *in[0], s);
-            checkpoints_.offer(0, st, stateBytes(st));
+            if (!live) checkpoints_.offer(0, st, stateBytes(st));
         }
         std::vector<float> pushX, pushY;
         for (int64_t step = st.step + 1; step <= target; ++step) {
             advance(st, s, step, ctx.pool, pushX, pushY);
-            checkpoints_.offer(step, st, stateBytes(st));
+            if (!live) checkpoints_.offer(step, st, stateBytes(st));
         }
         st.step = target;
 

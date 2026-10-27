@@ -446,6 +446,10 @@ prefix (`gasResolution`, `gasBuoyancy`, `gasVorticity`, `gasOpen`, `gasNozzleX`,
   the gas there towards their own velocity, so a dense fountain stirs the air around it. The default push of 5 applies as soon as `gas` is
   on (particles then stir the gas even without `gasEmit`); set `gasPush` to 0 for a gas that only acts on the particles.
 - The output gains `gas`, the smoke density at each particle, for colouring.
+- `live` (0; works with or without `gas`): 1 keeps the run, particles and gas together, when the forces (`vortex*`, `jet*`, `wind*`), the
+  guide-following and collision settings, the guide curves, the `gasNozzle*` parameters, `gasInfluence`, `gasEmit` or `gasPush` change; the
+  new values act on the steps taken from then on, like `live` on `gasField`. Changing the input points or any other parameter, or scrubbing
+  back, still restarts. No checkpoints are kept, so the result is not a pure function of time.
 It is a separate gas from any `gasField` node (nothing is shared between nodes); give both the same parameters to draw the grid under
 the particles.
 

@@ -3798,6 +3798,35 @@ TEST(liveGasKeepsItsHistoryWhenTheSourcesMove) {
     CHECK(replayed.first < 0.01f && replayed.second > 0.1f);
 }
 
+TEST(liveParticlesKeepTheirRunWhenTheNozzleChanges) {
+    auto run = [](float live) {
+        Network net(1);
+        NodeId gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 200.0f);
+        net.node(gen).setFloat("cx", -2.0f);
+        net.node(gen).setFloat("cy", 0.0f);
+        net.node(gen).setFloat("width", 1.0f);
+        net.node(gen).setFloat("height", 1.0f);
+        NodeId sim = net.addNode("particles");
+        net.connect(gen, sim);
+        Node& n = net.node(sim);
+        for (const auto& [name, value] : {std::pair<const char*, float>{"gravityY", 0.0f}, {"drag", 0.0f}, {"gas", 1.0f}, {"live", live}, {"gasNozzleX", -3.5f},
+                                          {"gasNozzleAngle", 0.0f}, {"gasNozzleSpeed", 6.0f}, {"gasNozzleRadius", 1.5f}, {"gasResolution", 32.0f},
+                                          {"gasInfluence", 4.0f}, {"boundsMinX", -4.0f}, {"boundsMaxX", 8.0f}, {"boundsMinY", -4.0f}, {"boundsMaxY", 4.0f}})
+            n.setFloat(name, value);
+        net.setTime(0.5);
+        net.cook(sim);
+        n.setFloat("gasNozzleSpeed", 0.0f);
+        net.setTime(0.6);
+        auto g = net.cook(sim);
+        double sum = 0.0;
+        for (size_t i = 0; i < g->pointCount(); ++i) sum += g->findAttrib(AttribClass::point, "vx")->at(i);
+        return static_cast<float>(sum / static_cast<double>(g->pointCount()));
+    };
+    CHECK(run(1.0f) > 0.3f);
+    CHECK(std::fabs(run(0.0f)) < 1e-3f);
+}
+
 TEST(particlesAreBlownByGasAndCanStirIt) {
     auto make = [](size_t threads, float gasOn) {
         auto net = std::make_unique<Network>(threads);
