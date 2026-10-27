@@ -1,0 +1,26 @@
+// A lumpy outline smoothed, then offset 9 times inwards: a contour-map look. Rings are coloured by distance from the centre.
+//   jitnodesCli examples/graphs/shapes/shapesOffset.json --png shapesOffset.png
+// See docs/shapes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "circle", name: "outline", floats: { count: 10, radius: 4, cx: 0, cy: 0 }, inputs: [] },
+    { id: 2, type: "warp", name: "lumps", floats: { amount: 1.5, scale: 0.25, octaves: 2, seed: 9 }, strings: { mode: "noise" }, inputs: [1] },
+    { id: 3, type: "subdivide", name: "denser", floats: { iterations: 3 }, inputs: [2] },
+    { id: 4, type: "smooth", name: "soften", floats: { iterations: 8, strength: 0.5 }, inputs: [3] },
+    { id: 5, type: "offset", name: "rings", floats: { distance: 0.22, count: 9, keepOriginal: 1, miterLimit: 2 }, inputs: [4] },
+    { id: 6, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.03 }, inputs: [5] },
+    { id: 7, type: "wrangle", name: "distance", strings: { code: "r = sqrt(x * x + y * y);" }, inputs: [6] },
+    { id: 9, type: "colorRamp", name: "color", floats: { min: 0, max: 5.5 }, strings: { attribute: "r", ramp: "0 #5a2a8a, 0.5 #ff7a5a, 1 #ffe9a8" }, inputs: [7] },
+    { id: 8, type: "wrangle", name: "look", strings: { code: "radius = 0.035; alpha = 0.6; softness = 0.5;" }, inputs: [9] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 700, viewCx: 0, viewCy: 0, viewWidth: 11 },
+      strings: { background: "#000000" },
+      inputs: [8]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+// A wobbly loop and a stroke, kaleidoscoped into a 7-fold mandala with mirror (every wedge is a rotated copy followed by its reflection).
+// Colour follows u along the curves; mirror carries every attribute into the copies.
+//   jitnodesCli examples/graphs/shapes/shapesMirror.json --png shapesMirror.png
+// See docs/shapes.md and the mirror section of docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "circle", name: "seed", floats: { count: 48, radius: 2.0, cx: 2.6, cy: 1.0 }, inputs: [] },
+    { id: 2, type: "warp", name: "wobble", floats: { amount: 0.9, scale: 1.1, octaves: 2, seed: 4 }, strings: { mode: "noise" }, inputs: [1] },
+    { id: 3, type: "smooth", name: "round", floats: { iterations: 3, strength: 0.5 }, inputs: [2] },
+    { id: 4, type: "mirror", name: "mandala", floats: { folds: 7, keepOriginal: 1 }, strings: { mode: "kaleidoscope" }, inputs: [3] },
+    { id: 5, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.025 }, inputs: [4] },
+    { id: 6, type: "colorRamp", name: "color", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #ff5a8a, 0.5 #ffd25a, 1 #5ad2ff" }, inputs: [5] },
+    { id: 7, type: "wrangle", name: "look", strings: { code: "radius = 0.04; alpha = 0.3; softness = 0.5;" }, inputs: [6] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 700, viewCx: 0, viewCy: 0, viewWidth: 11 },
+      strings: { background: "#000000" },
+      inputs: [7]
+    }
+  ]
+}

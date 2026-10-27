@@ -386,7 +386,8 @@ and keeps every other attribute, so colour and `rand` survive.
 always gives the same points, on any number of threads, and a graph reopened tomorrow gives the same frame. The node remembers the
 state of its latest cook. Playing forward only advances the new steps (cheap); changing a parameter or the input restarts from the
 input and simulates up to the playhead (cost proportional to the elapsed time). It also keeps copies of the state at regular steps
-(every 16 steps, then every 32, 64, ... as a run gets long: at most 64 copies and 64 MB per node, see `SimulationCache`), so
+(every 16 steps, then every 32, 64, ... as a run gets long: at most 64 copies and 64 MB per node; steps slower than 6 ms shorten the interval
+so that replaying one interval stays near `SimulationCache::replayBudgetMs` = 100 ms; see `SimulationCache`), so
 scrubbing back, or jumping forward past a stretch it has already simulated, resumes from the nearest copy and replays at most one
 interval instead of the whole run. Every simulation node does this: `particles`, `boids`, `springs`, `reactionDiffusion`, `gasField`,
 `fluid`, `grow` and `solver`. The step count is limited to 1,000,000 (about 2.3 hours at the default rate); a simulation that long is
@@ -828,6 +829,7 @@ before (lines, dots, plain sprites). Choosing a *Color by* attribute in the edit
 | Parameter | Default | Meaning |
 |---|---|---|
 | `additive` | 1 | 1: light adds up (stars, glows, nebulae). 0: sprites are composited in index order over the background, like the plain viewport sprites |
+| `fill` | 0 | 1: every closed primitive (at least 3 points; cubic curves are flattened) is also drawn as a filled, anti-aliased polygon (8 sub-rows per pixel row, exact horizontal coverage, nonzero winding), in the colour `Cd` and `alpha` of its first point. Shapes are drawn in primitive order before the sprites, with the same additive or over compositing. Open primitives are not drawn. See `brushLeaves.json` in [brushStrokes.md](brushStrokes.md) |
 | `exposure` | 1 | brightness of additive images: the summed light `v` becomes `1 - exp(-exposure * v)`, so it saturates smoothly instead of clipping |
 | `gamma` | 2.2 | additive images are brightened by `1 / gamma`; 1 keeps the exposure curve as is |
 | `bloom`, `bloomRadius` | 0, 12 | additive only: adds a blurred copy of the picture (strength, and a radius in output pixels) for a soft glow |

@@ -1,0 +1,41 @@
+// Light painting: 7000 particles scattered along a curve are told to follow it (particles `follow` and `followPull` read the guide curve from the
+// second input), while their own gas (gas = 1) stirs them: every particle pushes the air and the air pushes it back, so the stroke feathers into
+// eddies instead of staying a line. trail turns each velocity into a short streak and curveSample dots it, coloured along the stroke.
+//   jitnodesCli examples/graphs/brush/brushLightPaint.json --png brushLightPaint.png --time 1.6
+// See docs/brushStrokes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "guide", floats: { count: 200, length: 14 }, inputs: [] },
+    { id: 2, type: "wrangle", name: "bend", strings: { code: "t = x / 14; x = x - 7; y = 2.2 * sin(t * 5.2) + 0.5 * sin(t * 13 + 1);" }, inputs: [1] },
+    { id: 3, type: "scatter", name: "seeds", floats: { count: 0, lineCount: 7000, spread: 0.7, seed: 3 }, inputs: [2] },
+    { id: 9, type: "wrangle", name: "keepU", strings: { code: "pu = u;" }, inputs: [3] },
+    {
+      id: 4, type: "particles", name: "light",
+      floats: {
+        gravityY: 0, drag: 1.5, follow: 3.5, followPull: 0.4, followRadius: 2.2,
+        gas: 1, gasResolution: 96, gasInfluence: 3, gasPush: 10, gasVorticity: 14, gasDissipation: 0.4,
+        boundsMinX: -9, boundsMaxX: 9, boundsMinY: -6, boundsMaxY: 6, bounce: 0.3
+      },
+      strings: { boundary: "bounce" },
+      inputs: [9, 2]
+    },
+    { id: 5, type: "trail", name: "streaks", floats: { length: 0.3, segments: 8, fade: 1 }, inputs: [4] },
+    { id: 6, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.04 }, inputs: [5] },
+    {
+      id: 7, type: "colorRamp", name: "color", floats: { min: 0, max: 1 },
+      strings: { attribute: "pu", ramp: "0 #4fd0ff, 0.5 #ff5ea8, 1 #ffd27a" },
+      inputs: [6]
+    },
+    { id: 8, type: "wrangle", name: "look", strings: { code: "radius = 0.035; alpha = 0.18; softness = 1;" }, inputs: [7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 900, height: 600, viewCx: 0, viewCy: 0, viewWidth: 18 },
+      strings: { background: "#000000" },
+      inputs: [8]
+    }
+  ]
+}

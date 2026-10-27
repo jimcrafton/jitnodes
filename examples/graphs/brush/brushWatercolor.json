@@ -1,0 +1,57 @@
+// Watercolour: two wet washes laid along curves. The same ribbon (rungs) and curveSample fan-out as brushOil, but the dots are large, soft and
+// nearly transparent, so hundreds of them pool into a wash. Pigment gathers at the edge of the stroke (the cubed distance from the middle),
+// the width wobbles like a wet edge, a hash adds granulation, and the colour drifts from one pigment to another along the stroke.
+// The second wash crosses the first and the two mix where they overlap.
+//   jitnodesCli examples/graphs/brush/brushWatercolor.json --png brushWatercolor.png
+// See docs/brushStrokes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "guideA", floats: { count: 300, length: 14 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "bendA",
+      strings: {
+        code: "t = x / 14; x = x - 7; y = 1.6 * sin(t * 5.0) + 0.3 * sin(t * 12 + 1) + 0.5; s = sin(t * 3.14159); w = (0.3 + 0.7 * sqrt(s)) * (1 + 0.1 * sin(t * 41) + 0.07 * sin(t * 83 + 2));"
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "ribbon", name: "brushA", floats: { width: 2.4, widthEnd: 2.4 }, strings: { widthAttrib: "w", output: "rungs" }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "alongA", strings: { code: "along = u;" }, inputs: [3] },
+    { id: 5, type: "curveSample", name: "washA", floats: { count: 0, spacing: 0.07 }, inputs: [4] },
+    {
+      id: 6, type: "wrangle", name: "pigmentA",
+      strings: {
+        code: "e = abs(u - 0.5) * 2; e = e * e * e * e; g = sin(x * 57.3 + y * 131.7) * 43758.5453; g = g - floor(g); m = clamp(along * 1.2 - 0.1, 0, 1); Cd.x = lerp(0.12, 0.45, m); Cd.y = lerp(0.35, 0.2, m); Cd.z = lerp(0.75, 0.7, m); radius = 0.2; softness = 1; alpha = (0.045 + 0.1 * e) * (0.6 + 0.8 * g) * clamp((1 - along) * 6, 0, 1);"
+      },
+      inputs: [5]
+    },
+    { id: 11, type: "line", name: "guideB", floats: { count: 260, length: 11 }, inputs: [] },
+    {
+      id: 12, type: "wrangle", name: "bendB",
+      strings: {
+        code: "t = x / 11; x = x - 4; y = 3.2 - 5.4 * t + 1.1 * sin(t * 6.5); s = sin(t * 3.14159); w = (0.25 + 0.75 * sqrt(s)) * (1 + 0.12 * sin(t * 37 + 1) + 0.08 * sin(t * 91));"
+      },
+      inputs: [11]
+    },
+    { id: 13, type: "ribbon", name: "brushB", floats: { width: 1.5, widthEnd: 1.5 }, strings: { widthAttrib: "w", output: "rungs" }, inputs: [12] },
+    { id: 14, type: "wrangle", name: "alongB", strings: { code: "along = u;" }, inputs: [13] },
+    { id: 15, type: "curveSample", name: "washB", floats: { count: 0, spacing: 0.07 }, inputs: [14] },
+    {
+      id: 16, type: "wrangle", name: "pigmentB",
+      strings: {
+        code: "e = abs(u - 0.5) * 2; e = e * e * e * e; g = sin(x * 91.3 + y * 47.7) * 43758.5453; g = g - floor(g); Cd.x = lerp(0.9, 0.95, along); Cd.y = lerp(0.3, 0.6, along); Cd.z = lerp(0.35, 0.2, along); radius = 0.17; softness = 1; alpha = (0.05 + 0.11 * e) * (0.6 + 0.8 * g) * clamp((1 - along) * 5, 0, 1);"
+      },
+      inputs: [15]
+    },
+    { id: 17, type: "merge", name: "washes", inputs: [6, 16] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, exposure: 1.0, gamma: 1.0, width: 900, height: 600, viewCx: 0, viewCy: 0, viewWidth: 17 },
+      strings: { background: "#f6f1e6" },
+      inputs: [17]
+    }
+  ]
+}

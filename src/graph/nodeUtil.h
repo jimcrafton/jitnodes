@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -50,10 +51,14 @@ public:
 
     static constexpr size_t maxEntries = 64;
 
+    size_t size() const { return saved_.size(); }
+
     void clear() {
         saved_.clear();
         bytes_ = 0;
-        interval_ = std::max<int64_t>(SimulationCache::checkpointInterval, 1);
+        scale_ = 1;
+        stepMs_ = 0.0;
+        lastStep_ = -1;
     }
 
     // The copy to continue from when the simulation sits at `current` and `target` is wanted: the latest one at or before target, if
@@ -69,16 +74,18 @@ public:
 
     void offer(int64_t step, const S& state, size_t bytes) {
         const size_t budget = SimulationCache::budgetBytes;
-        if (interval_ == 0) interval_ = std::max<int64_t>(SimulationCache::checkpointInterval, 1);
-        if (step % interval_ != 0 || bytes > budget / 2) return;
+        noteStep(step);
+        const int64_t interval = interval_();
+        if (step % interval != 0 || bytes > budget / 2) return;
         auto at = std::lower_bound(saved_.begin(), saved_.end(), step, [](const Entry& e, int64_t s) { return e.step < s; });
         if (at != saved_.end() && at->step == step) return;
         bytes_ += bytes;
         saved_.insert(at, Entry{step, bytes, state});
         while (bytes_ > budget || saved_.size() > maxEntries) {
-            interval_ *= 2;
+            scale_ *= 2;
+            const int64_t wider = interval_();
             auto kept = std::remove_if(saved_.begin(), saved_.end(), [&](const Entry& e) {
-                const bool drop = e.step % interval_ != 0;
+                const bool drop = e.step % wider != 0;
                 if (drop) bytes_ -= e.bytes;
                 return drop;
             });
@@ -87,9 +94,35 @@ public:
     }
 
 private:
+    // Steps that cost more than a sixteenth of the replay budget get a shorter interval (a power of two), so that replaying one interval
+    // after a jump back stays near the budget. Cheap steps keep the configured interval; the copies' memory only ever widens it (scale_).
+    void noteStep(int64_t step) {
+        const auto now = std::chrono::steady_clock::now();
+        if (lastStep_ >= 0 && step == lastStep_ + 1) {
+            const double ms = std::chrono::duration<double, std::milli>(now - lastTime_).count();
+            stepMs_ = stepMs_ == 0.0 ? ms : stepMs_ * 0.8 + ms * 0.2;
+        }
+        lastStep_ = step;
+        lastTime_ = now;
+    }
+
+    int64_t interval_() const {
+        int64_t base = std::max<int64_t>(SimulationCache::checkpointInterval, 1);
+        const double budgetMs = SimulationCache::replayBudgetMs;
+        if (budgetMs > 0.0 && stepMs_ > 0.0) {
+            int64_t fit = 1;
+            while (fit * 2 <= base && static_cast<double>(fit * 2) * stepMs_ <= budgetMs) fit *= 2;
+            base = fit;
+        }
+        return base * scale_;
+    }
+
     std::vector<Entry> saved_;
     size_t bytes_ = 0;
-    int64_t interval_ = 0;
+    int64_t scale_ = 1;
+    double stepMs_ = 0.0;
+    int64_t lastStep_ = -1;
+    std::chrono::steady_clock::time_point lastTime_;
 };
 
 // Runs fn(begin, end) over [0, count) in chunks, on the pool when one is given. chunk = 0 aims for about four chunks per thread, between

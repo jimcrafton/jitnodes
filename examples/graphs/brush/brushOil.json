@@ -1,0 +1,37 @@
+// Oil paint: a loaded flat brush dragged along a curve. ribbon (rungs) lays a line across the stroke at every point of the guide, curveSample
+// turns each rung into a row of dots, and u across the rung picks the bristle: every bristle gets its own colour from a hash, the pigment
+// drifts a little along the stroke, the edges pile up lighter, and the bristles run dry one by one towards the end of the stroke.
+//   jitnodesCli examples/graphs/brush/brushOil.json --png brushOil.png
+// See docs/brushStrokes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "guide", floats: { count: 300, length: 14 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "bend",
+      strings: {
+        code: "t = x / 14; x = x - 7; y = 1.7 * sin(t * 5.2) + 0.35 * sin(t * 13 + 1) - 0.4; s = sin(t * 3.14159); w = 0.25 + 0.75 * sqrt(s);"
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "ribbon", name: "brush", floats: { width: 1.7, widthEnd: 1.7 }, strings: { widthAttrib: "w", output: "rungs" }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "keepAlong", strings: { code: "along = u;" }, inputs: [3] },
+    { id: 5, type: "curveSample", name: "bristles", floats: { count: 0, spacing: 0.04 }, inputs: [4] },
+    {
+      id: 6, type: "wrangle", name: "paint",
+      strings: {
+        code: "k = floor(u * 34); h = sin(k * 12.9898 + 78.233) * 43758.5453; h = h - floor(h); g = sin(k * 39.346 + 11.135) * 24634.6345; g = g - floor(g); t = clamp(h * 0.8 + 0.2 * sin(along * 11 + g * 6.28), 0, 1); e = abs(u - 0.5) * 2; e = e * e * e; t = clamp(t + e * 0.35, 0, 1); Cd.x = lerp(0.42, 0.98, t); Cd.y = lerp(0.07, 0.62, t * t); Cd.z = lerp(0.1, 0.3, t * t); cr = h > 0.88 ? 0.75 : 0; Cd.x = lerp(Cd.x, 0.98, cr); Cd.y = lerp(Cd.y, 0.88, cr); Cd.z = lerp(Cd.z, 0.62, cr); radius = 0.05; softness = 0.3; alpha = along < 0.68 + 0.32 * g ? 1 : 0;"
+      },
+      inputs: [5]
+    },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, exposure: 1.0, gamma: 1.0, width: 900, height: 600, viewCx: 0, viewCy: -0.4, viewWidth: 17 },
+      strings: { background: "#efe6d2" },
+      inputs: [6]
+    }
+  ]
+}

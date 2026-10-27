@@ -5,6 +5,24 @@ and `peak` in normal mode) flatten cubic curves first, with the `tolerance` para
 them alone (the point warps move control points like any other point). Sources: `src/graph/shapeNodes.cpp`, and `switch` in
 `src/graph/builtinNodes.cpp`.
 
+## Examples
+
+Rendered with `jitnodesCli <graph> --png out.png`; the graphs are in `examples/graphs/shapes/`.
+
+![a wobbly loop kaleidoscoped into a seven-fold mandala](images/shapesMirror.png)
+
+`shapesMirror.json`: `circle` -> `warp` -> `smooth` -> `mirror` (`kaleidoscope`, 7 folds, so 14 wedges), coloured by `u`.
+
+![nine contour rings inside a lumpy outline](images/shapesOffset.png)
+
+`shapesOffset.json`: a warped, subdivided and smoothed outline, then `offset` 9 times with `keepOriginal`. The rings stop before the
+tightest part of the outline, because inside corners are not trimmed and a larger offset would cross itself.
+
+![a pentagon's offset rings, with rounded corners, wound up](images/shapesTwist.png)
+
+`shapesTwist.json`: `offset` outwards 14 times, `bevel` with 8 segments to round every ring's corners, `resample` and then `twist` with a
+radius of 7, so the swirl fades towards the outer rings.
+
 ## smooth (one input)
 
 Laplacian smoothing: each interior point moves towards the midpoint of its two neighbours by `strength`, `iterations` times. The ends of an

@@ -22,6 +22,8 @@ struct RenderSettings {
     // World window mapped onto the image; the y axis points up.
     float minX = 0.0f, minY = 0.0f, maxX = 1.0f, maxY = 1.0f;
     bool additive = true;
+    // Closed primitives are filled as anti-aliased polygons (colour and alpha of their first point) before the sprites are drawn.
+    bool fillShapes = false;
     float exposure = 1.0f;
     float gamma = 2.2f;
     float bloom = 0.0f;

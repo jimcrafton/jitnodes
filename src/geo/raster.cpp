@@ -1,5 +1,7 @@
 #include "jitnodes/geo/raster.h"
 
+#include "jitnodes/geo/topology.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -82,6 +84,65 @@ void splatBand(const std::vector<Sprite>& sprites, std::vector<float>& buf, int 
                     f = profile(std::sqrt(t2), s.softness);
                 }
                 blend(&buf[(static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 4], s.r, s.g, s.b, s.a * f, additive);
+            }
+        }
+    }
+}
+
+struct Shape {
+    size_t first, count;  // range in the shared vertex arrays
+    float r, g, b, a;
+    float minY, maxY;  // pixels
+    float minX, maxX;
+};
+
+constexpr int fillSubRows = 8;
+
+// Nonzero-winding scanline fill: eight sub-rows per pixel row, with exact horizontal coverage of each span.
+void fillShapeBand(const std::vector<Shape>& shapes, const std::vector<float>& vx, const std::vector<float>& vy, std::vector<float>& buf, int w, int y0,
+                   int y1, bool additive) {
+    std::vector<float> cover(static_cast<size_t>(w));
+    std::vector<std::pair<float, int>> hits;
+    for (const Shape& s : shapes) {
+        if (s.maxY < static_cast<float>(y0) || s.minY >= static_cast<float>(y1)) continue;
+        const int ya = std::max(y0, static_cast<int>(std::floor(s.minY)));
+        const int yb = std::min(y1 - 1, static_cast<int>(std::floor(s.maxY)));
+        const int xa = std::max(0, static_cast<int>(std::floor(s.minX)));
+        const int xb = std::min(w - 1, static_cast<int>(std::floor(s.maxX)));
+        if (xa > xb) continue;
+        const float* px = vx.data() + s.first;
+        const float* py = vy.data() + s.first;
+        for (int y = ya; y <= yb; ++y) {
+            std::fill(cover.begin() + xa, cover.begin() + xb + 1, 0.0f);
+            for (int sub = 0; sub < fillSubRows; ++sub) {
+                const float sy = static_cast<float>(y) + (static_cast<float>(sub) + 0.5f) / fillSubRows;
+                hits.clear();
+                for (size_t i = 0; i < s.count; ++i) {
+                    const size_t j = i + 1 == s.count ? 0 : i + 1;
+                    const float ay = py[i], by = py[j];
+                    if ((ay <= sy) == (by <= sy)) continue;
+                    hits.emplace_back(px[i] + (sy - ay) * (px[j] - px[i]) / (by - ay), by > ay ? 1 : -1);
+                }
+                std::sort(hits.begin(), hits.end());
+                int winding = 0;
+                for (size_t k = 0; k + 1 < hits.size(); ++k) {
+                    winding += hits[k].second;
+                    if (winding == 0) continue;
+                    const float from = std::max(hits[k].first, static_cast<float>(xa)), to = std::min(hits[k + 1].first, static_cast<float>(xb + 1));
+                    if (!(to > from)) continue;
+                    const int ia = static_cast<int>(from), ib = std::min(static_cast<int>(to), xb);
+                    if (ia == ib) {
+                        cover[static_cast<size_t>(ia)] += (to - from) / fillSubRows;
+                        continue;
+                    }
+                    cover[static_cast<size_t>(ia)] += (static_cast<float>(ia + 1) - from) / fillSubRows;
+                    for (int x = ia + 1; x < ib; ++x) cover[static_cast<size_t>(x)] += 1.0f / fillSubRows;
+                    cover[static_cast<size_t>(ib)] += (to - static_cast<float>(ib)) / fillSubRows;
+                }
+            }
+            for (int x = xa; x <= xb; ++x) {
+                const float c = cover[static_cast<size_t>(x)];
+                if (c > 0.0f) blend(&buf[(static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 4], s.r, s.g, s.b, s.a * std::min(c, 1.0f), additive);
             }
         }
     }
@@ -257,6 +318,7 @@ RenderSettings renderSettingsFromDetails(const Geometry& geo, int width, int hei
     s.width = std::clamp(s.width, 1, 16384);
     s.height = std::clamp(s.height, 1, 16384);
     s.additive = geo.detail("render.additive", 1.0f) >= 0.5f;
+    s.fillShapes = geo.detail("render.fill", 0.0f) >= 0.5f;
     s.exposure = geo.detail("render.exposure", 1.0f);
     s.gamma = std::max(geo.detail("render.gamma", 2.2f), 0.1f);
     s.bloom = geo.detail("render.bloom", 0.0f);
@@ -338,11 +400,47 @@ Image renderSplats(const Geometry& geo, const RenderSettings& settings, ThreadPo
         }
     }
 
+    std::vector<Shape> shapes;
+    std::vector<float> shapeX, shapeY;
+    if (settings.fillShapes) {
+        const Geometry flat = hasCurves(geo) ? flattenCurves(geo) : Geometry();
+        const Geometry& g = hasCurves(geo) ? flat : geo;
+        const AttribArray* red = g.findAttrib(AttribClass::point, "Cd.x");
+        const AttribArray* green = g.findAttrib(AttribClass::point, "Cd.y");
+        const AttribArray* blue = g.findAttrib(AttribClass::point, "Cd.z");
+        const AttribArray* alpha = g.findAttrib(AttribClass::point, "alpha");
+        const float* xs = g.x();
+        const float* ys = g.y();
+        for (const Primitive& p : g.primitives()) {
+            if (!p.closed || p.count < 3) continue;
+            const size_t first = p.start;
+            const float a = std::clamp(channel(alpha, first, 1.0f), 0.0f, 1.0f);
+            if (!(a > 0.0f)) continue;
+            Shape s{shapeX.size(), p.count, channel(red, first, 1.0f), channel(green, first, 1.0f), channel(blue, first, 1.0f), a, 1e30f, -1e30f, 1e30f, -1e30f};
+            for (uint32_t i = 0; i < p.count; ++i) {
+                const float sx = (xs[first + i] - settings.minX) * scaleX, sy = (settings.maxY - ys[first + i]) * scaleY;
+                shapeX.push_back(sx);
+                shapeY.push_back(sy);
+                s.minX = std::min(s.minX, sx);
+                s.maxX = std::max(s.maxX, sx);
+                s.minY = std::min(s.minY, sy);
+                s.maxY = std::max(s.maxY, sy);
+            }
+            if (s.maxX < 0.0f || s.minX >= static_cast<float>(w) || s.maxY < 0.0f || s.minY >= static_cast<float>(h)) {
+                shapeX.resize(s.first);
+                shapeY.resize(s.first);
+                continue;
+            }
+            shapes.push_back(s);
+        }
+    }
+
     std::vector<float> buf(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0.0f);
     const int bands = pool ? std::clamp(static_cast<int>(pool->concurrency()) * 4, 1, h) : 1;
     auto band = [&](size_t b) {
         const int y0 = static_cast<int>(static_cast<size_t>(h) * b / static_cast<size_t>(bands));
         const int y1 = static_cast<int>(static_cast<size_t>(h) * (b + 1) / static_cast<size_t>(bands));
+        if (!shapes.empty()) fillShapeBand(shapes, shapeX, shapeY, buf, w, y0, y1, settings.additive);
         splatBand(sprites, buf, w, y0, y1, settings.additive);
     };
     if (pool && bands > 1) pool->parallelFor(static_cast<size_t>(bands), band);

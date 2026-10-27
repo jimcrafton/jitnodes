@@ -69,6 +69,10 @@ These look for a different kind of problem than size: odd inputs, concurrency, l
 | 15 | `pathological` | A merge of 10,000 inputs; a ladder of merges with exponentially many paths (cycle detection); one node feeding 10,000 consumers; chains of 30,000 nodes fused and unfused; a left-leaning chain of 5,000 merges; chained parameter references; subnets nested to the limit; save/load of those. Every case must succeed or fail with a message. |
 | 16 | `faults` | Parallel cooks where up to 8 branches throw `runtime_error`, `bad_alloc` or a non-`std` exception (or sleep); cancel while branches sleep; a `bad_alloc` injected into the *n*-th allocation of a cook, of JIT compilation and of undo/redo, for a sweep of *n* (the test replaces `operator new`). The next cook must always be correct. A watchdog aborts the process if anything hangs. |
 
+Nightly fuzzing: `powershell tools/nightlyFuzz.ps1 -Seconds 1800` runs the `fuzz` scenario for that long with the date (`yyyymmdd`) as the seed, writes
+`out/fuzzLogs/fuzz-<seed>.log`, prints the tail and exits non-zero on a failure (the log has the iteration to reproduce with `--fuzz-first`).
+Schedule it with Windows Task Scheduler or any CI runner; build `x64-release` first.
+
 Options for these: `--fuzz-iterations N`, `--fuzz-first N`, `--duration SECONDS`, `--soak-cycles N`, and `--write-graph FILE` (saves the chain graph with node positions and exits; the editor GUI load test uses it).
 
 ## Other tools

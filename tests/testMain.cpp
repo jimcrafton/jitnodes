@@ -8,9 +8,11 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "jitnodes/jitnodes.h"
+#include "../src/graph/nodeUtil.h"
 
 using namespace jitnodes;
 
@@ -6342,6 +6344,64 @@ TEST(simulationsResumeFromSavedStatesWhenScrubbedBack) {
         CHECK(sameGeometry(*edited, *other.cook(s)));
     }
     SimulationCache::checkpointInterval = savedInterval;
+}
+
+TEST(renderFillsClosedShapesWithCoverageAntiAliasing) {
+    Geometry g;
+    g.resizePoints(4);
+    const float xs[4] = {-2.05f, 2.0f, 2.0f, -2.05f}, ys[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
+    for (size_t i = 0; i < 4; ++i) {
+        g.x()[i] = xs[i];
+        g.y()[i] = ys[i];
+    }
+    g.addPrimitive({0, 4, true});
+    for (const char* name : {"Cd.x", "alpha"}) {
+        float* values = g.attrib(AttribClass::point, name).floats().data();
+        for (size_t i = 0; i < 4; ++i) values[i] = 1.0f;
+    }
+
+    RenderSettings s;
+    s.width = 100;
+    s.height = 50;
+    s.minX = -5.0f;
+    s.maxX = 5.0f;
+    s.minY = -2.5f;
+    s.maxY = 2.5f;
+    s.additive = false;
+    Image off = renderSplats(g, s, nullptr);
+    CHECK((off.pixels[25 * 100 + 50] & 0xFFFFFFu) == 0u);  // shapes are only drawn when fillShapes is set
+
+    s.fillShapes = true;
+    Image on = renderSplats(g, s, nullptr);
+    auto red = [&](int x, int y) { return static_cast<int>((on.pixels[static_cast<size_t>(y) * 100 + static_cast<size_t>(x)] >> 16) & 255u); };
+    CHECK(red(50, 25) >= 253);                        // inside
+    CHECK(red(10, 25) <= 2 && red(50, 5) <= 2);       // outside
+    CHECK(std::abs(red(29, 25) - 128) <= 12);         // the left edge at x = 29.5 px covers half of column 29
+    CHECK(red(30, 25) >= 253 && red(70, 25) <= 2);    // the right edge sits exactly on a pixel boundary
+    CHECK(red(50, 14) <= 2 && red(50, 15) >= 253);    // top edge on a row boundary
+    ThreadPool pool(4);
+    Image threaded = renderSplats(g, s, &pool);
+    CHECK(threaded.pixels == on.pixels);              // bands do not change the result
+}
+
+TEST(checkpointIntervalShrinksForSlowSteps) {
+    const int64_t savedInterval = SimulationCache::checkpointInterval;
+    const double savedBudget = SimulationCache::replayBudgetMs;
+    SimulationCache::checkpointInterval = 16;
+    auto run = [](double budgetMs, int64_t stepMs) {
+        SimulationCache::replayBudgetMs = budgetMs;
+        StateCheckpoints<int> cp;
+        for (int64_t s = 0; s < 33; ++s) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stepMs));
+            cp.offer(s, int(s), sizeof(int));
+        }
+        return cp.size();
+    };
+    CHECK(run(0.0, 3) == 3);  // fixed interval of 16: steps 0, 16, 32
+    CHECK(run(100.0, 0) == 3);  // cheap steps keep the configured interval
+    CHECK(run(24.0, 3) > 3);  // 3 ms steps: a replay of 16 would take 48 ms, so the interval drops to 4 or less
+    SimulationCache::checkpointInterval = savedInterval;
+    SimulationCache::replayBudgetMs = savedBudget;
 }
 
 TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {

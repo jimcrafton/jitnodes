@@ -253,6 +253,7 @@ class RenderNode : public Node {
 public:
     RenderNode() : Node("render", 1) {
         declareFloat("additive", 1.0f);
+        declareFloat("fill", 0.0f);
         declareFloat("exposure", 1.0f);
         declareFloat("gamma", 2.2f);
         declareFloat("bloom", 0.0f);
@@ -270,6 +271,7 @@ public:
         const Rgb bg = parseHex(getString("background"));
         geo->setDetail("render.enabled", 1.0f);
         geo->setDetail("render.additive", getFloat("additive") != 0.0f ? 1.0f : 0.0f);
+        geo->setDetail("render.fill", getFloat("fill") != 0.0f ? 1.0f : 0.0f);
         for (const char* name : {"exposure", "gamma", "bloom", "bloomRadius", "width", "height", "viewCx", "viewCy", "viewWidth"})
             geo->setDetail(std::string("render.") + name, getFloat(name));
         geo->setDetail("render.bgR", bg.r);
