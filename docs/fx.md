@@ -417,6 +417,7 @@ thread count (the solver is serial), and scrubbing back resumes from a saved cop
 | Parameter | Default | Meaning |
 |---|---|---|
 | `startTime`, `stepsPerSecond` | 0, 60 | as in `particles` (10 to 500 steps per second; at most 100,000 steps) |
+| `live` | 0 | 1: changed sources (or a changed `nozzle`) no longer restart the run from `startTime`; the gas keeps its state and the new sources act on the steps taken from now on. Cost per cook is only the steps the playhead advanced, so a pen stroke can feed the gas while it plays. The result is no longer a pure function of time: no checkpoints, scrubbing back (or changing any other parameter) restarts and replays with the current sources. Nothing is injected while the playhead is paused. Measured: `brushGasInk.json` (180 by 120 cells, 1 thread) takes about 2.3 ms per step, so one step per 60 Hz frame is affordable; rendering the cell dots costs extra |
 | `boundsMinX`, `boundsMaxX`, `boundsMinY`, `boundsMaxY` | -10, 10, -6, 6 | the box; cells are square, `resolution` of them across, so the grid is `resolution` by `round(height / cell)` |
 | `resolution` | 64 | cells across (8 to 512). Cost per step is cells times (`iterations` * 2 + about 40) operations |
 | `iterations` | 20 | Gauss-Seidel sweeps for the pressure and the viscosity. More means a more divergence free field |

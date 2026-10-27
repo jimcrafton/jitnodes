@@ -53,6 +53,7 @@ public:
     GasFieldNode() : Node("gasField", 1) {
         declareFloat("startTime", 0.0f);
         declareFloat("stepsPerSecond", 60.0f);
+        declareFloat("live", 0.0f);
         declareFloat("density", 1.0f);
         declareFloat("heat", 0.0f);
         declareFloat("radius", 0.5f);
@@ -82,9 +83,11 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         std::vector<float> content = sourceContent(sources);
-        const bool changed = step_ < 0 || signature != signature_ || content != content_;
-        if (changed) checkpoints_.clear();
-        const auto* saved = !changed ? checkpoints_.resumeFor(step_, target) : nullptr;
+        // Live: new sources only affect steps not yet taken, so history is not replayable and checkpoints would restore a different past.
+        const bool live = getFloat("live") >= 0.5f;
+        const bool changed = step_ < 0 || signature != signature_ || (!live && content != content_);
+        if (changed || live) checkpoints_.clear();
+        const auto* saved = !changed && !live ? checkpoints_.resumeFor(step_, target) : nullptr;
         if (saved) {
             solver_ = saved->state;
             step_ = saved->step;

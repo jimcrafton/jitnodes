@@ -26,6 +26,7 @@ void usage() {
         "  --isa NAME    JIT instruction set: sse2, avx2 (default) or avx512\n"
         "  --svg FILE    write the cooked geometry as SVG\n"
         "  --points      draw points in the SVG\n"
+        "  --svg-color   colour the SVG from Cd/alpha (fills closed shapes when the render node has fill on)\n"
         "  --png FILE    render the geometry's points as sprites to a PNG (settings from a render node, see docs/fx.md)\n"
         "  --size WxH    PNG size in pixels (default: the render node's width and height)\n"
         "  --save FILE   write the graph back out (normalises formatting)\n"
@@ -40,7 +41,7 @@ int main(int argc, char** argv) {
     std::string graphPath, nodeName, svgPath, pngPath, sizeText, savePath, isaName_, geoOutPath, geoInPath, tracePath;
     std::vector<std::string> assetPaths;
     double time = 0.0;
-    bool haveTime = false, profile = false, points = false, listTypes = false;
+    bool haveTime = false, profile = false, points = false, svgColor = false, listTypes = false;
     size_t threads = 0;
 
     for (int i = 1; i < argc; ++i) {
@@ -64,6 +65,7 @@ int main(int argc, char** argv) {
         else if (arg == "--size") sizeText = value();
         else if (arg == "--save") savePath = value();
         else if (arg == "--points") points = true;
+        else if (arg == "--svg-color") svgColor = true;
         else if (arg == "--profile") profile = true;
         else if (arg == "--trace") tracePath = value();
         else if (arg == "--types") listTypes = true;
@@ -131,6 +133,7 @@ int main(int argc, char** argv) {
         if (!svgPath.empty()) {
             SvgOptions options;
             options.drawPoints = points;
+            options.useColor = svgColor;
             std::ofstream out(svgPath, std::ios::binary);
             if (!out) throw std::runtime_error("cannot open '" + svgPath + "' for writing");
             out << geometryToSvg(*geo, options);

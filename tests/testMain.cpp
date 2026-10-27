@@ -3767,6 +3767,37 @@ TEST(gasFieldInjectsFromSourcePointsAndWorksWithoutAnyInput) {
     CHECK(std::hypot(bx - 2.0f, by - 2.0f) < 0.6f);
 }
 
+TEST(liveGasKeepsItsHistoryWhenTheSourcesMove) {
+    auto densityNear = [](const Geometry& g, float cx, float cy) {
+        const AttribArray* d = g.findAttrib(AttribClass::point, "density");
+        float best = 0.0f;
+        for (size_t i = 0; i < g.pointCount(); ++i)
+            if (std::hypot(g.x()[i] - cx, g.y()[i] - cy) < 0.8f) best = std::max(best, d->at(i));
+        return best;
+    };
+    auto run = [&](float live) {
+        Smoke s;
+        Node& gas = s.net.node(s.gas);
+        gas.setFloat("nozzleDensity", 0.0f);
+        gas.setFloat("nozzleHeat", 0.0f);
+        gas.setFloat("buoyancy", 0.0f);
+        gas.setFloat("density", 10.0f);
+        gas.setFloat("live", live);
+        NodeId src = s.net.addNode("generate");
+        for (const auto& [name, value] : {std::pair<const char*, float>{"count", 1.0f}, {"cx", -2.0f}, {"cy", 0.0f}, {"width", 0.0f}, {"height", 0.0f}})
+            s.net.node(src).setFloat(name, value);
+        s.net.connect(src, s.gas);
+        s.at(0.5);
+        s.net.node(src).setFloat("cx", 2.0f);
+        auto g = s.at(0.6);
+        return std::pair<float, float>{densityNear(*g, -2.0f, 0.0f), densityNear(*g, 2.0f, 0.0f)};
+    };
+    const auto live = run(1.0f);
+    CHECK(live.first > 0.1f && live.second > 0.1f);
+    const auto replayed = run(0.0f);
+    CHECK(replayed.first < 0.01f && replayed.second > 0.1f);
+}
+
 TEST(particlesAreBlownByGasAndCanStirIt) {
     auto make = [](size_t threads, float gasOn) {
         auto net = std::make_unique<Network>(threads);
@@ -5610,6 +5641,40 @@ TEST(svgExportWritesStringAttributesAsIdAndClass) {
 
     const std::string without = geometryToSvg(labelled({"x"}, {}), SvgOptions{});
     CHECK(without.find(" id=") == std::string::npos);
+}
+
+TEST(svgExportColorsPrimitivesFromCdAndFillsClosedShapes) {
+    Geometry g;
+    g.resizePoints(6);
+    for (int i = 0; i < 6; ++i) {
+        g.x()[i] = static_cast<float>(i);
+        g.y()[i] = static_cast<float>(i % 2);
+    }
+    g.addPrimitive({0, 3, true, PrimKind::polyline});
+    g.addPrimitive({3, 3, false, PrimKind::polyline});
+    const float red[] = {1, 1, 1, 0, 0, 0}, green[] = {0, 0, 0, 0.5f, 0.5f, 0.5f}, blue[] = {0, 0, 0, 1, 1, 1}, alpha[] = {0.5f, 0.5f, 0.5f, 1, 1, 1};
+    const char* names[] = {"Cd.x", "Cd.y", "Cd.z", "alpha"};
+    const float* values[] = {red, green, blue, alpha};
+    for (int c = 0; c < 4; ++c) {
+        float* dst = g.attrib(AttribClass::point, names[c]).floats().data();
+        for (int i = 0; i < 6; ++i) dst[i] = values[c][i];
+    }
+
+    const std::string plain = geometryToSvg(g);
+    CHECK(plain.find("#ff0000") == std::string::npos);
+
+    SvgOptions options;
+    options.useColor = true;
+    const std::string stroked = geometryToSvg(g, options);
+    CHECK(stroked.find("stroke=\"#ff0000\" stroke-opacity=\"0.5\"") != std::string::npos);
+    CHECK(stroked.find("stroke=\"#0080ff\" stroke-opacity=\"1\"") != std::string::npos);
+    CHECK(stroked.find("fill-opacity") == std::string::npos);
+
+    g.setDetail("render.fill", 1.0f);
+    const std::string filled = geometryToSvg(g, options);
+    CHECK(filled.find("<polygon points=\"") != std::string::npos);
+    CHECK(filled.find("fill=\"#ff0000\" fill-opacity=\"0.5\" stroke=\"none\"") != std::string::npos);
+    CHECK(filled.find("stroke=\"#0080ff\"") != std::string::npos);
 }
 
 TEST(graphJsonKeepsStringAttributesOfInlineGeometry) {

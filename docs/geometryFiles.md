@@ -46,6 +46,8 @@ produced it. If you change the upstream graph, delete the file or switch to `wri
 
 ## Tools
 - `jitnodesCli graph.json --geo-out sim.jngeo [--node NAME] [--time T]` writes the cooked geometry.
+- `--svg-color` (with `--svg`) strokes each primitive with its first point's `Cd`/`alpha` and fills closed shapes when `render.fill` is on
+  (`SvgOptions::useColor` in the library).
 - `jitnodesCli --geo-in sim.jngeo --png out.png` (or `--svg`) renders a file without a graph; the image is identical to
   rendering the cook it came from, because `render.*` details are saved too.
 - The editor's viewport menu (right click) has **Save geometry...**, which writes the displayed geometry.

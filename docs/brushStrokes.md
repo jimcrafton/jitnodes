@@ -57,7 +57,8 @@ The stroke is not drawn but poured. `curveSample` puts a source point every 0.3 
 so the paint is shoved along the curve and then folds into curls under vorticity confinement (`vorticity 14`, 180 cells across,
 `open 1`). The grid's `density` goes through a `colorRamp` (indigo, magenta, amber, cream) and is drawn one dot per cell. Render at
 `--time 2.5`; at 0 the stroke is a smooth band, later it feathers and drifts. The sources are read when the run starts, so the whole
-stroke appears at once; a brush that moves with the playhead would need injectors that move, which `gasField` does not have yet.
+stroke appears at once. For a stroke that is still being drawn, set `live 1` on the `gasField` (see docs/fx.md): sources that change no
+longer restart the run, so the gas keeps what it has and only the new steps see the new sources (the picture above is identical either way).
 
 ## Light painting (`brushLightPaint.json`)
 
