@@ -303,16 +303,24 @@ public:
 
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
-        if (st_.step < 0 || st_.source != in[0] || st_.signature != signature || target < st_.step) {
+        const bool changed = st_.step < 0 || st_.source != in[0] || st_.signature != signature;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st_.step, target) : nullptr;
+        if (saved) {
+            st_ = saved->state;
+            st_.step = saved->step;
+        } else if (changed || target < st_.step) {
             st_ = FluidState();
             st_.source = in[0];
             st_.signature = std::move(signature);
             initialiseFluid(st_, *in[0], s);
             st_.step = 0;
+            checkpoints_.offer(0, st_, vectorBytes(st_.x) * 5);
         }
         for (; st_.step < target;) {
             advanceFluid(st_, s, ctx.pool);
             ++st_.step;
+            checkpoints_.offer(st_.step, st_, vectorBytes(st_.x) * 5);
         }
 
         const size_t n = st_.x.size();
@@ -337,6 +345,7 @@ public:
 
 private:
     FluidState st_;
+    StateCheckpoints<FluidState> checkpoints_;
 };
 
 template <class T>

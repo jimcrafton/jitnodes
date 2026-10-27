@@ -182,6 +182,8 @@ private:
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
     bool dirty_ = true;
+    bool anchor_ = false;     // a fused chain stops below this node (see Network::noteEdited)
+    size_t lastPoints_ = 0;   // points in the latest cook of the node, or of the fused chain it was part of
     float posX_ = 0.0f;
     float posY_ = 0.0f;
     bool hasPosition_ = false;

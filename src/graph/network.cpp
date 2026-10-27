@@ -306,6 +306,25 @@ void Network::markDirty(NodeId id, bool structural) {
     notifyOwner(structural);
 }
 
+void Network::noteEdited(NodeId id) {
+    auto it = slots_.find(id);
+    if (it == slots_.end()) return;
+    const Node& edited = *it->second.node;
+    if (!edited.isPointwise() || edited.lastPoints_ < anchorMinPoints || it->second.inputs.empty()) return;
+    const NodeId up = it->second.inputs[0];
+    if (up == invalidNodeId) return;
+    Node& above = *slot(up).node;
+    // A node that is not point-wise already ends the chain above the edit.
+    if (!above.isPointwise() || above.anchor_) return;
+    above.anchor_ = true;
+    anchors_.push_back(up);
+    while (anchors_.size() > maxAnchors) {
+        auto old = slots_.find(anchors_.front());
+        if (old != slots_.end()) old->second.node->anchor_ = false;
+        anchors_.pop_front();
+    }
+}
+
 void Network::invalidateTimeCache() {
     timeAffectedValid_ = false;
     for (auto& entry : slots_)
@@ -403,6 +422,9 @@ bool Network::setTime(double t) {
     }
     std::unordered_set<NodeId> seen;
     for (NodeId id : timeAffected_) markDownstream(id, seen);
+    // Few animated nodes: keep what lies above them cached, as for an edit by hand. Many would only churn the boundaries.
+    if (timeAffected_.size() <= maxAnchors)
+        for (NodeId id : timeAffected_) noteEdited(id);
     if (!timeAffected_.empty()) notifyOwner(false);
     return !timeAffected_.empty();
 }
@@ -559,7 +581,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             const NodeId up = slot(task.chain.back()).inputs[0];
             if (up == invalidNodeId) break;
             const Node& upNode = *slot(up).node;
-            const bool fusable = upNode.isPointwise() && upNode.attribClass() == task.cls &&
+            const bool fusable = upNode.isPointwise() && !upNode.anchor_ && upNode.attribClass() == task.cls &&
                                  (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
             if (!fusable) break;
             task.chain.push_back(up);
@@ -677,6 +699,8 @@ void Network::runTask(const CookTask& task) {
 
     tail.cooked_ = result;
     tail.dirty_ = false;
+    tail.lastPoints_ = result->pointCount();
+    for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).lastPoints_ = tail.lastPoints_;
     ++tail.cookCount_;
 
     const double total = millis(start, Clock::now());

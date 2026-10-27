@@ -384,9 +384,13 @@ and keeps every other attribute, so colour and `rand` survive.
 
 **How the simulation relates to time.** The result is a pure function of the input, the parameters and the playhead: the same time
 always gives the same points, on any number of threads, and a graph reopened tomorrow gives the same frame. The node remembers the
-state of its latest cook. Playing forward only advances the new steps (cheap); scrubbing backwards, changing a parameter or changing
-the input restarts from the input and simulates up to the playhead (cost proportional to the elapsed time). The step count is
-limited to 1,000,000 (about 2.3 hours at the default rate); a simulation that long is better baked than cooked.
+state of its latest cook. Playing forward only advances the new steps (cheap); changing a parameter or the input restarts from the
+input and simulates up to the playhead (cost proportional to the elapsed time). It also keeps copies of the state at regular steps
+(every 16 steps, then every 32, 64, ... as a run gets long: at most 64 copies and 64 MB per node, see `SimulationCache`), so
+scrubbing back, or jumping forward past a stretch it has already simulated, resumes from the nearest copy and replays at most one
+interval instead of the whole run. Every simulation node does this: `particles`, `boids`, `springs`, `reactionDiffusion`, `gasField`,
+`fluid`, `grow` and `solver`. The step count is limited to 1,000,000 (about 2.3 hours at the default rate); a simulation that long is
+better baked than cooked.
 
 Cost per second of animation is points times `stepsPerSecond` times the work of the forces: the fountain and the orbit below
 (14,000 and 12,000 particles, 6 s, 720 steps) take about 45 ms each. `noiseForce` adds about eight noise samples per particle per
@@ -407,7 +411,7 @@ vorticity confinement, which puts back the swirls that advection smooths away. H
 (`weight`). The result is the grid at the playhead, one point per cell centre with `density`, `temperature`, `vx`, `vy` and `speed`,
 so `colorRamp` and `render` show it directly (set the point `radius` to the cell size, `bounds width / resolution`, for a continuous
 look) and any node can read its velocities. It is stepped from `startTime` and cached like `particles`: a pure function of time on any
-thread count (the solver is serial), scrubbing back restarts it.
+thread count (the solver is serial), and scrubbing back resumes from a saved copy like the other simulations.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -681,7 +685,8 @@ lines into points that keep `strain`, `speed` and the rest; `scatter` would drop
 
 Springs are solved in order on one thread, so the cost is springs times `iterations` times steps, about 10 ns per spring per pass:
 3,000 points joined to their neighbours within 0.5 (45,000 springs) at 8 iterations cost 0.48 s per animated second. Scrubbing
-backwards re-simulates from the start, so a body with tens of thousands of springs is better baked than scrubbed.
+backwards replays from the nearest saved copy, at most 16 steps at first; a body with tens of thousands of springs still costs that
+much per replayed step and is better baked when it is cooked over and over.
 
 ![a swinging chain and a jelly hitting the floor](images/fxSprings.png)
 

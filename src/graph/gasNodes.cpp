@@ -7,6 +7,7 @@
 
 #include "gasSolver.h"
 #include "jitnodes/graph/network.h"
+#include "nodeUtil.h"
 
 namespace jitnodes {
 
@@ -81,15 +82,23 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         std::vector<float> content = sourceContent(sources);
-        if (step_ < 0 || signature != signature_ || content != content_ || target < step_) {
+        const bool changed = step_ < 0 || signature != signature_ || content != content_;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(step_, target) : nullptr;
+        if (saved) {
+            solver_ = saved->state;
+            step_ = saved->step;
+        } else if (changed || target < step_) {
             solver_.reset(config);
             signature_ = std::move(signature);
             content_ = std::move(content);
             step_ = 0;
+            checkpoints_.offer(0, solver_, solver_.bytes());
         }
         for (; step_ < target; ++step_) {
             for (const GasSource& s : sources) solver_.addSource(s, dt);
             solver_.step(dt, ctx.pool);
+            checkpoints_.offer(step_ + 1, solver_, solver_.bytes());
         }
 
         auto geo = std::make_shared<Geometry>();
@@ -121,6 +130,7 @@ private:
     GasSolver solver_;
     std::vector<float> signature_, content_;
     int64_t step_ = -1;
+    StateCheckpoints<GasSolver> checkpoints_;
 };
 
 }  // namespace

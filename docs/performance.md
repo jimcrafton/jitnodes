@@ -155,6 +155,64 @@ can change that list (an expression, keys or a string parameter, a node added, r
 value edit (`setFloat` on a parameter with no expression) keeps it. The remaining 1.1 ms is marking the 10k nodes downstream of the
 animated ones dirty, which a cook needs anyway; one cook of the display node is 12 ms.
 
+The same graph through `EditorModel` (what the editor does per interaction), 10104 nodes, best of 3:
+
+| Operation | ms |
+|---|---|
+| `setParameter` (one undo step) | 3.3 |
+| move one node + commit | 3.7 |
+| add a node wired to the selection | 5.0 |
+| undo or redo one edit, with the cook | 4-5 |
+| rename a node | 14 |
+| `modified()` with the graph differing from the saved one in many nodes | 65 -> 3 |
+| select all + nudge all (every node's text is rewritten) | 72 |
+| undo / redo of that nudge | 42 / 105 |
+| copy the whole graph | 69 |
+
+`modified()` is asked on every refresh for the title bar; it used to seed the snapshot from the saved graph, so every node that
+differed was written out again each time. It now seeds from its own previous probe. What remains is whole-graph work that has to
+touch every node (rewriting 10k node texts, 6 us each), and the 10k-entry map a snapshot builds (3 ms).
+
+### Fused chains and edits near their end (2026-10-26)
+
+A fused chain runs as one kernel and gives up the cached results of its inner nodes, so editing the last node of a 40-node chain
+reran all 40. Now an edit by hand (or a time-driven change, when at most 16 nodes are animated) marks the *input* of the edited
+point-wise node as a cache boundary, provided the node carries at least `Network::anchorMinPoints` (1024) points: the chain
+above the edit stays cooked as its own task. At most 16 boundaries exist per network, oldest dropped first. One chain of 40
+`transform` nodes, no merge, best of 200:
+
+| Points | Edit | Before (ms) | After (ms) | Unfused (ms) |
+|---|---|---|---|---|
+| 10,000 | last node | 0.128 | 0.005 | 0.005 |
+| 10,000 | middle | 0.121 | 0.099 | 0.097 |
+| 100,000 | last node | 0.235 | 0.024 | - |
+| 100,000 | middle | 0.227 | 0.314 | - |
+
+Editing the last node now costs what the unfused graph costs, while a cold cook still fuses (421 nodes, 10k points each: 1.0 ms
+fused against 8.9 ms unfused). The price is that an edit in the middle of a chain that already has boundaries above and below
+it reruns two tasks and copies the geometry twice, which at 100k points is 30% slower than one fused run; repeated edits of one
+node (a slider drag) only ever touch the part after it.
+
+### Scrubbing simulations (2026-10-26)
+
+`particles`, `boids`, `springs`, `reactionDiffusion`, `gasField`, `fluid`, `grow` and `solver` kept only the state of their latest
+cook, so any step back restarted from the input. They now also keep copies of the state at every 16th step (`StateCheckpoints`
+in `src/graph/nodeUtil.h`; the interval doubles and every other copy is dropped when a node holds more than 64 copies or 64 MB).
+Time to cook after the playhead goes from t = 2 s (240 steps at the default rate) to the time shown, release build, 8 threads,
+without / with the copies. The last column is a jump forward from 0.1 s to 1.2 s, which uses the copies from the earlier run:
+
+| Simulation | Back to 1.9 s | 1.0 s | 0.5 s | 0.1 s to 1.2 s |
+|---|---|---|---|---|
+| `particles`, 100k points | 30 / 0.9 ms | 20 / 1.7 | 12 / 2.0 | 16 / 0.3 |
+| `reactionDiffusion`, 256 x 256 | 18 / 0.7 | 9.7 / 0.9 | 5.0 / 1.4 | 11 / 0.4 |
+| `boids`, 20k points | 1894 / 45 | 846 / 192 | 376 / 185 | 977 / 142 |
+| `gasField` | 52 / 0.9 | 26 / 5.2 | 13 / 6.4 | 29 / 3.5 |
+
+`boids` steps cost 8 ms each, so even the at most 16 replayed steps are visible there. Memory is bounded per node by the budget;
+a copy of `particles` with 100k points is 3.6 MB. The copies are exact, so a result resumed from one equals a run from the start
+(test `simulationsResumeFromSavedStatesWhenScrubbedBack` checks seven of the nodes bit for bit; the solver test checks the
+eighth).
+
 ### fx nodes, cold cook of the example graphs (2026-10-26)
 
 Median of 3 cold cooks (fresh `Network`, load, `setTime`, one cook of the display node), at the time each graph is

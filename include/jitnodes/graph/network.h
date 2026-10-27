@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -151,6 +152,13 @@ public:
     void disconnect(NodeId to, int inputIndex);
     NodeId inputOf(NodeId to, int inputIndex) const;
 
+    // Called by a node that was edited by hand. A fused chain gives up its cached intermediate results, so editing near its end would
+    // recook all of it; a point-wise node that carries enough points therefore makes its input a cache boundary, which keeps the
+    // part of the chain above the edit cooked. At most maxAnchors boundaries exist at a time.
+    void noteEdited(NodeId id);
+    static constexpr size_t maxAnchors = 16;
+    static inline size_t anchorMinPoints = 1024;  // process-wide tuning knob; SIZE_MAX turns the boundaries off
+
     // structural = false is for an edit that cannot change which nodes depend on time (a plain parameter value), so setTime keeps its cache.
     void markDirty(NodeId id, bool structural = true);
 
@@ -282,6 +290,7 @@ private:
     std::map<NodeId, Slot> slots_;
     // The nodes setTime recooks: those with an expression, keys or a playhead dependency, and subnets that contain one. Rebuilt after any edit
     // that can change which nodes those are (a structural markDirty, node added or removed).
+    std::deque<NodeId> anchors_;
     mutable std::vector<NodeId> timeAffected_;
     mutable bool timeAffectedValid_ = false;
     // Reverse indexes, kept in step with every change of wiring and of expression references: consumers_ holds one entry per wired

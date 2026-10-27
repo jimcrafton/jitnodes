@@ -219,14 +219,24 @@ public:
 
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
-        if (st_.step < 0 || st_.source != in[0] || st_.signature != signature || target < st_.step) {
+        const bool changed = st_.step < 0 || st_.source != in[0] || st_.signature != signature;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st_.step, target) : nullptr;
+        if (saved) {
+            st_ = saved->state;
+            st_.step = saved->step;
+        } else if (changed || target < st_.step) {
             st_ = GrowState();
             st_.source = in[0];
             st_.signature = std::move(signature);
             initialiseGrow(st_, *in[0]);
             st_.step = 0;
+            checkpoints_.offer(0, st_, growBytes(st_));
         }
-        for (; st_.step < target; ) advanceGrow(st_, s, ++st_.step, ctx.pool);
+        for (; st_.step < target;) {
+            advanceGrow(st_, s, ++st_.step, ctx.pool);
+            checkpoints_.offer(st_.step, st_, growBytes(st_));
+        }
 
         auto geo = std::make_shared<Geometry>();
         geo->resizePoints(pointTotal(st_.chains));
@@ -252,7 +262,10 @@ public:
     }
 
 private:
+    static size_t growBytes(const GrowState& st) { return pointTotal(st.chains) * (2 * sizeof(float) + sizeof(int32_t)); }
+
     GrowState st_;
+    StateCheckpoints<GrowState> checkpoints_;
 };
 
 // A vector field sampled from a regular grid of points (row by row, like the output of `gasField`) with `vx` and `vy` attributes.

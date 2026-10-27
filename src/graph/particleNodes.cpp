@@ -487,7 +487,13 @@ public:
         Guides guides = gatherGuides(in);
         std::vector<float> snapshot = guideContent(guides);
         State& st = state_;
-        if (st.step < 0 || st.source != in[0] || st.guideSnapshot != snapshot || st.signature != signature || st.boundary != boundary || target < st.step) {
+        const bool changed = st.step < 0 || st.source != in[0] || st.guideSnapshot != snapshot || st.signature != signature || st.boundary != boundary;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st.step, target) : nullptr;
+        if (saved) {
+            st = saved->state;
+            st.step = saved->step;
+        } else if (changed || target < st.step) {
             st = State();
             st.source = in[0];
             st.guides = std::move(guides);
@@ -495,9 +501,13 @@ public:
             st.signature = std::move(signature);
             st.boundary = boundary;
             initialise(st, *in[0], s);
+            checkpoints_.offer(0, st, stateBytes(st));
         }
         std::vector<float> pushX, pushY;
-        for (int64_t step = st.step + 1; step <= target; ++step) advance(st, s, step, ctx.pool, pushX, pushY);
+        for (int64_t step = st.step + 1; step <= target; ++step) {
+            advance(st, s, step, ctx.pool, pushX, pushY);
+            checkpoints_.offer(step, st, stateBytes(st));
+        }
         st.step = target;
 
         auto geo = std::make_shared<Geometry>(*in[0]);
@@ -529,7 +539,12 @@ public:
     }
 
 private:
+    static size_t stateBytes(const State& st) {
+        return vectorBytes(st.x) * 9 + vectorBytes(st.generation) + st.gas.bytes() + st.guides.size() * 4 * sizeof(float);
+    }
+
     State state_;
+    StateCheckpoints<State> checkpoints_;
 };
 
 int64_t targetStep(const char* who, double time, float startTime, float stepsPerSecond) {
@@ -953,8 +968,14 @@ public:
         }
         const std::vector<float> content = sampled ? std::vector<float>() : obstacleContent(in, s);
         const double startTime = getFloat("startTime");
-        if (st.step < 0 || st.source != in[0] || rebuilt || st.obstacleContent != content || st.signature != signature || st.boundary != boundary ||
-            st.obstacleTime != obstacleTime || target < st.step) {
+        const bool changed = st.step < 0 || st.source != in[0] || rebuilt || st.obstacleContent != content || st.signature != signature || st.boundary != boundary ||
+                             st.obstacleTime != obstacleTime;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st.step, target) : nullptr;
+        if (saved) {
+            st = saved->state;
+            st.step = saved->step;
+        } else if (changed || target < st.step) {
             st = BoidsState();
             st.source = in[0];
             st.obstacleContent = content;
@@ -967,10 +988,12 @@ public:
                 gatherObstacles(st, in, s);
                 placeObstacles(st, s, 0.0f);
             }
+            checkpoints_.offer(0, st, stateBytes(st));
         }
         for (int64_t step = st.step + 1; step <= target; ++step) {
             if (sampled) loadObstacleSample(st, sampleObstacles(sampler_, startTime + static_cast<double>(step) * s.dt), s);
             advanceBoids(st, s, step, ctx.pool);
+            checkpoints_.offer(step, st, stateBytes(st));
         }
         st.step = target;
 
@@ -998,8 +1021,11 @@ public:
     }
 
 private:
+    static size_t stateBytes(const BoidsState& st) { return vectorBytes(st.x) * 9 + vectorBytes(st.ox) * 3 + vectorBytes(st.baseX) * 4; }
+
     BoidsState state_;
     ObstacleSampler sampler_;
+    StateCheckpoints<BoidsState> checkpoints_;
 };
 
 struct Spring {
@@ -1177,13 +1203,23 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         SpringState& st = state_;
-        if (st.step < 0 || st.source != in[0] || st.signature != signature || target < st.step) {
+        const bool changed = st.step < 0 || st.source != in[0] || st.signature != signature;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st.step, target) : nullptr;
+        if (saved) {
+            st = saved->state;
+            st.step = saved->step;
+        } else if (changed || target < st.step) {
             st = SpringState();
             st.source = in[0];
             st.signature = std::move(signature);
             initialiseSprings(st, *in[0], s, restScale, neighborRadius, getFloat("pinEnds") != 0.0f);
+            checkpoints_.offer(0, st, stateBytes(st));
         }
-        for (int64_t step = st.step + 1; step <= target; ++step) advanceSprings(st, s, step, ctx.pool);
+        for (int64_t step = st.step + 1; step <= target; ++step) {
+            advanceSprings(st, s, step, ctx.pool);
+            checkpoints_.offer(step, st, stateBytes(st));
+        }
         st.step = target;
 
         auto geo = std::make_shared<Geometry>(*in[0]);
@@ -1259,7 +1295,10 @@ public:
     }
 
 private:
+    static size_t stateBytes(const SpringState& st) { return vectorBytes(st.x) * 4 + vectorBytes(st.pinned) + vectorBytes(st.springs); }
+
     SpringState state_;
+    StateCheckpoints<SpringState> checkpoints_;
 };
 
 template <class T>

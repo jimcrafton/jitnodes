@@ -150,12 +150,22 @@ public:
         std::vector<float> signature;
         for (const std::string& name : floatNames()) signature.push_back(getFloat(name));
         FieldState& st = state_;
-        if (st.step < 0 || st.signature != signature || target < st.step) {
+        const bool changed = st.step < 0 || st.signature != signature;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(st.step, target) : nullptr;
+        if (saved) {
+            st = saved->state;
+            st.step = saved->step;
+        } else if (changed || target < st.step) {
             st = FieldState();
             st.signature = std::move(signature);
             seedField(st, g, seedOf(getFloat("seed")), std::clamp(static_cast<int>(getFloat("seedCount")), 0, 100000), getFloat("seedSize"));
+            checkpoints_.offer(0, st, vectorBytes(st.u) * 2);
         }
-        for (int64_t step = st.step + 1; step <= target; ++step) stepField(st, g, ctx.pool);
+        for (int64_t step = st.step + 1; step <= target; ++step) {
+            stepField(st, g, ctx.pool);
+            checkpoints_.offer(step, st, vectorBytes(st.u) * 2);
+        }
         st.step = target;
 
         auto geo = std::make_shared<Geometry>();
@@ -180,6 +190,7 @@ public:
 
 private:
     FieldState state_;
+    StateCheckpoints<FieldState> checkpoints_;
 };
 
 template <class T>

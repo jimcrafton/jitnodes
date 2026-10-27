@@ -43,8 +43,9 @@ child graph runs `stepsPerSecond` times a second of playhead time, and its resul
 - `parent.step` is the step number (1 for the first step) and `parent.dt` the step length in seconds;
 - `time` and `frame` are the time of the step, not of the playhead, so keyframes and `time` expressions inside follow the simulation.
 
-Like `particles`, the node keeps the latest state: playing forward runs only the new steps, scrubbing back to before the kept step, or
-changing the input, a parameter or anything inside the child graph, restarts from the input. The same time always gives the same result.
+Like `particles`, the node keeps the latest state: playing forward runs only the new steps, and changing the input, a parameter or
+anything inside the child graph restarts from the input. It also keeps the geometry of every 16th step (then every 32nd, ... when the
+run gets long; at most 64 are kept), so scrubbing back resumes from the nearest one. The same time always gives the same result.
 At or before `startTime` the output is the input. The step count is limited to 100000. Cooking is serial and the child graph is
 compared by its saved text on every cook, so keep solver graphs modest; the heavy simulations are dedicated nodes (`particles`, `fluid`,
 `gasField`).

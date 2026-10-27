@@ -14,6 +14,7 @@
 #include "jitnodes/graph/network.h"
 #include "jitnodes/graph/serialize.h"
 #include "jitnodes/graph/subnet.h"
+#include "nodeUtil.h"
 
 namespace jitnodes {
 
@@ -214,11 +215,18 @@ public:
         std::string fingerprint = saveNetwork(network(), false, true);
         for (const std::string& name : floatNames())
             if (name != "step" && name != "dt") fingerprint += "\n" + name + "=" + std::to_string(getFloat(name));
-        if (step_ < 0 || source_ != inputs[0] || fingerprint != fingerprint_ || target < step_) {
+        const bool changed = step_ < 0 || source_ != inputs[0] || fingerprint != fingerprint_;
+        if (changed) checkpoints_.clear();
+        const auto* saved = !changed ? checkpoints_.resumeFor(step_, target) : nullptr;
+        if (saved) {
+            step_ = saved->step;
+            state_ = saved->state;
+        } else if (changed || target < step_) {
             step_ = 0;
             state_ = inputs[0];
             source_ = inputs[0];
             fingerprint_ = std::move(fingerprint);
+            checkpoints_.offer(0, state_, geometryBytes(state_));
         }
         struct Reset {
             SolverNode& node;
@@ -232,6 +240,7 @@ public:
                 publishFloat("step", static_cast<float>(s));
                 publishFloat("dt", static_cast<float>(dt));
                 state_ = cookInner(*ctx.network, static_cast<double>(startTime) + static_cast<double>(s) * dt, {state_, source_}, true);
+                checkpoints_.offer(s, state_, geometryBytes(state_));
             }
         } catch (...) {
             step_ = -1;
@@ -242,10 +251,14 @@ public:
     }
 
 private:
+    // Geometry is immutable once cooked, so a checkpoint is only a handle; the bytes are what it keeps alive.
+    static size_t geometryBytes(const GeometryHandle& g) { return g ? g->pointCount() * 4 * sizeof(float) : 0; }
+
     int64_t step_ = -1;
     GeometryHandle state_;
     GeometryHandle source_;
     std::string fingerprint_;
+    StateCheckpoints<GeometryHandle> checkpoints_;
 };
 
 template <class T>

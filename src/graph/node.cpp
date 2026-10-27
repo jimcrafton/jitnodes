@@ -168,7 +168,10 @@ void Node::touch() { revision_ = ++revisionCounter; }
 
 void Node::markChanged(bool structural) {
     touch();
-    if (network_) network_->markDirty(id_, structural);
+    if (network_) {
+        network_->markDirty(id_, structural);
+        network_->noteEdited(id_);
+    }
     else dirty_ = true;
 }
 

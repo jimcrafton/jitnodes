@@ -13,6 +13,7 @@
 #include "jitnodes/graph/history.h"
 #include "jitnodes/graph/network.h"
 #include "jitnodes/graph/serialize.h"
+#include "jitnodes/graph/simulationCache.h"
 #include "jitnodes/graph/subnet.h"
 #include "jitnodes/graph/node.h"
 #include "jitnodes/jit/expr.h"

@@ -31,6 +31,7 @@ class GasSolver {
 public:
     void reset(const GasConfig& config);
     bool ready() const { return nx_ > 0; }
+    size_t bytes() const { return (u_.capacity() + v_.capacity() + d_.capacity() + t_.capacity() + u0_.capacity() + v0_.capacity() + p_.capacity() + div_.capacity() + w_.capacity() + tmp_.capacity()) * sizeof(float); }
     int width() const { return nx_; }
     int height() const { return ny_; }
     float cellSize() const { return h_; }

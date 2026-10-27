@@ -1575,6 +1575,35 @@ TEST(subnetsSupportSeveralInputsAndReportErrors) {
     CHECK(message.find("only valid inside a subnet") != std::string::npos);
 }
 
+TEST(editingTheEndOfALongFusedChainKeepsTheRestCooked) {
+    Network net;
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 4000.0f);
+    std::vector<NodeId> xf;
+    NodeId prev = line;
+    for (int i = 0; i < 5; ++i) {
+        xf.push_back(net.addNode("transform"));
+        net.node(xf.back()).setFloat("tx", 1.0f);
+        net.connect(prev, xf.back());
+        prev = xf.back();
+    }
+    net.setDisplayNode(prev);
+    const float base = net.cookDisplay()->x()[0] - 5.0f;
+    CHECK(net.node(xf[4]).cookCount() == 1 && net.node(xf[3]).cookCount() == 0);  // the whole chain ran once, fused
+
+    net.node(xf[4]).setFloat("tx", 10.0f);  // the first edit splits the chain below the edited node
+    CHECK_NEAR(net.cookDisplay()->x()[0], base + 14.0f);
+    CHECK(net.node(xf[3]).cookCount() == 1);
+    for (int i = 0; i < 3; ++i) {
+        net.node(xf[4]).setFloat("tx", 20.0f + static_cast<float>(i));
+        CHECK_NEAR(net.cookDisplay()->x()[0], base + 24.0f + static_cast<float>(i));
+    }
+    CHECK(net.node(xf[3]).cookCount() == 1 && net.node(xf[4]).cookCount() == 5);
+
+    net.node(xf[1]).setFloat("tx", 3.0f);  // an edit further up still reaches everything below it
+    CHECK_NEAR(net.cookDisplay()->x()[0], base + 3.0f + 3.0f + 22.0f);
+}
+
 TEST(setTimeCacheFollowsTheOwnersParametersIntoSubnets) {
     SubnetRig rig;
     subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
@@ -6197,6 +6226,124 @@ TEST(foreachSurvivesSavingAndLoading) {
     CHECK_NEAR(out->y()[11], 11.0f);
 }
 
+// Scrubbing back resumes from a saved copy of the simulation state, and everything after that matches a run from the start.
+TEST(simulationsResumeFromSavedStatesWhenScrubbedBack) {
+    struct Case {
+        const char* name;
+        std::function<NodeId(Network&)> build;
+    };
+    const std::vector<Case> cases = {
+        {"particles",
+         [](Network& net) {
+             NodeId gen = net.addNode("generate"), sim = net.addNode("particles");
+             net.node(gen).setFloat("count", 300.0f);
+             net.connect(gen, sim);
+             net.node(sim).setFloat("noiseForce", 2.0f);
+             net.node(sim).setFloat("lifetime", 0.7f);
+             return sim;
+         }},
+        {"boids",
+         [](Network& net) {
+             NodeId gen = net.addNode("generate"), sim = net.addNode("boids");
+             net.node(gen).setFloat("count", 120.0f);
+             net.connect(gen, sim);
+             return sim;
+         }},
+        {"springs",
+         [](Network& net) {
+             NodeId line = net.addNode("line"), sim = net.addNode("springs");
+             net.node(line).setFloat("count", 20.0f);
+             net.connect(line, sim);
+             net.node(sim).setFloat("pinEnds", 1.0f);
+             return sim;
+         }},
+        {"reactionDiffusion",
+         [](Network& net) {
+             NodeId sim = net.addNode("reactionDiffusion");
+             net.node(sim).setFloat("width", 32.0f);
+             net.node(sim).setFloat("height", 24.0f);
+             net.node(sim).setFloat("stepsPerSecond", 200.0f);
+             return sim;
+         }},
+        {"gasField",
+         [](Network& net) {
+             NodeId sim = net.addNode("gasField");
+             net.node(sim).setFloat("nozzleSpeed", 6.0f);
+             net.node(sim).setFloat("nozzleDensity", 1.0f);
+             return sim;
+         }},
+        {"fluid",
+         [](Network& net) {
+             NodeId merge = net.addNode("merge"), sim = net.addNode("fluid");
+             for (int row = 0; row < 6; ++row) {
+                 NodeId line = net.addNode("line");
+                 net.node(line).setFloat("count", 16.0f);
+                 net.node(line).setFloat("length", 1.5f);
+                 net.node(line).setFloat("y", 0.1f * static_cast<float>(row));
+                 net.connect(line, merge, row);
+             }
+             net.connect(merge, sim);
+             net.node(sim).setFloat("boundsMinX", 0.0f);
+             net.node(sim).setFloat("boundsMaxX", 2.0f);
+             net.node(sim).setFloat("boundsMinY", -1.0f);
+             net.node(sim).setFloat("boundsMaxY", 3.0f);
+             return sim;
+         }},
+        {"grow",
+         [](Network& net) {
+             NodeId circle = net.addNode("circle"), sim = net.addNode("grow");
+             net.node(circle).setFloat("count", 8.0f);
+             net.node(circle).setFloat("radius", 0.3f);
+             net.connect(circle, sim);
+             net.node(sim).setFloat("repelRadius", 2.0f);
+             return sim;
+         }},
+    };
+
+    const int64_t savedInterval = SimulationCache::checkpointInterval;
+    SimulationCache::checkpointInterval = 4;
+    for (const Case& c : cases) {
+        Network net(2);
+        const NodeId sim = c.build(net);
+        auto fresh = [&](double t) {
+            Network other(2);
+            const NodeId s = c.build(other);
+            other.setTime(t);
+            return other.cook(s);
+        };
+        net.setTime(1.0);
+        net.cook(sim);
+        const size_t before = SimulationCache::restores;
+        net.setTime(0.45);
+        auto back = net.cook(sim);
+        if (SimulationCache::restores <= before) std::printf("%s did not resume from a saved state\n", c.name);
+        CHECK(SimulationCache::restores > before);
+        if (!sameGeometry(*back, *fresh(0.45))) std::printf("%s differs after scrubbing back\n", c.name);
+        CHECK(sameGeometry(*back, *fresh(0.45)));
+        net.setTime(1.3);
+        if (!sameGeometry(*net.cook(sim), *fresh(1.3))) std::printf("%s differs after playing on\n", c.name);
+        CHECK(sameGeometry(*net.cook(sim), *fresh(1.3)));
+        net.setTime(0.0);
+        CHECK(sameGeometry(*net.cook(sim), *fresh(0.0)));
+
+        // An edit drops the saved states, so the next run is a new one that saves its own.
+        const std::string first = net.node(sim).floatNames().front();
+        net.node(sim).setFloat(first, net.node(sim).baseFloat(first) + 0.25f);
+        net.setTime(0.9);
+        net.cook(sim);
+        const size_t afterEdit = SimulationCache::restores;
+        net.setTime(0.5);
+        auto edited = net.cook(sim);
+        CHECK(SimulationCache::restores > afterEdit);
+        Network other(2);
+        const NodeId s = c.build(other);
+        other.node(s).setFloat(first, other.node(s).baseFloat(first) + 0.25f);
+        other.setTime(0.5);
+        CHECK(sameGeometry(*edited, *other.cook(s)));
+    }
+    SimulationCache::checkpointInterval = savedInterval;
+}
+
 TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
     LoopRig rig("solver");
     rig.net.node(rig.loop).setFloat("stepsPerSecond", 10.0f);
@@ -6212,8 +6359,10 @@ TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
     CHECK(rig.inner().node(rig.xf).cookCount() == 7);
     CHECK_NEAR(rig.net.cookDisplay()->x()[4], 18.0f);
 
+    const size_t restoresBefore = SimulationCache::restores;
     rig.net.setTime(0.3);
     CHECK_NEAR(rig.net.cookDisplay()->x()[0], 3.0f);
+    CHECK(SimulationCache::restores == restoresBefore + 1);  // resumed from the saved start state, no need to restart
     rig.inner().node(rig.xf).setFloat("tx", 2.0f);
     CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
 
