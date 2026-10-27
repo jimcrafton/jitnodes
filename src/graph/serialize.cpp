@@ -1,6 +1,7 @@
 ﻿#include "jitnodes/graph/serialize.h"
 
 #include "jitnodes/core/stackGuard.h"
+#include "jitnodes/core/utf8.h"
 
 #include <json5/json5.hpp>
 #include <json5/json5_builder.hpp>
@@ -138,7 +139,7 @@ json5::value writeGeometry(json5::builder& b, const Geometry& g) {
     b["prims"] = b.pop();
     for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
         const bool point = cls == AttribClass::point;
-        for (AttribType type : {AttribType::float32, AttribType::int32}) {
+        for (AttribType type : {AttribType::float32, AttribType::int32, AttribType::string}) {
             bool any = false;
             for (const auto& entry : g.attribs(cls)) any |= entry.second.type() == type;
             if (!any) continue;
@@ -148,12 +149,22 @@ json5::value writeGeometry(json5::builder& b, const Geometry& g) {
                 b.push_object();
                 b["name"] = b.new_string(name);
                 b.push_array();
-                for (size_t i = 0; i < array.size(); ++i)
-                    b += type == AttribType::float32 ? floatValue(array.floats()[i]) : json5::value(static_cast<double>(array.ints()[i]));
+                for (size_t i = 0; i < array.size(); ++i) {
+                    if (type == AttribType::string) {
+                        const std::string& text = array.stringAt(i);
+                        if (!isValidUtf8(text)) throw std::runtime_error("string attribute '" + name + "' holds text that is not valid UTF-8");
+                        b += b.new_string(text);
+                    } else {
+                        b += type == AttribType::float32 ? floatValue(array.floats()[i]) : json5::value(static_cast<double>(array.ints()[i]));
+                    }
+                }
                 b["values"] = b.pop();
                 b += b.pop();
             }
-            b[type == AttribType::float32 ? (point ? "attribs" : "primAttribs") : (point ? "ints" : "primInts")] = b.pop();
+            const char* key = type == AttribType::float32 ? (point ? "attribs" : "primAttribs")
+                              : type == AttribType::int32 ? (point ? "ints" : "primInts")
+                                                          : (point ? "strings" : "primStrings");
+            b[key] = b.pop();
         }
     }
     if (!g.details().empty()) {
@@ -353,7 +364,8 @@ GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
     };
     for (const Section& s : {Section{"attribs", AttribClass::point, AttribType::float32}, Section{"ints", AttribClass::point, AttribType::int32},
                              Section{"primAttribs", AttribClass::primitive, AttribType::float32},
-                             Section{"primInts", AttribClass::primitive, AttribType::int32}}) {
+                             Section{"primInts", AttribClass::primitive, AttribType::int32}, Section{"strings", AttribClass::point, AttribType::string},
+                             Section{"primStrings", AttribClass::primitive, AttribType::string}}) {
         json5::value section;
         if (!member(v, s.key, section)) continue;
         const json5::array_view list(section);
@@ -362,6 +374,18 @@ GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
             const std::string name = requireStringMember(entry, "name", what + " attribute name");
             json5::value array;
             if (!member(entry, "values", array)) fail(what + " attribute '" + name + "' has no values");
+            if (s.type == AttribType::string) {
+                const json5::array_view texts(array);
+                if (!texts.is_valid() || texts.size() != g->count(s.cls)) fail(what + " attribute '" + name + "' must be an array of " + std::to_string(g->count(s.cls)) + " strings");
+                AttribArray& attrib = g->attrib(s.cls, name, s.type);
+                size_t i = 0;
+                for (const json5::value& item : texts) {
+                    const std::string text = requireString(item, what + " attribute '" + name + "'");
+                    if (!isValidUtf8(text)) fail(what + " attribute '" + name + "' holds text that is not valid UTF-8");
+                    attrib.ints()[i++] = attrib.intern(text);
+                }
+                continue;
+            }
             const std::vector<double> values = requireNumbers(array, g->count(s.cls), what + " attribute '" + name + "'");
             AttribArray& attrib = g->attrib(s.cls, name, s.type);
             for (size_t i = 0; i < values.size(); ++i) {
@@ -756,17 +780,23 @@ GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous)
         s.spare = n.spareNames();
         for (int i = 0; i < n.inputCount(); ++i) s.inputs.push_back(net.inputOf(id, i));
 
-        json5::document doc;
-        json5::builder b(doc);
-        writeNode(b, net, id, false);
-        std::string text = dump(doc);
         const NodeSnapshot* old = nullptr;
         if (previous) {
             auto it = previous->nodes.find(id);
             if (it != previous->nodes.end()) old = &it->second;
         }
-        if (old && *old->text == text) s.text = old->text;
-        else s.text = std::make_shared<const std::string>(std::move(text));
+        // A subnet's text includes its child graph, whose edits do not touch the container node.
+        s.revision = n.childNetwork() == nullptr ? n.revision() : 0;
+        if (old && s.revision != 0 && old->revision == s.revision) {
+            s.text = old->text;
+        } else {
+            json5::document doc;
+            json5::builder b(doc);
+            writeNode(b, net, id, false);
+            std::string text = dump(doc);
+            if (old && *old->text == text) s.text = old->text;
+            else s.text = std::make_shared<const std::string>(std::move(text));
+        }
         snap.nodes.emplace(id, std::move(s));
     }
     return snap;

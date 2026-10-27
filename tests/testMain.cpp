@@ -3,13 +3,16 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "jitnodes/jitnodes.h"
+#include "../src/graph/nodeUtil.h"
 
 using namespace jitnodes;
 
@@ -1574,6 +1577,96 @@ TEST(subnetsSupportSeveralInputsAndReportErrors) {
     CHECK(message.find("only valid inside a subnet") != std::string::npos);
 }
 
+TEST(editingTheEndOfALongFusedChainKeepsTheRestCooked) {
+    Network net;
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 4000.0f);
+    std::vector<NodeId> xf;
+    NodeId prev = line;
+    for (int i = 0; i < 5; ++i) {
+        xf.push_back(net.addNode("transform"));
+        net.node(xf.back()).setFloat("tx", 1.0f);
+        net.connect(prev, xf.back());
+        prev = xf.back();
+    }
+    net.setDisplayNode(prev);
+    const float base = net.cookDisplay()->x()[0] - 5.0f;
+    CHECK(net.node(xf[4]).cookCount() == 1 && net.node(xf[3]).cookCount() == 0);  // the whole chain ran once, fused
+
+    net.node(xf[4]).setFloat("tx", 10.0f);  // the first edit splits the chain below the edited node
+    CHECK_NEAR(net.cookDisplay()->x()[0], base + 14.0f);
+    CHECK(net.node(xf[3]).cookCount() == 1);
+    for (int i = 0; i < 3; ++i) {
+        net.node(xf[4]).setFloat("tx", 20.0f + static_cast<float>(i));
+        CHECK_NEAR(net.cookDisplay()->x()[0], base + 24.0f + static_cast<float>(i));
+    }
+    CHECK(net.node(xf[3]).cookCount() == 1 && net.node(xf[4]).cookCount() == 5);
+
+    net.node(xf[1]).setFloat("tx", 3.0f);  // an edit further up still reaches everything below it
+    CHECK_NEAR(net.cookDisplay()->x()[0], base + 3.0f + 3.0f + 22.0f);
+}
+
+TEST(setTimeCacheFollowsTheOwnersParametersIntoSubnets) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    CHECK(!rig.net.setTime(1.0));                    // builds both caches: nothing depends on time yet
+    rig.net.cook(rig.out);
+    rig.net.node(rig.sub).setFloat("amount", 3.0f);  // a plain value edit keeps the caches and is still seen by the cook
+    CHECK(!rig.net.setTime(1.5));
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 3.0f);
+    rig.net.node(rig.sub).setKeyframes("amount", {{0.0, 0.0f, KeyInterp::linear}, {2.0, 10.0f, KeyInterp::linear}});
+    CHECK(rig.net.setTime(1.0));                     // the inner expression now follows time through the owner
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+    rig.net.node(rig.sub).clearAnimation("amount");
+    rig.net.cook(rig.out);
+    CHECK(!rig.net.setTime(1.25));
+    rig.inner().node(rig.xf).setExpression("ty", "time");
+    CHECK(rig.net.setTime(1.5));                     // an edit inside the subnet reaches the owner's cache
+    CHECK_NEAR(rig.net.cook(rig.out)->y()[0], 1.5f);
+}
+
+TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
+    SubnetRig rig;
+    Network& net = rig.net;
+    const NodeId wr = net.addNode("wrangle", "wr");
+    const NodeId other = net.addNode("transform", "other");
+    const GraphSnapshot before = snapshotNetwork(net);
+
+    GraphSnapshot same = snapshotNetwork(net, &before);
+    CHECK(sameGraph(before, same));
+    for (const auto& [id, node] : before.nodes) CHECK(id == rig.sub || node.text == same.nodes.at(id).text);
+
+    const std::vector<std::pair<const char*, std::function<void()>>> edits = {
+        {"plain value", [&] { net.node(other).setFloat("tx", 4.0f); }},
+        {"expression", [&] { net.node(other).setExpression("ty", "time * 2"); }},
+        {"base value under an expression", [&] { net.node(other).setFloat("ty", 9.0f); }},
+        {"keyframes", [&] { net.node(other).setKeyframes("sx", {{0.0, 1.0f, KeyInterp::linear}, {1.0, 2.0f, KeyInterp::linear}}); }},
+        {"string", [&] { net.node(wr).setString("code", "y = x;"); }},
+        {"spare parameter", [&] { net.node(other).addSpareFloat("mine", 1.5f); }},
+        {"position", [&] { net.node(other).setPosition(12.0f, 34.0f); }},
+        {"rename", [&] { net.renameNode(other, "renamed"); }},
+        {"subnet contents", [&] { rig.inner().node(rig.xf).setFloat("ty", 7.0f); }},
+    };
+    GraphSnapshot previous = before;
+    for (const auto& [what, edit] : edits) {
+        edit();
+        GraphSnapshot incremental = snapshotNetwork(net, &previous);
+        const GraphSnapshot fresh = snapshotNetwork(net);
+        CHECK(sameGraph(incremental, fresh));
+        CHECK(!sameGraph(incremental, previous));
+        for (const auto& [id, node] : fresh.nodes) CHECK(*node.text == *incremental.nodes.at(id).text);
+        previous = std::move(incremental);
+        if (!sameGraph(previous, fresh)) std::printf("edit '%s' lost\n", what);
+    }
+
+    net.node(other).setFloat("tx", 4.0f);  // setting the value it already has is no edit
+    CHECK(sameGraph(snapshotNetwork(net, &previous), previous));
+    const uint64_t revision = net.node(other).revision();
+    net.node(other).setPosition(12.0f, 34.0f);
+    CHECK(net.node(other).revision() == revision);
+}
+
 TEST(subnetsRoundTripThroughFiles) {
     SubnetRig rig;
     subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
@@ -2605,6 +2698,3832 @@ TEST(networkMergeAndWrangle) {
     net.node(wr).setString("code", "y = y + undefinedChannel;");
     CHECK(net.cook(wr)->pointCount() == 13);
     CHECK(net.executionOrder(wr).size() == 4);
+}
+
+bool cookThrows(Network& net, NodeId id) {
+    try {
+        net.cook(id);
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+TEST(generateIsDeterministicAndBounded) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 5000.0f);
+    net.node(gen).setFloat("seed", 5.0f);
+    net.node(gen).setFloat("cx", 10.0f);
+    net.node(gen).setFloat("cy", -5.0f);
+    net.node(gen).setFloat("width", 4.0f);
+    net.node(gen).setFloat("height", 2.0f);
+    auto geo = net.cook(gen);
+    CHECK(geo->pointCount() == 5000 && geo->primitiveCount() == 0);
+    const AttribArray* rand = geo->findAttrib(AttribClass::point, "rand");
+    CHECK(rand && geo->hasAttrib(AttribClass::point, "rand2") && geo->findAttrib(AttribClass::point, "id")->type() == AttribType::int32);
+    double meanX = 0.0, meanRand = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        CHECK(geo->x()[i] >= 8.0f && geo->x()[i] <= 12.0f && geo->y()[i] >= -6.0f && geo->y()[i] <= -4.0f);
+        CHECK(rand->at(i) >= 0.0f && rand->at(i) < 1.0f);
+        meanX += geo->x()[i];
+        meanRand += rand->at(i);
+    }
+    CHECK(std::fabs(meanX / 5000.0 - 10.0) < 0.1 && std::fabs(meanRand / 5000.0 - 0.5) < 0.03);
+
+    // The thread count does not change the points.
+    Network threaded(4);
+    NodeId gen2 = threaded.addNode("generate");
+    for (const char* p : {"count", "seed", "cx", "cy", "width", "height"}) threaded.node(gen2).setFloat(p, net.node(gen).getFloat(p));
+    CHECK(sameGeometry(*geo, *threaded.cook(gen2)));
+    net.node(gen).setFloat("seed", 6.0f);
+    CHECK(!sameGeometry(*geo, *net.cook(gen)));
+
+    net.node(gen).setString("shape", "disc");
+    net.node(gen).setFloat("cx", 0.0f);
+    net.node(gen).setFloat("cy", 0.0f);
+    geo = net.cook(gen);
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const float u = geo->x()[i] / 2.0f, v = geo->y()[i];
+        CHECK(u * u + v * v <= 1.0001f);
+    }
+    net.node(gen).setString("shape", "gaussian");
+    geo = net.cook(gen);
+    double var = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) var += static_cast<double>(geo->x()[i]) * geo->x()[i];
+    CHECK(std::fabs(std::sqrt(var / 5000.0) - 2.0 / 3.0) < 0.05);
+
+    net.node(gen).setString("shape", "blob");
+    CHECK(cookThrows(net, gen));
+    net.node(gen).setString("shape", "rect");
+    net.node(gen).setFloat("count", 0.0f);
+    CHECK(net.cook(gen)->pointCount() == 0);
+}
+
+TEST(scatterFillsClosedShapesAndWalksOpenOnes) {
+    Network net(2);
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 96.0f);
+    net.node(circle).setFloat("radius", 2.0f);
+    NodeId scatter = net.addNode("scatter");
+    net.node(scatter).setFloat("count", 4000.0f);
+    net.node(scatter).setFloat("lineCount", 0.0f);
+    net.connect(circle, scatter);
+    auto geo = net.cook(scatter);
+    CHECK(geo->pointCount() == 4000 && geo->primitiveCount() == 0);
+    double meanR2 = 0.0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const double r2 = static_cast<double>(geo->x()[i]) * geo->x()[i] + static_cast<double>(geo->y()[i]) * geo->y()[i];
+        CHECK(r2 <= 4.0);
+        meanR2 += r2;
+    }
+    CHECK(std::fabs(meanR2 / 4000.0 - 2.0) < 0.15);  // uniform over a disc of radius 2
+
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 5.0f);
+    net.node(line).setFloat("length", 4.0f);
+    NodeId merge = net.addNode("merge");
+    NodeId both = net.addNode("scatter");
+    net.node(both).setFloat("count", 1000.0f);
+    net.node(both).setFloat("lineCount", 300.0f);
+    net.connect(circle, merge, 0);
+    net.connect(line, merge, 1);
+    net.connect(merge, both);
+    geo = net.cook(both);
+    CHECK(geo->pointCount() == 1300);
+    const auto& prim = geo->findAttrib(AttribClass::point, "srcPrim")->ints();
+    const auto& u = geo->findAttrib(AttribClass::point, "u")->floats();
+    size_t fromLine = 0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        if (prim[i] == 1) {
+            ++fromLine;
+            CHECK(geo->y()[i] == 0.0f && geo->x()[i] >= 0.0f && geo->x()[i] <= 4.0f && u[i] >= 0.0f && u[i] <= 1.0f);
+            CHECK_NEAR(geo->x()[i], u[i] * 4.0f);
+        } else {
+            CHECK(prim[i] == 0);
+        }
+    }
+    CHECK(fromLine == 300);
+
+    net.node(both).setFloat("spread", 0.5f);
+    geo = net.cook(both);
+    float maxOffset = 0.0f;
+    for (size_t i = 0; i < geo->pointCount(); ++i)
+        if (geo->findAttrib(AttribClass::point, "srcPrim")->ints()[i] == 1) maxOffset = std::max(maxOffset, std::fabs(geo->y()[i]));
+    CHECK(maxOffset > 0.2f && maxOffset <= 0.5001f);
+
+    // An empty or degenerate shape gives no points.
+    NodeId single = net.addNode("line");
+    net.node(single).setFloat("count", 1.0f);
+    NodeId none = net.addNode("scatter");
+    net.connect(single, none);
+    CHECK(net.cook(none)->pointCount() == 0);
+}
+
+TEST(scatterKeepsConcaveShapesHollow) {
+    Network net(1);
+    // Eight circle points with the four diagonal ones pulled in make a four-pointed star whose notches (both |x| and |y| above 0.22) are outside.
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 8.0f);
+    NodeId star = net.addNode("wrangle");
+    net.node(star).setString("code", "s = abs(x) > 0.1 && abs(y) > 0.1 ? 0.3 : 1; x = x * s; y = y * s;");
+    NodeId scatter = net.addNode("scatter");
+    net.node(scatter).setFloat("count", 3000.0f);
+    net.connect(circle, star);
+    net.connect(star, scatter);
+    auto geo = net.cook(scatter);
+    CHECK(geo->pointCount() == 3000);
+    size_t nearAxis = 0;
+    for (size_t i = 0; i < geo->pointCount(); ++i) {
+        const float ax = std::fabs(geo->x()[i]), ay = std::fabs(geo->y()[i]);
+        CHECK(!(ax > 0.22f && ay > 0.22f));
+        nearAxis += ax > 0.5f || ay > 0.5f ? 1 : 0;
+    }
+    CHECK(nearAxis > 100);
+}
+
+TEST(noiseNodeProducesBoundedDeterministicFields) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 4000.0f);
+    net.node(line).setFloat("length", 400.0f);
+    NodeId noise = net.addNode("noise");
+    net.connect(line, noise);
+    net.node(noise).setString("name", "n");
+    auto geo = net.cook(noise);
+    const AttribArray* n = geo->findAttrib(AttribClass::point, "n");
+    CHECK(n && geo->pointCount() == 4000);
+    double mean = 0.0, sq = 0.0;
+    float lo = 1e9f, hi = -1e9f;
+    for (size_t i = 0; i < 4000; ++i) {
+        mean += n->at(i);
+        sq += static_cast<double>(n->at(i)) * n->at(i);
+        lo = std::min(lo, n->at(i));
+        hi = std::max(hi, n->at(i));
+    }
+    mean /= 4000.0;
+    CHECK(mean > 0.4 && mean < 0.6 && std::sqrt(sq / 4000.0 - mean * mean) > 0.03 && lo > -0.5f && hi < 1.5f);
+    CHECK(sameGeometry(*geo, *net.cook(noise)));
+
+    net.node(noise).setString("mode", "ridged");
+    geo = net.cook(noise);
+    for (size_t i = 0; i < 4000; ++i) CHECK(geo->findAttrib(AttribClass::point, "n")->at(i) >= 0.0f && geo->findAttrib(AttribClass::point, "n")->at(i) <= 1.0f);
+
+    net.node(noise).setFloat("phase", 3.5f);
+    CHECK(!sameGeometry(*geo, *net.cook(noise)));
+    net.node(noise).setString("mode", "bogus");
+    CHECK(cookThrows(net, noise));
+}
+
+TEST(warpDisplacesPointsAndZeroAmountIsIdentity) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 2000.0f);
+    NodeId warp = net.addNode("warp");
+    net.connect(gen, warp);
+    net.node(warp).setFloat("amount", 0.0f);
+    CHECK(sameGeometry(*net.cook(gen), *net.cook(warp)));
+
+    for (const char* mode : {"noise", "curl"}) {
+        net.node(warp).setString("mode", mode);
+        net.node(warp).setFloat("amount", 2.0f);
+        net.node(warp).setFloat("iterations", 3.0f);
+        auto src = net.cook(gen);
+        auto out = net.cook(warp);
+        double moved = 0.0;
+        for (size_t i = 0; i < out->pointCount(); ++i) {
+            CHECK(std::isfinite(out->x()[i]) && std::isfinite(out->y()[i]));
+            moved += std::hypot(out->x()[i] - src->x()[i], out->y()[i] - src->y()[i]);
+        }
+        CHECK(moved / 2000.0 > 0.05);
+        CHECK(out->hasAttrib(AttribClass::point, "rand"));
+    }
+    net.node(warp).setString("mode", "swirl");
+    CHECK(cookThrows(net, warp));
+}
+
+TEST(colorRampMapsAnAttributeToColour) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    net.node(line).setFloat("length", 1.0f);
+    NodeId ramp = net.addNode("colorRamp");
+    net.connect(line, ramp);
+    net.node(ramp).setString("attribute", "x");
+    net.node(ramp).setString("ramp", "0 #000000, 0.5 #ff0000, 1 0 0 1");
+    auto geo = net.cook(ramp);
+    const auto& r = geo->findAttrib(AttribClass::point, "Cd.x")->floats();
+    const auto& g = geo->findAttrib(AttribClass::point, "Cd.y")->floats();
+    const auto& b = geo->findAttrib(AttribClass::point, "Cd.z")->floats();
+    CHECK(std::fabs(r[0]) < 1e-3f && std::fabs(r[1] - 1.0f) < 1e-3f && std::fabs(r[2]) < 1e-3f);
+    CHECK(std::fabs(b[2] - 1.0f) < 1e-3f && std::fabs(g[1]) < 1e-3f);
+
+    net.node(ramp).setFloat("min", 1.0f);
+    net.node(ramp).setFloat("max", 0.0f);  // an inverted range reverses the ramp
+    geo = net.cook(ramp);
+    CHECK(std::fabs(geo->findAttrib(AttribClass::point, "Cd.z")->floats()[0] - 1.0f) < 1e-3f);
+
+    net.node(ramp).setString("attribute", "missing");
+    CHECK(cookThrows(net, ramp));
+    net.node(ramp).setString("attribute", "x");
+    net.node(ramp).setString("ramp", "0 #12");
+    CHECK(cookThrows(net, ramp));
+    net.node(ramp).setString("ramp", "");
+    CHECK(cookThrows(net, ramp));
+}
+
+TEST(renderNodeAndSplatRendererDrawAdditiveSprites) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 1.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.node(wr).setString("code", "radius = 2; alpha = 0.5; softness = 0; Cd.x = 1; Cd.y = 0; Cd.z = 0;");
+    NodeId render = net.addNode("render");
+    net.connect(gen, wr);
+    net.connect(wr, render);
+    net.node(render).setFloat("exposure", 20.0f);
+    net.node(render).setFloat("gamma", 1.0f);
+    net.node(render).setFloat("width", 100.0f);
+    net.node(render).setFloat("height", 50.0f);
+    net.node(render).setFloat("viewWidth", 10.0f);
+    net.node(render).setString("background", "#000000");
+
+    auto geo = net.cook(render);
+    CHECK(hasRenderSettings(*geo) && !hasRenderSettings(*net.cook(wr)));
+    RenderSettings settings = renderSettingsFromDetails(*geo);
+    CHECK(settings.width == 100 && settings.height == 50 && settings.additive);
+    CHECK_NEAR(settings.maxX - settings.minX, 10.0f);
+    CHECK_NEAR(settings.maxY - settings.minY, 5.0f);
+
+    Image image = renderSplats(*geo, settings, net.pool());
+    CHECK(image.width == 100 && image.height == 50 && image.pixels.size() == 5000);
+    const uint32_t centre = image.pixels[25 * 100 + 50], corner = image.pixels[0];
+    CHECK(((centre >> 16) & 255u) > 240u && ((centre >> 8) & 255u) < 4u && (centre & 255u) < 4u);
+    CHECK((corner & 0xFFFFFFu) < 0x030303u);
+    // Radius 2 at 10 pixels per unit: covered out to 20 pixels, nothing beyond.
+    CHECK(((image.pixels[25 * 100 + 66] >> 16) & 255u) > 200u && ((image.pixels[25 * 100 + 75] >> 16) & 255u) < 4u);
+
+    // Over compositing is exact for opaque sprites and shows the background elsewhere.
+    net.node(render).setFloat("additive", 0.0f);
+    net.node(render).setString("background", "#0000ff");
+    geo = net.cook(render);
+    image = renderSplats(*geo, renderSettingsFromDetails(*geo), nullptr);
+    CHECK((image.pixels[0] & 0xFFFFFFu) == 0x0000FFu);
+    const uint32_t over = image.pixels[25 * 100 + 50];
+    CHECK(std::abs(static_cast<int>((over >> 16) & 255u) - 128) <= 2 && std::abs(static_cast<int>(over & 255u) - 128) <= 2);
+
+    net.node(render).setString("background", "red");
+    CHECK(cookThrows(net, render));
+
+    // A sprite smaller than a pixel keeps its energy: the lit pixels add up to about radius^2 * alpha in pixel units.
+    net.node(render).setString("background", "#000000");
+    net.node(render).setFloat("additive", 1.0f);
+    net.node(wr).setString("code", "radius = 0.05; alpha = 1; softness = 0; Cd.x = 1; Cd.y = 1; Cd.z = 1;");
+    net.node(render).setFloat("exposure", 1.0f);
+    geo = net.cook(render);
+    image = renderSplats(*geo, renderSettingsFromDetails(*geo), nullptr);
+    size_t lit = 0;
+    for (uint32_t px : image.pixels) lit += (px & 255u) > 8u ? 1 : 0;
+    CHECK(lit >= 1 && lit <= 4);
+
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_render.png").string();
+    writePng(path, image);
+    const size_t pngSize = static_cast<size_t>(std::filesystem::file_size(path));
+    {
+        std::ifstream f(path, std::ios::binary);
+        char signature[4] = {};
+        f.read(signature, 4);
+        CHECK(signature[1] == 'P' && signature[2] == 'N' && signature[3] == 'G');
+    }
+    CHECK(pngSize > 60 && pngSize < image.pixels.size() * 3 / 4);
+    std::filesystem::remove(path);
+}
+
+double minPairDistance(const Geometry& geo) {
+    double best = 1e30;
+    for (size_t i = 0; i < geo.pointCount(); ++i)
+        for (size_t j = i + 1; j < geo.pointCount(); ++j) best = std::min(best, std::hypot(static_cast<double>(geo.x()[i] - geo.x()[j]), static_cast<double>(geo.y()[i] - geo.y()[j])));
+    return best;
+}
+
+TEST(relaxSpreadsPointsApartAndKeepsThemInside) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 400.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId relax = net.addNode("relax");
+    net.connect(gen, relax);
+    net.node(relax).setFloat("radius", 0.6f);
+    net.node(relax).setFloat("iterations", 40.0f);
+    auto before = net.cook(gen);
+    auto after = net.cook(relax);
+    CHECK(after->pointCount() == 400 && after->hasAttrib(AttribClass::point, "rand"));
+    CHECK(minPairDistance(*after) > 2.0 * minPairDistance(*before));
+    float minX = 1e9f, maxX = -1e9f;
+    for (size_t i = 0; i < after->pointCount(); ++i) {
+        minX = std::min(minX, after->x()[i]);
+        maxX = std::max(maxX, after->x()[i]);
+    }
+    CHECK(minX >= -5.0f && maxX <= 5.0f);
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), r2 = threaded.addNode("relax");
+    threaded.connect(g2, r2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"radius", "iterations"}) threaded.node(r2).setFloat(p, net.node(relax).getFloat(p));
+    CHECK(sameGeometry(*after, *threaded.cook(r2)));
+
+    // Coincident points are pushed apart too.
+    net.node(gen).setFloat("count", 2.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    net.node(relax).setFloat("keepInside", 0.0f);
+    CHECK(minPairDistance(*net.cook(relax)) > 0.1);
+
+    net.node(relax).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, relax));
+}
+
+TEST(attribBlurAveragesNeighboursAndValidatesItsParameters) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 3000.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId blur = net.addNode("attribBlur");
+    net.connect(gen, blur);
+    net.node(blur).setFloat("radius", 0.8f);
+    net.node(blur).setFloat("iterations", 2.0f);
+    auto src = net.cook(gen);
+    auto out = net.cook(blur);
+    auto variance = [](const Geometry& g, const char* name) {
+        double sum = 0.0, sum2 = 0.0;
+        const AttribArray* a = g.findAttrib(AttribClass::point, name);
+        for (size_t i = 0; i < g.pointCount(); ++i) {
+            sum += a->at(i);
+            sum2 += static_cast<double>(a->at(i)) * a->at(i);
+        }
+        const double mean = sum / static_cast<double>(g.pointCount());
+        return sum2 / static_cast<double>(g.pointCount()) - mean * mean;
+    };
+    CHECK(variance(*out, "rand") < 0.3 * variance(*src, "rand"));
+    CHECK(sameGeometry(*net.cook(blur), *out));
+
+    // output writes elsewhere and leaves the source alone; several attributes are blurred together.
+    net.node(blur).setString("attribute", "rand, rand2");
+    net.node(blur).setString("output", "a, b");
+    out = net.cook(blur);
+    CHECK(out->hasAttrib(AttribClass::point, "a") && out->hasAttrib(AttribClass::point, "b"));
+    CHECK(variance(*out, "rand") > 0.99 * variance(*src, "rand") && variance(*out, "b") < 0.3 * variance(*src, "rand2"));
+
+    net.node(blur).setString("output", "a");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("output", "");
+    net.node(blur).setString("attribute", "missing");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("attribute", "id");  // int attributes cannot be overwritten in place
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("attribute", "rand");
+    net.node(blur).setString("falloff", "bogus");
+    CHECK(cookThrows(net, blur));
+    net.node(blur).setString("falloff", "gaussian");
+    net.node(blur).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, blur));
+}
+
+TEST(waveWritesASineAndCanDisplacePoints) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    net.node(line).setFloat("length", 2.0f);
+    NodeId wave = net.addNode("wave");
+    net.connect(line, wave);
+    net.node(wave).setFloat("wavelength", 4.0f);
+    net.node(wave).setFloat("amplitude", 2.0f);
+    auto geo = net.cook(wave);  // radial from the origin: sin(2 pi r / 4) at r = 0, 1, 2
+    const AttribArray* w = geo->findAttrib(AttribClass::point, "wave");
+    CHECK(w && std::fabs(w->at(0)) < 1e-4f && std::fabs(w->at(1) - 2.0f) < 1e-4f && std::fabs(w->at(2)) < 1e-3f);
+
+    net.node(wave).setString("mode", "plane");
+    net.node(wave).setFloat("angle", 180.0f);  // running towards -x: the same points see the mirrored phase
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), -2.0f);
+
+    net.node(wave).setString("mode", "radial");
+    net.node(wave).setFloat("phase", 1.5707963f);
+    net.node(wave).setFloat("displaceY", 0.5f);
+    geo = net.cook(wave);
+    CHECK_NEAR(geo->findAttrib(AttribClass::point, "wave")->at(0), -2.0f);
+    CHECK_NEAR(geo->y()[0], -1.0f);
+
+    // Two sources at the same place are one source; two apart are averaged.
+    net.node(wave).setFloat("phase", 0.0f);
+    net.node(wave).setFloat("displaceY", 0.0f);
+    net.node(wave).setFloat("sourceCount", 2.0f);
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 2.0f);
+    net.node(wave).setFloat("cx2", 1.0f);  // sources at 0 and 1: the point at 1 sees sin(pi / 2) and sin(0)
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 1.0f);
+
+    net.node(wave).setFloat("falloff", 1.0f);
+    net.node(wave).setFloat("cx2", 0.0f);
+    CHECK_NEAR(net.cook(wave)->findAttrib(AttribClass::point, "wave")->at(1), 2.0f * std::exp(-1.0f));
+    net.node(wave).setFloat("wavelength", 0.0f);
+    CHECK(cookThrows(net, wave));
+    net.node(wave).setFloat("wavelength", 1.0f);
+    net.node(wave).setString("mode", "spiral");
+    CHECK(cookThrows(net, wave));
+}
+
+TEST(attractorIteratesAMapAndStaysBounded) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 3000.0f);
+    net.node(gen).setFloat("width", 4.0f);
+    net.node(gen).setFloat("height", 4.0f);
+    NodeId att = net.addNode("attractor");
+    net.connect(gen, att);
+
+    // With a = b = 0 and c = d = 1 the Clifford map sends every point to (1, 1).
+    net.node(att).setFloat("a", 0.0f);
+    net.node(att).setFloat("b", 0.0f);
+    net.node(att).setFloat("d", 1.0f);
+    net.node(att).setFloat("iterations", 3.0f);
+    net.node(att).setFloat("scale", 2.0f);
+    net.node(att).setFloat("cx", 10.0f);
+    auto geo = net.cook(att);
+    CHECK_NEAR(geo->x()[7], 12.0f);
+    CHECK_NEAR(geo->y()[7], 2.0f);
+    CHECK_NEAR(geo->findAttrib(AttribClass::point, "speed")->at(7), 0.0f);
+
+    for (const char* type : {"clifford", "dejong", "svensson"}) {
+        net.node(att).setString("type", type);
+        net.node(att).setFloat("a", 1.5f);
+        net.node(att).setFloat("b", -1.8f);
+        net.node(att).setFloat("c", 1.6f);
+        net.node(att).setFloat("d", 0.9f);
+        net.node(att).setFloat("iterations", 25.0f);
+        net.node(att).setFloat("scale", 1.0f);
+        net.node(att).setFloat("cx", 0.0f);
+        geo = net.cook(att);
+        double spread = 0.0;
+        for (size_t i = 0; i < geo->pointCount(); ++i) {
+            CHECK(std::fabs(geo->x()[i]) <= 3.0f && std::fabs(geo->y()[i]) <= 3.0f);
+            const float d = geo->findAttrib(AttribClass::point, "dir")->at(i);
+            CHECK(d >= 0.0f && d <= 1.0f);
+            spread += std::fabs(geo->x()[i]);
+        }
+        CHECK(spread / 3000.0 > 0.2);
+        CHECK(sameGeometry(*geo, *net.cook(att)));
+    }
+
+    Network threaded(5);
+    NodeId g2 = threaded.addNode("generate"), a2 = threaded.addNode("attractor");
+    threaded.connect(g2, a2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    threaded.node(a2).setString("type", "svensson");
+    for (const char* p : {"a", "b", "c", "d", "iterations", "scale"}) threaded.node(a2).setFloat(p, net.node(att).getFloat(p));
+    CHECK(sameGeometry(*geo, *threaded.cook(a2)));
+
+    net.node(att).setString("type", "lorenz");
+    CHECK(cookThrows(net, att));
+}
+
+TEST(voronoiCellsPartitionTheBoundsAndBelongToTheirSites) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 6.0f);
+    NodeId vor = net.addNode("voronoi");
+    net.connect(gen, vor);
+    auto sites = net.cook(gen);
+    auto geo = net.cook(vor);
+    CHECK(geo->primitiveCount() == 300 && geo->hasAttrib(AttribClass::point, "rand"));
+
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+    for (size_t i = 0; i < sites->pointCount(); ++i) {
+        minX = std::min(minX, sites->x()[i]);
+        maxX = std::max(maxX, sites->x()[i]);
+        minY = std::min(minY, sites->y()[i]);
+        maxY = std::max(maxY, sites->y()[i]);
+    }
+    double areaSum = 0.0;
+    for (const Primitive& p : geo->primitives()) {
+        CHECK(p.closed && p.count >= 3);
+        const int32_t site = geo->findAttrib(AttribClass::point, "site")->ints()[p.start];
+        areaSum += geo->findAttrib(AttribClass::point, "area")->at(p.start);
+        // The average of a convex cell's corners lies inside it, so its nearest site must be the cell's own.
+        double cx = 0.0, cy = 0.0;
+        for (uint32_t k = 0; k < p.count; ++k) {
+            cx += geo->x()[p.start + k];
+            cy += geo->y()[p.start + k];
+        }
+        cx /= p.count;
+        cy /= p.count;
+        size_t nearest = 0;
+        double best = 1e30;
+        for (size_t s = 0; s < sites->pointCount(); ++s) {
+            const double d = std::hypot(cx - sites->x()[s], cy - sites->y()[s]);
+            if (d < best) {
+                best = d;
+                nearest = s;
+            }
+        }
+        CHECK(static_cast<int32_t>(nearest) == site);
+        CHECK(std::fabs(geo->x()[p.start] - sites->x()[static_cast<size_t>(site)]) < 20.0f);
+    }
+    CHECK(std::fabs(areaSum - static_cast<double>(maxX - minX) * (maxY - minY)) < 1e-3 * areaSum);
+
+    // A margin grows the clipping rectangle; open outlines repeat the first corner.
+    net.node(vor).setFloat("margin", 1.0f);
+    net.node(vor).setFloat("closed", 0.0f);
+    geo = net.cook(vor);
+    double grown = 0.0;
+    for (const Primitive& p : geo->primitives()) {
+        CHECK(!p.closed);
+        CHECK(geo->x()[p.start] == geo->x()[p.start + p.count - 1] && geo->y()[p.start] == geo->y()[p.start + p.count - 1]);
+        grown += geo->findAttrib(AttribClass::point, "area")->at(p.start);
+    }
+    CHECK(std::fabs(grown - static_cast<double>(maxX - minX + 2.0f) * (maxY - minY + 2.0f)) < 1e-3 * grown);
+
+    // Degenerate inputs: nothing, one point, coincident points.
+    net.node(gen).setFloat("count", 0.0f);
+    CHECK(net.cook(vor)->pointCount() == 0);
+    net.node(gen).setFloat("count", 1.0f);
+    CHECK(net.cook(vor)->primitiveCount() == 1);
+    net.node(gen).setFloat("count", 3.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    CHECK(net.cook(vor)->primitiveCount() >= 1);
+}
+
+double cellAreaSpread(Network& net, NodeId points) {
+    NodeId vor = net.addNode("voronoi");
+    net.connect(points, vor);
+    auto geo = net.cook(vor);
+    double sum = 0.0, sumSq = 0.0;
+    for (const Primitive& p : geo->primitives()) {
+        const double a = geo->findAttrib(AttribClass::point, "area")->at(p.start);
+        sum += a;
+        sumSq += a * a;
+    }
+    const double n = static_cast<double>(geo->primitiveCount()), mean = sum / n;
+    return std::sqrt(std::max(sumSq / n - mean * mean, 0.0)) / mean;
+}
+
+TEST(lloydEvensOutTheVoronoiCellsAndKeepsPointsInside) {
+    Network net(1);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 6.0f);
+    NodeId lloyd = net.addNode("lloyd");
+    net.connect(gen, lloyd);
+    net.node(lloyd).setFloat("iterations", 8.0f);
+    auto before = net.cook(gen);
+    auto after = net.cook(lloyd);
+    CHECK(after->pointCount() == 300 && after->hasAttrib(AttribClass::point, "rand"));
+    CHECK(cellAreaSpread(net, lloyd) < 0.5 * cellAreaSpread(net, gen));
+    CHECK(minPairDistance(*after) > minPairDistance(*before));
+
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+    for (size_t i = 0; i < before->pointCount(); ++i) {
+        minX = std::min(minX, before->x()[i]);
+        maxX = std::max(maxX, before->x()[i]);
+        minY = std::min(minY, before->y()[i]);
+        maxY = std::max(maxY, before->y()[i]);
+    }
+    for (size_t i = 0; i < after->pointCount(); ++i) CHECK(after->x()[i] >= minX && after->x()[i] <= maxX && after->y()[i] >= minY && after->y()[i] <= maxY);
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), l2 = threaded.addNode("lloyd");
+    threaded.connect(g2, l2);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    threaded.node(l2).setFloat("iterations", 8.0f);
+    CHECK(sameGeometry(*after, *threaded.cook(l2)));
+
+    net.node(lloyd).setFloat("strength", 0.0f);
+    CHECK(sameGeometry(*net.cook(lloyd), *before));
+
+    net.node(gen).setFloat("count", 0.0f);
+    CHECK(net.cook(lloyd)->pointCount() == 0);
+    net.node(gen).setFloat("count", 3.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    CHECK(net.cook(lloyd)->pointCount() == 3);
+}
+
+TEST(flowFollowsAFieldAndCarriesTheSeedAttributes) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 100.0f);
+    NodeId flow = net.addNode("flow");
+    net.connect(gen, flow);
+    net.node(flow).setFloat("steps", 10.0f);
+    net.node(flow).setFloat("stepLength", 0.2f);
+    auto seeds = net.cook(gen);
+    for (const char* mode : {"curl", "angle"}) {
+        net.node(flow).setString("mode", mode);
+        auto geo = net.cook(flow);
+        CHECK(geo->pointCount() == 1100 && geo->primitiveCount() == 100);
+        const AttribArray* rand = geo->findAttrib(AttribClass::point, "rand");
+        const AttribArray* u = geo->findAttrib(AttribClass::point, "u");
+        const AttribArray* trail = geo->findAttrib(AttribClass::point, "trail");
+        CHECK(rand && u && trail && trail->type() == AttribType::int32);
+        size_t t = 0;
+        for (const Primitive& p : geo->primitives()) {
+            CHECK(!p.closed && p.count == 11);
+            CHECK_NEAR(geo->x()[p.start], seeds->x()[t]);
+            CHECK_NEAR(geo->y()[p.start], seeds->y()[t]);
+            CHECK_NEAR(u->at(p.start), 0.0f);
+            CHECK_NEAR(u->at(p.start + 10), 1.0f);
+            for (uint32_t k = 0; k < p.count; ++k) {
+                CHECK(rand->at(p.start + k) == seeds->findAttrib(AttribClass::point, "rand")->at(t));
+                CHECK(trail->at(p.start + k) == static_cast<float>(t));
+                if (k > 0) CHECK(std::fabs(std::hypot(geo->x()[p.start + k] - geo->x()[p.start + k - 1], geo->y()[p.start + k] - geo->y()[p.start + k - 1]) - 0.2f) < 1e-4f);
+            }
+            ++t;
+        }
+    }
+
+    // Both ways: the seed sits in the middle of a trail twice as long.
+    net.node(flow).setFloat("bothWays", 1.0f);
+    auto both = net.cook(flow);
+    CHECK(both->pointCount() == 2100 && both->primitives()[0].count == 21);
+    CHECK_NEAR(both->x()[10], seeds->x()[0]);
+    CHECK_NEAR(both->y()[10], seeds->y()[0]);
+
+    Network threaded(5);
+    NodeId g2 = threaded.addNode("generate"), f2 = threaded.addNode("flow");
+    threaded.connect(g2, f2);
+    threaded.node(g2).setFloat("count", 100.0f);
+    for (const char* p : {"steps", "stepLength", "bothWays"}) threaded.node(f2).setFloat(p, net.node(flow).getFloat(p));
+    threaded.node(f2).setString("mode", "angle");
+    net.node(flow).setString("mode", "angle");
+    CHECK(sameGeometry(*net.cook(flow), *threaded.cook(f2)));
+
+    net.node(flow).setString("mode", "spiral");
+    CHECK(cookThrows(net, flow));
+}
+
+TEST(particlesSimulateDeterministicallyAndFollowThePlayhead) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 500.0f);
+    NodeId sim = net.addNode("particles");
+    net.connect(gen, sim);
+    net.node(sim).setFloat("drag", 0.0f);
+    net.node(sim).setFloat("gravityY", -10.0f);
+    CHECK(net.dependsOnTime(sim));
+    CHECK(!net.dependsOnTime(gen));
+
+    auto start = net.cook(sim);
+    CHECK(sameGeometry(*start, *net.cook(gen)) == false);  // the node adds vx, vy, age, life and speed
+    CHECK_NEAR(start->y()[7], net.cook(gen)->y()[7]);
+
+    // Free fall: y0 - g t^2 / 2 (semi-implicit Euler lands a fraction of a percent off).
+    CHECK(net.setTime(1.0));
+    auto fell = net.cook(sim);
+    CHECK(std::fabs(fell->y()[7] - (net.cook(gen)->y()[7] - 5.0f)) < 0.08f);
+    CHECK(std::fabs(fell->findAttrib(AttribClass::point, "vy")->at(7) + 10.0f) < 0.1f);
+    CHECK(std::fabs(fell->findAttrib(AttribClass::point, "age")->at(7) - 1.0f) < 0.01f);
+
+    // Continuing from the cached state, or restarting after scrubbing back, gives what a fresh network gives at that time.
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId g = other.addNode("generate"), s = other.addNode("particles");
+        other.connect(g, s);
+        other.node(g).setFloat("count", 500.0f);
+        other.node(s).setFloat("drag", 0.0f);
+        other.node(s).setFloat("gravityY", -10.0f);
+        other.node(s).setFloat("noiseForce", net.node(sim).getFloat("noiseForce"));
+        other.setTime(t);
+        return other.cook(s);
+    };
+    net.node(sim).setFloat("noiseForce", 3.0f);
+    net.setTime(0.5);
+    net.cook(sim);
+    net.setTime(1.25);
+    auto later = net.cook(sim);
+    CHECK(sameGeometry(*later, *fresh(1.25, 1)));
+    CHECK(sameGeometry(*later, *fresh(1.25, 4)));
+    net.setTime(0.3);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(0.3, 3)));
+
+    // A different parameter restarts the simulation.
+    net.node(sim).setFloat("gravityY", 0.0f);
+    net.node(sim).setFloat("noiseForce", 0.0f);
+    net.setTime(1.0);
+    CHECK_NEAR(net.cook(sim)->y()[7], net.cook(gen)->y()[7]);
+
+    // Before startTime nothing has moved.
+    net.node(sim).setFloat("gravityY", -10.0f);
+    net.node(sim).setFloat("startTime", 5.0f);
+    CHECK_NEAR(net.cook(sim)->y()[7], net.cook(gen)->y()[7]);
+    net.node(sim).setFloat("startTime", 0.0f);
+
+    // A bouncing floor and a wrapping box keep the particles inside.
+    net.node(sim).setString("boundary", "bounce");
+    net.node(sim).setFloat("boundsMinY", -1.0f);
+    net.node(sim).setFloat("boundsMaxY", 6.0f);
+    net.setTime(3.0);
+    auto bounced = net.cook(sim);
+    for (size_t i = 0; i < bounced->pointCount(); ++i) CHECK(bounced->y()[i] >= -1.0f && bounced->y()[i] <= 6.0f && bounced->x()[i] >= -10.0f && bounced->x()[i] <= 10.0f);
+    net.node(sim).setString("boundary", "wrap");
+    auto wrapped = net.cook(sim);
+    for (size_t i = 0; i < wrapped->pointCount(); ++i) CHECK(wrapped->y()[i] >= -1.0f && wrapped->y()[i] <= 6.0f);
+
+    // Emission with a lifetime keeps respawning: ages stay below the lifetime and the particles stay near the nozzle's reach.
+    net.node(sim).setString("boundary", "none");
+    net.node(sim).setFloat("gravityY", 0.0f);
+    net.node(sim).setFloat("lifetime", 0.5f);
+    net.node(sim).setFloat("initialSpeed", 4.0f);
+    net.setTime(4.0);
+    auto emitted = net.cook(sim);
+    for (size_t i = 0; i < emitted->pointCount(); ++i) {
+        const float life = emitted->findAttrib(AttribClass::point, "life")->at(i);
+        CHECK(life >= 0.0f && life < 1.0f);
+        CHECK(std::hypot(emitted->x()[i] - net.cook(gen)->x()[i], emitted->y()[i] - net.cook(gen)->y()[i]) <= 4.0f * 0.5f + 0.05f);
+    }
+
+    // A single particle falls towards an attractor.
+    net.node(gen).setFloat("count", 1.0f);
+    net.node(gen).setFloat("cx", 5.0f);
+    net.node(gen).setFloat("cy", 0.0f);
+    net.node(gen).setFloat("width", 0.0f);
+    net.node(gen).setFloat("height", 0.0f);
+    net.node(sim).setFloat("lifetime", 0.0f);
+    net.node(sim).setFloat("initialSpeed", 0.0f);
+    net.node(sim).setFloat("attract", 20.0f);
+    net.node(sim).setFloat("attractX", 0.0f);
+    net.setTime(0.5);
+    CHECK(net.cook(sim)->x()[0] < 5.0f);
+
+    net.node(sim).setString("boundary", "teleport");
+    CHECK(cookThrows(net, sim));
+    net.node(sim).setString("boundary", "bounce");
+    net.node(sim).setFloat("boundsMaxX", -20.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+namespace {
+
+struct OneParticle {
+    Network net{2};
+    NodeId gen, sim;
+
+    OneParticle(float x, float y) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 1.0f);
+        net.node(gen).setFloat("cx", x);
+        net.node(gen).setFloat("cy", y);
+        net.node(gen).setFloat("width", 0.0f);
+        net.node(gen).setFloat("height", 0.0f);
+        sim = net.addNode("particles");
+        net.connect(gen, sim);
+        net.node(sim).setFloat("gravityY", 0.0f);
+        net.node(sim).setFloat("drag", 0.0f);
+    }
+
+    GeometryHandle at(double t) {
+        net.setTime(t);
+        return net.cook(sim);
+    }
+};
+
+}  // namespace
+
+TEST(particleVortexJetAndWindForcesMoveParticlesAsDescribed) {
+    // A positive vortex pushes counter-clockwise, only inside its radius.
+    OneParticle v(1.0f, 0.0f);
+    v.net.node(v.sim).setFloat("vortex", 8.0f);
+    v.net.node(v.sim).setFloat("vortexRadius", 2.0f);
+    auto swirled = v.at(0.05);
+    CHECK(swirled->findAttrib(AttribClass::point, "vy")->at(0) > 0.05f);
+    CHECK(std::fabs(swirled->findAttrib(AttribClass::point, "vx")->at(0)) < 1e-4f);
+    OneParticle outside(3.0f, 0.0f);
+    outside.net.node(outside.sim).setFloat("vortex", 8.0f);
+    outside.net.node(outside.sim).setFloat("vortexRadius", 2.0f);
+    CHECK_NEAR(outside.at(0.5)->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+    v.net.node(v.sim).setFloat("vortex", -8.0f);
+    CHECK(v.at(0.05)->findAttrib(AttribClass::point, "vy")->at(0) < -0.05f);
+
+    // A jet along +x accelerates what is in front of it and inside its width, and nothing else.
+    for (float y : {0.0f, 0.3f, 0.9f, -0.3f}) {
+        OneParticle j(1.0f, y);
+        j.net.node(j.sim).setFloat("jetAngle", 0.0f);
+        j.net.node(j.sim).setFloat("jetForce", 10.0f);
+        j.net.node(j.sim).setFloat("jetLength", 3.0f);
+        j.net.node(j.sim).setFloat("jetWidth", 2.0f);
+        const float vx = j.at(0.1)->findAttrib(AttribClass::point, "vx")->at(0);
+        const float vy = j.at(0.1)->findAttrib(AttribClass::point, "vy")->at(0);
+        CHECK(vx > 0.0f);
+        CHECK_NEAR(vy, 0.0f);
+        CHECK(vx <= 10.0f * 0.1f + 1e-4f);
+    }
+    for (std::pair<float, float> p : {std::pair{-1.0f, 0.0f}, {5.0f, 0.0f}, {1.0f, 1.5f}}) {
+        OneParticle j(p.first, p.second);
+        j.net.node(j.sim).setFloat("jetAngle", 0.0f);
+        j.net.node(j.sim).setFloat("jetForce", 10.0f);
+        j.net.node(j.sim).setFloat("jetWidth", 2.0f);
+        CHECK_NEAR(j.at(0.1)->findAttrib(AttribClass::point, "vx")->at(0), 0.0f);
+    }
+
+    // Wind drags the velocity to the wind's: exponentially, whatever the start.
+    OneParticle w(0.0f, 0.0f);
+    w.net.node(w.sim).setFloat("windX", 3.0f);
+    w.net.node(w.sim).setFloat("windY", -1.0f);
+    w.net.node(w.sim).setFloat("windDrag", 4.0f);
+    auto gusted = w.at(2.0);
+    CHECK(std::fabs(gusted->findAttrib(AttribClass::point, "vx")->at(0) - 3.0f) < 0.05f);
+    CHECK(std::fabs(gusted->findAttrib(AttribClass::point, "vy")->at(0) + 1.0f) < 0.05f);
+}
+
+TEST(particlesFollowAndCollideWithGuideCurves) {
+    // A guide polyline from x = 0 to 10 along y = 0, reversed by a mirror in x for the second case.
+    OneParticle p(5.0f, 0.5f);
+    NodeId guide = p.net.addNode("line");
+    p.net.node(guide).setFloat("count", 11.0f);
+    p.net.node(guide).setFloat("length", 10.0f);
+    p.net.connect(guide, p.sim, 1);
+    p.net.node(p.sim).setFloat("follow", 4.0f);
+    p.net.node(p.sim).setFloat("followRadius", 1.0f);
+    auto along = p.at(0.2);
+    CHECK(along->findAttrib(AttribClass::point, "vx")->at(0) > 0.1f);
+    CHECK_NEAR(along->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+
+    NodeId flip = p.net.addNode("transform");
+    p.net.connect(guide, flip);
+    p.net.node(flip).setFloat("sx", -1.0f);
+    p.net.connect(flip, p.sim, 1);
+    p.net.node(p.gen).setFloat("cx", -5.0f);
+    CHECK(p.at(0.2)->findAttrib(AttribClass::point, "vx")->at(0) < -0.1f);
+
+    // Pulling towards the guide closes the distance; outside the radius nothing happens.
+    p.net.node(p.sim).setFloat("follow", 0.0f);
+    p.net.node(p.sim).setFloat("followPull", 6.0f);
+    CHECK(p.at(0.2)->findAttrib(AttribClass::point, "vy")->at(0) < -0.1f);
+    p.net.node(p.gen).setFloat("cy", 3.0f);
+    CHECK_NEAR(p.at(0.2)->findAttrib(AttribClass::point, "vy")->at(0), 0.0f);
+
+    // A floor made of a guide line: a falling particle never gets below it and bounces back up.
+    OneParticle f(5.0f, 0.0f);
+    NodeId floor = f.net.addNode("line");
+    f.net.node(floor).setFloat("count", 11.0f);
+    f.net.node(floor).setFloat("length", 10.0f);
+    f.net.node(floor).setFloat("y", -1.0f);
+    f.net.connect(floor, f.sim, 1);
+    f.net.node(f.sim).setFloat("gravityY", -10.0f);
+    f.net.node(f.sim).setFloat("collide", 1.0f);
+    f.net.node(f.sim).setFloat("bounce", 1.0f);
+    float lowest = 1e9f, highestAfter = -1e9f;
+    for (double t = 0.0; t <= 2.0; t += 0.01) {
+        const float y = f.at(t)->y()[0];
+        lowest = std::min(lowest, y);
+        if (t > 0.6) highestAfter = std::max(highestAfter, y);
+    }
+    CHECK(lowest >= -1.0f);
+    CHECK(highestAfter > -0.5f);  // it came back up after the first impact at t = 0.447 s
+    f.net.node(f.sim).setFloat("collide", 0.0f);
+    CHECK(f.at(2.0)->y()[0] < -10.0f);
+
+    // Running to a time is the same as playing up to it, with guides too, and a guide that is rebuilt with the same lines keeps the run.
+    OneParticle g(5.0f, 0.0f);
+    NodeId floor2 = g.net.addNode("line");
+    g.net.node(floor2).setFloat("count", 11.0f);
+    g.net.node(floor2).setFloat("length", 10.0f);
+    g.net.node(floor2).setFloat("y", -1.0f);
+    g.net.connect(floor2, g.sim, 1);
+    for (const char* name : {"gravityY"}) g.net.node(g.sim).setFloat(name, -10.0f);
+    g.net.node(g.sim).setFloat("collide", 1.0f);
+    g.net.node(g.sim).setFloat("bounce", 0.8f);
+    auto played = [&] {
+        for (double t = 0.0; t < 1.5; t += 0.1) g.at(t);
+        return g.at(1.5);
+    }();
+    OneParticle h(5.0f, 0.0f);
+    NodeId floor3 = h.net.addNode("line");
+    h.net.node(floor3).setFloat("count", 11.0f);
+    h.net.node(floor3).setFloat("length", 10.0f);
+    h.net.node(floor3).setFloat("y", -1.0f);
+    h.net.connect(floor3, h.sim, 1);
+    h.net.node(h.sim).setFloat("gravityY", -10.0f);
+    h.net.node(h.sim).setFloat("collide", 1.0f);
+    h.net.node(h.sim).setFloat("bounce", 0.8f);
+    CHECK(sameGeometry(*played, *h.at(1.5)));
+}
+
+namespace {
+
+struct Smoke {
+    Network net;
+    NodeId gas;
+
+    explicit Smoke(size_t threads = 1) : net(threads) {
+        gas = net.addNode("gasField");
+        net.node(gas).setFloat("boundsMinX", -4.0f);
+        net.node(gas).setFloat("boundsMaxX", 4.0f);
+        net.node(gas).setFloat("boundsMinY", -4.0f);
+        net.node(gas).setFloat("boundsMaxY", 4.0f);
+        net.node(gas).setFloat("resolution", 32.0f);
+        net.node(gas).setFloat("nozzleY", -3.0f);
+        net.node(gas).setFloat("nozzleDensity", 20.0f);
+        net.node(gas).setFloat("nozzleHeat", 20.0f);
+        net.node(gas).setFloat("buoyancy", 3.0f);
+    }
+
+    GeometryHandle at(double t) {
+        net.setTime(t);
+        return net.cook(gas);
+    }
+};
+
+float densityCentreY(const Geometry& g) {
+    const AttribArray* d = g.findAttrib(AttribClass::point, "density");
+    double sum = 0.0, weighted = 0.0;
+    for (size_t i = 0; i < g.pointCount(); ++i) {
+        sum += d->at(i);
+        weighted += static_cast<double>(d->at(i)) * g.y()[i];
+    }
+    return sum > 0.0 ? static_cast<float>(weighted / sum) : 0.0f;
+}
+
+}  // namespace
+
+TEST(gasFieldCarriesSmokeUpwardsAndIsAPureFunctionOfTime) {
+    Smoke smoke;
+    CHECK(smoke.net.dependsOnTime(smoke.gas));
+    auto start = smoke.at(0.0);
+    CHECK(start->pointCount() == 32u * 32u);
+    for (size_t i = 0; i < start->pointCount(); ++i) CHECK(start->findAttrib(AttribClass::point, "density")->at(i) == 0.0f);
+
+    auto early = smoke.at(0.5);
+    auto later = smoke.at(2.0);
+    const float lowCentre = densityCentreY(*early), highCentre = densityCentreY(*later);
+    CHECK(lowCentre < -2.0f && lowCentre > -3.6f);
+    CHECK(highCentre > lowCentre + 0.5f);  // hot gas climbs
+    float fastest = 0.0f;
+    for (size_t i = 0; i < later->pointCount(); ++i) fastest = std::max(fastest, later->findAttrib(AttribClass::point, "speed")->at(i));
+    CHECK(fastest > 0.5f);
+
+    // Scrubbing back and forth, and any thread count, give what a fresh run gives.
+    smoke.at(1.0);
+    auto again = smoke.at(2.0);
+    CHECK(sameGeometry(*again, *later));
+    Smoke fresh(4);
+    CHECK(sameGeometry(*fresh.at(2.0), *later));
+
+    // No heat and no weight: the nozzle only adds smoke that stays near it.
+    smoke.net.node(smoke.gas).setFloat("buoyancy", 0.0f);
+    smoke.net.node(smoke.gas).setFloat("nozzleHeat", 0.0f);
+    CHECK(densityCentreY(*smoke.at(2.0)) < -2.5f);
+
+    smoke.net.node(smoke.gas).setFloat("resolution", 2.0f);
+    CHECK(cookThrows(smoke.net, smoke.gas));
+    smoke.net.node(smoke.gas).setFloat("resolution", 32.0f);
+    smoke.net.node(smoke.gas).setFloat("boundsMaxX", -9.0f);
+    CHECK(cookThrows(smoke.net, smoke.gas));
+}
+
+TEST(gasFieldRedBlackIsThreadIndependentAndAgreesWithTheSerialSweep) {
+    auto configure = [](Smoke& s, bool redBlack) {
+        s.net.node(s.gas).setFloat("resolution", 160.0f);
+        s.net.node(s.gas).setFloat("redBlack", redBlack ? 1.0f : 0.0f);
+    };
+    Smoke one(1), many(4), plain(1);
+    configure(one, true);
+    configure(many, true);
+    configure(plain, false);
+    auto a = one.at(1.0);
+    CHECK(sameGeometry(*many.at(1.0), *a));  // 25600 cells: the 4-thread run really is threaded
+    auto serial = plain.at(1.0);
+    CHECK(!sameGeometry(*serial, *a));
+    CHECK(std::fabs(densityCentreY(*a) - densityCentreY(*serial)) < 0.1f);
+}
+
+TEST(gasFieldBlowsAndKeepsTheVelocityFieldDivergenceFree) {
+    Smoke blow;
+    blow.net.node(blow.gas).setFloat("nozzleHeat", 0.0f);
+    blow.net.node(blow.gas).setFloat("buoyancy", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleY", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleX", -3.0f);
+    blow.net.node(blow.gas).setFloat("nozzleAngle", 0.0f);
+    blow.net.node(blow.gas).setFloat("nozzleSpeed", 6.0f);
+    blow.net.node(blow.gas).setFloat("iterations", 100.0f);
+    auto g = blow.at(1.0);
+    const AttribArray* vx = g->findAttrib(AttribClass::point, "vx");
+    const AttribArray* vy = g->findAttrib(AttribClass::point, "vy");
+    // The jet reaches across the box: positive vx on the axis downstream of the nozzle.
+    const size_t row = 16, w = 32;
+    CHECK(vx->at(row * w + 12) > 0.3f);
+
+    // Mean divergence relative to the speed scale is small away from the walls.
+    const float h = 8.0f / 32.0f;
+    double div = 0.0, mag = 0.0;
+    for (size_t j = 3; j < w - 3; ++j) {
+        for (size_t i = 3; i < w - 3; ++i) {
+            div += std::fabs((vx->at(j * w + i + 1) - vx->at(j * w + i - 1) + vy->at((j + 1) * w + i) - vy->at((j - 1) * w + i)) / (2.0f * h));
+            mag += std::hypot(vx->at(j * w + i), vy->at(j * w + i)) / h;
+        }
+    }
+    CHECK(mag > 0.0 && div < 0.15 * mag);
+
+    // Closed walls: no flow through the left and right edge cells' outer faces (mirror), so the edge cell speed is below the interior's.
+    float edge = 0.0f, inner = 0.0f;
+    for (size_t j = 0; j < w; ++j) {
+        edge = std::max(edge, std::fabs(vx->at(j * w + w - 1)));
+        inner = std::max(inner, std::fabs(vx->at(j * w + w / 2)));
+    }
+    CHECK(edge < inner);
+}
+
+TEST(gasFieldInjectsFromSourcePointsAndWorksWithoutAnyInput) {
+    Smoke s;
+    s.net.node(s.gas).setFloat("nozzleDensity", 0.0f);
+    s.net.node(s.gas).setFloat("nozzleHeat", 0.0f);
+    CHECK(cookThrows(s.net, s.gas) == false);
+    NodeId src = s.net.addNode("generate");
+    s.net.node(src).setFloat("count", 1.0f);
+    s.net.node(src).setFloat("cx", 2.0f);
+    s.net.node(src).setFloat("cy", 2.0f);
+    s.net.node(src).setFloat("width", 0.0f);
+    s.net.node(src).setFloat("height", 0.0f);
+    s.net.connect(src, s.gas);
+    s.net.node(s.gas).setFloat("density", 10.0f);
+    s.net.node(s.gas).setFloat("buoyancy", 0.0f);
+    auto g = s.at(0.5);
+    float best = 0.0f, bx = 0.0f, by = 0.0f;
+    for (size_t i = 0; i < g->pointCount(); ++i) {
+        const float d = g->findAttrib(AttribClass::point, "density")->at(i);
+        if (d > best) {
+            best = d;
+            bx = g->x()[i];
+            by = g->y()[i];
+        }
+    }
+    CHECK(best > 0.1f);
+    CHECK(std::hypot(bx - 2.0f, by - 2.0f) < 0.6f);
+}
+
+TEST(liveGasKeepsItsHistoryWhenTheSourcesMove) {
+    auto densityNear = [](const Geometry& g, float cx, float cy) {
+        const AttribArray* d = g.findAttrib(AttribClass::point, "density");
+        float best = 0.0f;
+        for (size_t i = 0; i < g.pointCount(); ++i)
+            if (std::hypot(g.x()[i] - cx, g.y()[i] - cy) < 0.8f) best = std::max(best, d->at(i));
+        return best;
+    };
+    auto run = [&](float live) {
+        Smoke s;
+        Node& gas = s.net.node(s.gas);
+        gas.setFloat("nozzleDensity", 0.0f);
+        gas.setFloat("nozzleHeat", 0.0f);
+        gas.setFloat("buoyancy", 0.0f);
+        gas.setFloat("density", 10.0f);
+        gas.setFloat("live", live);
+        NodeId src = s.net.addNode("generate");
+        for (const auto& [name, value] : {std::pair<const char*, float>{"count", 1.0f}, {"cx", -2.0f}, {"cy", 0.0f}, {"width", 0.0f}, {"height", 0.0f}})
+            s.net.node(src).setFloat(name, value);
+        s.net.connect(src, s.gas);
+        s.at(0.5);
+        s.net.node(src).setFloat("cx", 2.0f);
+        auto g = s.at(0.6);
+        return std::pair<float, float>{densityNear(*g, -2.0f, 0.0f), densityNear(*g, 2.0f, 0.0f)};
+    };
+    const auto live = run(1.0f);
+    CHECK(live.first > 0.1f && live.second > 0.1f);
+    const auto replayed = run(0.0f);
+    CHECK(replayed.first < 0.01f && replayed.second > 0.1f);
+}
+
+TEST(liveParticlesKeepTheirRunWhenTheNozzleChanges) {
+    auto run = [](float live) {
+        Network net(1);
+        NodeId gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 200.0f);
+        net.node(gen).setFloat("cx", -2.0f);
+        net.node(gen).setFloat("cy", 0.0f);
+        net.node(gen).setFloat("width", 1.0f);
+        net.node(gen).setFloat("height", 1.0f);
+        NodeId sim = net.addNode("particles");
+        net.connect(gen, sim);
+        Node& n = net.node(sim);
+        for (const auto& [name, value] : {std::pair<const char*, float>{"gravityY", 0.0f}, {"drag", 0.0f}, {"gas", 1.0f}, {"live", live}, {"gasNozzleX", -3.5f},
+                                          {"gasNozzleAngle", 0.0f}, {"gasNozzleSpeed", 6.0f}, {"gasNozzleRadius", 1.5f}, {"gasResolution", 32.0f},
+                                          {"gasInfluence", 4.0f}, {"boundsMinX", -4.0f}, {"boundsMaxX", 8.0f}, {"boundsMinY", -4.0f}, {"boundsMaxY", 4.0f}})
+            n.setFloat(name, value);
+        net.setTime(0.5);
+        net.cook(sim);
+        n.setFloat("gasNozzleSpeed", 0.0f);
+        net.setTime(0.6);
+        auto g = net.cook(sim);
+        double sum = 0.0;
+        for (size_t i = 0; i < g->pointCount(); ++i) sum += g->findAttrib(AttribClass::point, "vx")->at(i);
+        return static_cast<float>(sum / static_cast<double>(g->pointCount()));
+    };
+    CHECK(run(1.0f) > 0.3f);
+    CHECK(std::fabs(run(0.0f)) < 1e-3f);
+}
+
+TEST(particlesAreBlownByGasAndCanStirIt) {
+    auto make = [](size_t threads, float gasOn) {
+        auto net = std::make_unique<Network>(threads);
+        NodeId gen = net->addNode("generate");
+        net->node(gen).setFloat("count", 200.0f);
+        net->node(gen).setFloat("cx", -2.0f);
+        net->node(gen).setFloat("cy", 0.0f);
+        net->node(gen).setFloat("width", 1.0f);
+        net->node(gen).setFloat("height", 1.0f);
+        NodeId sim = net->addNode("particles");
+        net->connect(gen, sim);
+        Node& n = net->node(sim);
+        n.setFloat("gravityY", 0.0f);
+        n.setFloat("drag", 0.0f);
+        n.setFloat("gas", gasOn);
+        n.setFloat("gasNozzleX", -3.5f);
+        n.setFloat("gasNozzleAngle", 0.0f);
+        n.setFloat("gasNozzleSpeed", 6.0f);
+        n.setFloat("gasNozzleRadius", 1.5f);
+        n.setFloat("gasResolution", 32.0f);
+        n.setFloat("gasInfluence", 4.0f);
+        n.setFloat("boundsMinX", -4.0f);
+        n.setFloat("boundsMaxX", 8.0f);
+        n.setFloat("boundsMinY", -4.0f);
+        n.setFloat("boundsMaxY", 4.0f);
+        return std::pair{std::move(net), sim};
+    };
+    auto meanVx = [](const Geometry& g) {
+        double sum = 0.0;
+        for (size_t i = 0; i < g.pointCount(); ++i) sum += g.findAttrib(AttribClass::point, "vx")->at(i);
+        return static_cast<float>(sum / static_cast<double>(g.pointCount()));
+    };
+
+    auto [off, offSim] = make(1, 0.0f);
+    off->setTime(1.0);
+    CHECK(std::fabs(meanVx(*off->cook(offSim))) < 1e-4f);
+    CHECK(off->cook(offSim)->findAttrib(AttribClass::point, "gas") == nullptr);
+
+    auto [on, onSim] = make(1, 1.0f);
+    on->setTime(1.0);
+    auto blown = on->cook(onSim);
+    CHECK(meanVx(*blown) > 0.5f);
+    CHECK(blown->findAttrib(AttribClass::point, "gas") != nullptr);
+
+    auto [many, manySim] = make(4, 1.0f);
+    many->setTime(1.0);
+    CHECK(sameGeometry(*blown, *many->cook(manySim)));
+
+    // Particles that emit and push put smoke into the gas, which shows in their `gas` attribute.
+    on->node(onSim).setFloat("gasNozzleSpeed", 0.0f);
+    on->node(onSim).setFloat("gasEmit", 5.0f);
+    float total = 0.0f;
+    for (size_t i = 0; i < 200; ++i) total += on->cook(onSim)->findAttrib(AttribClass::point, "gas")->at(i);
+    CHECK(total > 1.0f);
+
+    on->node(onSim).setFloat("gasResolution", 1.0f);
+    CHECK(cookThrows(*on, onSim));
+}
+
+TEST(growSplitsLongSegmentsAndPushesNodesApart) {
+    Network net(1);
+    NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 8.0f);
+    net.node(circle).setFloat("radius", 0.3f);
+    NodeId grow = net.addNode("grow");
+    net.connect(circle, grow);
+    Node& n = net.node(grow);
+    n.setFloat("attract", 0.0f);
+    n.setFloat("smooth", 0.0f);
+    n.setFloat("maxLength", 100.0f);
+    n.setFloat("repelRadius", 2.0f);
+    CHECK(net.dependsOnTime(grow));
+    auto meanRadius = [](const Geometry& g) {
+        double sum = 0.0;
+        for (size_t i = 0; i < g.pointCount(); ++i) sum += std::hypot(g.x()[i], g.y()[i]);
+        return sum / static_cast<double>(g.pointCount());
+    };
+
+    auto start = net.cook(grow);
+    CHECK(start->pointCount() == 8 && start->primitiveCount() == 1 && start->primitives()[0].closed);
+    net.setTime(0.5);
+    auto pushed = net.cook(grow);
+    CHECK(pushed->pointCount() == 8);
+    CHECK(meanRadius(*pushed) > 0.3 + 0.05);
+
+    // Without any force and with a huge maxLength nothing moves.
+    n.setFloat("repel", 0.0f);
+    auto still = net.cook(grow);
+    for (size_t i = 0; i < still->pointCount(); ++i) CHECK_NEAR(still->x()[i], start->x()[i]);
+
+    // Long segments are split, the new points are younger, and the bounds hold.
+    n.setFloat("repel", 6.0f);
+    n.setFloat("attract", 8.0f);
+    n.setFloat("smooth", 4.0f);
+    n.setFloat("maxLength", 0.2f);
+    n.setFloat("repelRadius", 0.5f);
+    n.setFloat("useBounds", 1.0f);
+    n.setFloat("boundsMinX", -1.0f);
+    n.setFloat("boundsMaxX", 1.0f);
+    n.setFloat("boundsMinY", -1.0f);
+    n.setFloat("boundsMaxY", 1.0f);
+    net.setTime(3.0);
+    auto grown = net.cook(grow);
+    CHECK(grown->pointCount() > 20);
+    float youngest = 1e9f;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        CHECK(grown->x()[i] >= -1.0f && grown->x()[i] <= 1.0f && grown->y()[i] >= -1.0f && grown->y()[i] <= 1.0f);
+        youngest = std::min(youngest, grown->findAttrib(AttribClass::point, "age")->at(i));
+    }
+    CHECK(youngest < 2.9f);
+    n.setFloat("maxPoints", 20.0f);
+    CHECK(net.cook(grow)->pointCount() <= 20);
+    n.setFloat("maxPoints", 20000.0f);
+
+    // Scrubbing back and forth, a fresh network and more threads all give the same curves.
+    net.setTime(1.0);
+    auto early = net.cook(grow);
+    net.setTime(3.0);
+    CHECK(sameGeometry(*grown, *net.cook(grow)));
+    net.setTime(1.0);
+    CHECK(sameGeometry(*early, *net.cook(grow)));
+    Network other(4);
+    NodeId circle2 = other.addNode("circle");
+    other.node(circle2).setFloat("count", 8.0f);
+    other.node(circle2).setFloat("radius", 0.3f);
+    NodeId grow2 = other.addNode("grow");
+    other.connect(circle2, grow2);
+    for (const std::string& name : n.floatNames()) other.node(grow2).setFloat(name, n.getFloat(name));
+    other.setTime(1.0);
+    CHECK(sameGeometry(*early, *other.cook(grow2)));
+
+    NodeId empty = net.addNode("generate");
+    NodeId bad = net.addNode("grow");
+    net.connect(empty, bad);
+    CHECK(cookThrows(net, bad));
+}
+
+TEST(fluidStaysAtRestSettlesInTheBoxAndIsDeterministic) {
+    auto build = [](Network& net, NodeId& fluid) {
+        NodeId merge = net.addNode("merge");
+        for (int row = 0; row < 8; ++row) {
+            NodeId line = net.addNode("line");
+            net.node(line).setFloat("count", 20.0f);
+            net.node(line).setFloat("length", 1.9f);
+            net.node(line).setFloat("y", 0.1f * static_cast<float>(row));
+            net.connect(line, merge, row);
+        }
+        fluid = net.addNode("fluid");
+        net.connect(merge, fluid);
+        Node& n = net.node(fluid);
+        n.setFloat("boundsMinX", 0.0f);
+        n.setFloat("boundsMaxX", 2.0f);
+        n.setFloat("boundsMinY", -1.0f);
+        n.setFloat("boundsMaxY", 3.0f);
+        return merge;
+    };
+    Network net(1);
+    NodeId fluid;
+    NodeId source = build(net, fluid);
+    Node& n = net.node(fluid);
+    CHECK(net.dependsOnTime(fluid));
+
+    // A lattice of the right spacing is at rest density: no gravity, no motion.
+    n.setFloat("gravityY", 0.0f);
+    auto start = net.cook(fluid);
+    CHECK(start->pointCount() == 160);
+    net.setTime(0.5);
+    auto still = net.cook(fluid);
+    for (size_t i = 0; i < still->pointCount(); ++i) {
+        CHECK(std::fabs(still->x()[i] - start->x()[i]) < 0.02f);
+        CHECK(std::fabs(still->y()[i] - start->y()[i]) < 0.02f);
+    }
+
+    // Under gravity the block falls into the floor and settles with roughly rest density, inside the bounds.
+    n.setFloat("gravityY", -9.8f);
+    net.setTime(2.0);
+    auto settled = net.cook(fluid);
+    const AttribArray* density = settled->findAttrib(AttribClass::point, "density");
+    double meanDensity = 0.0, meanY = 0.0;
+    float maxY = -1e9f;
+    for (size_t i = 0; i < settled->pointCount(); ++i) {
+        CHECK(settled->x()[i] >= 0.0f && settled->x()[i] <= 2.0f && settled->y()[i] >= -1.0f && settled->y()[i] <= 3.0f);
+        meanDensity += density->at(i);
+        meanY += settled->y()[i];
+        maxY = std::max(maxY, settled->y()[i]);
+    }
+    meanDensity /= static_cast<double>(settled->pointCount());
+    meanY /= static_cast<double>(settled->pointCount());
+    CHECK(meanY < -0.4 && maxY < 0.1f);
+    CHECK(meanDensity > 0.7 && meanDensity < 1.5);
+
+    // Scrubbing, more threads and a changed signature all reproduce the same particles.
+    net.setTime(1.0);
+    auto early = net.cook(fluid);
+    net.setTime(2.0);
+    CHECK(sameGeometry(*settled, *net.cook(fluid)));
+    Network other(4);
+    NodeId fluid2;
+    build(other, fluid2);
+    for (const std::string& name : n.floatNames()) other.node(fluid2).setFloat(name, n.getFloat(name));
+    other.setTime(1.0);
+    CHECK(sameGeometry(*early, *other.cook(fluid2)));
+    n.setFloat("vorticity", 5.0f);
+    n.setFloat("tension", 0.05f);
+    auto swirled = net.cook(fluid);
+    for (size_t i = 0; i < swirled->pointCount(); ++i) CHECK(std::isfinite(swirled->x()[i]) && std::isfinite(swirled->y()[i]));
+
+    n.setFloat("spacing", 0.0f);
+    CHECK(cookThrows(net, fluid));
+    n.setFloat("spacing", 0.1f);
+    NodeId empty = net.addNode("generate");
+    net.node(empty).setFloat("count", 0.0f);
+    NodeId bad = net.addNode("fluid");
+    net.connect(empty, bad);
+    CHECK(cookThrows(net, bad));
+    (void)source;
+}
+
+TEST(colonizeGrowsBranchesToEveryAttractor) {
+    Network net(1);
+    NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 40.0f);
+    net.node(ring).setFloat("radius", 3.0f);
+    NodeId root = net.addNode("generate");
+    net.node(root).setFloat("count", 1.0f);
+    net.node(root).setFloat("width", 0.0f);
+    net.node(root).setFloat("height", 0.0f);
+    NodeId tree = net.addNode("colonize");
+    net.connect(ring, tree, 0);
+    net.connect(root, tree, 1);
+    Node& n = net.node(tree);
+    n.setFloat("influence", 6.0f);
+    auto grown = net.cook(tree);
+    CHECK(grown->pointCount() > 40 && grown->primitiveCount() >= 2);
+    for (const Primitive& p : grown->primitives()) CHECK(p.count >= 2 && !p.closed);
+    const Geometry& attractors = *net.cook(ring);
+    for (size_t a = 0; a < attractors.pointCount(); ++a) {
+        float nearest = 1e9f;
+        for (size_t i = 0; i < grown->pointCount(); ++i)
+            nearest = std::min(nearest, std::hypot(grown->x()[i] - attractors.x()[a], grown->y()[i] - attractors.y()[a]));
+        CHECK(nearest < 0.3f + 1e-3f);
+    }
+    int32_t maxDepth = 0, rootSize = 0;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        maxDepth = std::max(maxDepth, grown->findAttrib(AttribClass::point, "depth")->ints()[i]);
+        if (grown->findAttrib(AttribClass::point, "depth")->ints()[i] == 0) rootSize = grown->findAttrib(AttribClass::point, "size")->ints()[i];
+    }
+    CHECK(maxDepth >= 15);
+    CHECK(rootSize > 40);
+    CHECK(sameGeometry(*grown, *net.cook(tree)));
+
+    n.setFloat("maxNodes", 10.0f);
+    CHECK(net.cook(tree)->pointCount() <= 20);
+    n.setFloat("maxNodes", 200000.0f);
+    n.setFloat("killDistance", 7.0f);
+    CHECK(cookThrows(net, tree));
+    n.setFloat("killDistance", 0.3f);
+    NodeId none = net.addNode("generate");
+    net.node(none).setFloat("count", 0.0f);
+    NodeId bad = net.addNode("colonize");
+    net.connect(ring, bad, 0);
+    net.connect(none, bad, 1);
+    CHECK(cookThrows(net, bad));
+}
+
+TEST(streamlinesFollowTheFieldKeepTheirSpacingAndReadAGasGrid) {
+    auto seeds = [](Network& net, float count, float width, float height) {
+        NodeId gen = net.addNode("generate");
+        net.node(gen).setFloat("count", count);
+        net.node(gen).setFloat("width", width);
+        net.node(gen).setFloat("height", height);
+        return gen;
+    };
+    Network net(1);
+    NodeId one = seeds(net, 1.0f, 0.0f, 0.0f);
+    NodeId lines = net.addNode("streamlines");
+    net.connect(one, lines);
+    Node& n = net.node(lines);
+    // The angle field with no turns points along +x: straight lines.
+    n.setString("field", "angle");
+    n.setFloat("turns", 0.0f);
+    n.setFloat("stepSize", 0.1f);
+    n.setFloat("maxSteps", 10.0f);
+    n.setString("direction", "forward");
+    auto forward = net.cook(lines);
+    CHECK(forward->pointCount() == 11 && forward->primitiveCount() == 1);
+    CHECK_NEAR(forward->x()[10], 1.0f);
+    CHECK_NEAR(forward->y()[10], 0.0f);
+    CHECK_NEAR(forward->findAttrib(AttribClass::point, "u")->at(10), 1.0f);
+    n.setString("direction", "both");
+    auto both = net.cook(lines);
+    CHECK(both->pointCount() == 21);
+    CHECK_NEAR(both->x()[0], -1.0f);
+    CHECK_NEAR(both->x()[10], 0.0f);
+    n.setFloat("useBounds", 1.0f);
+    n.setFloat("boundsMinX", -0.35f);
+    n.setFloat("boundsMaxX", 0.55f);
+    auto clipped = net.cook(lines);
+    CHECK(clipped->pointCount() == 9);
+    n.setFloat("useBounds", 0.0f);
+
+    // Many seeds: without spacing every seed gives a line, with it the lines keep their distance.
+    Network crowd(1);
+    NodeId many = seeds(crowd, 400.0f, 6.0f, 6.0f);
+    NodeId cl = crowd.addNode("streamlines");
+    crowd.connect(many, cl);
+    Node& c = crowd.node(cl);
+    c.setFloat("maxSteps", 60.0f);
+    auto free = crowd.cook(cl);
+    CHECK(free->primitiveCount() == 400);
+    c.setFloat("separation", 0.4f);
+    auto spaced = crowd.cook(cl);
+    CHECK(spaced->primitiveCount() > 5 && spaced->primitiveCount() < 400);
+    const AttribArray* lineOf = spaced->findAttrib(AttribClass::point, "line");
+    float closest = 1e9f;
+    for (size_t i = 0; i < spaced->pointCount(); ++i) {
+        for (size_t j = i + 1; j < spaced->pointCount(); ++j) {
+            if (lineOf->ints()[i] == lineOf->ints()[j]) continue;
+            closest = std::min(closest, std::hypot(spaced->x()[i] - spaced->x()[j], spaced->y()[i] - spaced->y()[j]));
+        }
+    }
+    CHECK(closest >= 0.4f * 0.5f * 0.99f);
+
+    // A gas grid is a field: the nozzle blows along +x, so a line seeded in it runs along +x.
+    Network sim(1);
+    NodeId gas = sim.addNode("gasField");
+    Node& g = sim.node(gas);
+    g.setFloat("nozzleX", 0.0f);
+    g.setFloat("nozzleY", 0.0f);
+    g.setFloat("nozzleAngle", 0.0f);
+    g.setFloat("nozzleSpeed", 6.0f);
+    g.setFloat("nozzleDensity", 0.0f);
+    g.setFloat("nozzleHeat", 0.0f);
+    g.setFloat("buoyancy", 0.0f);
+    g.setFloat("boundsMinX", -4.0f);
+    g.setFloat("boundsMaxX", 4.0f);
+    g.setFloat("boundsMinY", -4.0f);
+    g.setFloat("boundsMaxY", 4.0f);
+    g.setFloat("resolution", 32.0f);
+    NodeId seed = seeds(sim, 1.0f, 0.0f, 0.0f);
+    NodeId sl = sim.addNode("streamlines");
+    sim.connect(seed, sl, 0);
+    sim.connect(gas, sl, 1);
+    sim.node(sl).setString("direction", "forward");
+    sim.node(sl).setFloat("maxSteps", 30.0f);
+    sim.setTime(0.5);
+    auto flow = sim.cook(sl);
+    CHECK(flow->primitiveCount() == 1 && flow->pointCount() > 5);
+    CHECK(flow->x()[flow->pointCount() - 1] > 0.5f);
+    CHECK(std::fabs(flow->y()[flow->pointCount() - 1]) < 0.5f * flow->x()[flow->pointCount() - 1]);
+
+    n.setString("field", "nonesuch");
+    CHECK(cookThrows(net, lines));
+    n.setString("field", "curl");
+    n.setFloat("stepSize", 0.0f);
+    CHECK(cookThrows(net, lines));
+}
+
+double alignmentOf(const Geometry& geo) {
+    double sx = 0.0, sy = 0.0, total = 0.0;
+    for (size_t i = 0; i < geo.pointCount(); ++i) {
+        const double vx = geo.findAttrib(AttribClass::point, "vx")->at(i), vy = geo.findAttrib(AttribClass::point, "vy")->at(i);
+        sx += vx;
+        sy += vy;
+        total += std::hypot(vx, vy);
+    }
+    return std::hypot(sx, sy) / total;
+}
+
+TEST(boidsFlockAlignAndStayWithinTheirSpeedLimits) {
+    auto build = [](Network& net, NodeId& gen, NodeId& sim) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 200.0f);
+        net.node(gen).setFloat("width", 6.0f);
+        net.node(gen).setFloat("height", 6.0f);
+        sim = net.addNode("boids");
+        net.connect(gen, sim);
+        net.node(sim).setFloat("radius", 2.0f);
+    };
+    Network net(2);
+    NodeId gen, sim;
+    build(net, gen, sim);
+    CHECK(net.dependsOnTime(sim));
+    auto start = net.cook(sim);
+    CHECK(start->pointCount() == 200 && start->hasAttrib(AttribClass::point, "neighbors") && start->hasAttrib(AttribClass::point, "angle"));
+    const double before = alignmentOf(*start);
+    net.setTime(6.0);
+    auto later = net.cook(sim);
+    CHECK(alignmentOf(*later) > before + 0.3);
+    for (size_t i = 0; i < later->pointCount(); ++i) {
+        const float speed = later->findAttrib(AttribClass::point, "speed")->at(i);
+        CHECK(speed >= 1.0f - 1e-3f && speed <= 3.0f + 1e-3f);
+        CHECK(later->x()[i] >= -10.0f && later->x()[i] <= 10.0f && later->y()[i] >= -6.0f && later->y()[i] <= 6.0f);
+    }
+
+    // Incremental, restarted and threaded runs agree with a fresh network.
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId g, s;
+        build(other, g, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    CHECK(sameGeometry(*later, *fresh(6.0, 1)));
+    CHECK(sameGeometry(*later, *fresh(6.0, 4)));
+    net.setTime(2.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(2.0, 3)));
+
+    // Without any rule the boids just fly straight at their initial speed.
+    net.node(sim).setFloat("separation", 0.0f);
+    net.node(sim).setFloat("alignment", 0.0f);
+    net.node(sim).setFloat("cohesion", 0.0f);
+    net.node(sim).setString("boundary", "none");
+    net.setTime(0.0);
+    auto s0 = net.cook(sim);
+    net.setTime(1.0);
+    auto s1 = net.cook(sim);
+    CHECK_NEAR(s1->x()[5] - s0->x()[5], s1->findAttrib(AttribClass::point, "vx")->at(5));
+
+    // A goal pulls the flock towards it.
+    net.node(sim).setFloat("goal", 4.0f);
+    net.node(sim).setFloat("goalX", 100.0f);
+    net.node(sim).setFloat("goalY", 0.0f);
+    net.setTime(8.0);
+    double meanVx = 0.0;
+    auto goalGeo = net.cook(sim);
+    for (size_t i = 0; i < goalGeo->pointCount(); ++i) meanVx += goalGeo->findAttrib(AttribClass::point, "vx")->at(i);
+    CHECK(meanVx / static_cast<double>(goalGeo->pointCount()) > 1.5);
+
+    net.node(sim).setString("boundary", "teleport");
+    CHECK(cookThrows(net, sim));
+    net.node(sim).setString("boundary", "bounce");
+    net.node(sim).setFloat("radius", 0.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(springsHangAChainThatKeepsItsLengthAndHonoursPins) {
+    auto build = [](Network& net, NodeId& line, NodeId& sim) {
+        line = net.addNode("line");
+        net.node(line).setFloat("count", 20.0f);
+        sim = net.addNode("springs");
+        net.connect(line, sim);
+        net.node(sim).setFloat("pinEnds", 1.0f);
+    };
+    Network net(2);
+    NodeId line, sim;
+    build(net, line, sim);
+    auto rest = net.cook(line);
+    CHECK(net.dependsOnTime(sim));
+    CHECK(sameGeometry(*net.cook(sim), *rest) == false);
+    CHECK_NEAR(net.cook(sim)->x()[7], rest->x()[7]);
+
+    net.setTime(4.0);
+    auto swung = net.cook(sim);
+    CHECK(swung->primitiveCount() == rest->primitiveCount());
+    CHECK_NEAR(swung->x()[0], rest->x()[0]);  // the pinned end does not move
+    CHECK_NEAR(swung->y()[0], rest->y()[0]);
+    CHECK(swung->y()[19] < rest->y()[19] - 1.0f);
+    double restLength = 0.0, length = 0.0;
+    for (size_t i = 1; i < rest->pointCount(); ++i) {
+        restLength += std::hypot(static_cast<double>(rest->x()[i] - rest->x()[i - 1]), static_cast<double>(rest->y()[i] - rest->y()[i - 1]));
+        length += std::hypot(static_cast<double>(swung->x()[i] - swung->x()[i - 1]), static_cast<double>(swung->y()[i] - swung->y()[i - 1]));
+    }
+    CHECK(std::fabs(length - restLength) < 0.05 * restLength);
+    CHECK(swung->hasAttrib(AttribClass::point, "strain") && swung->hasAttrib(AttribClass::point, "speed"));
+
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId l, s;
+        build(other, l, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    net.setTime(1.5);
+    net.cook(sim);
+    net.setTime(3.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(3.0, 1)));
+    CHECK(sameGeometry(*net.cook(sim), *fresh(3.0, 4)));
+    net.setTime(0.7);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(0.7, 2)));
+
+    // Without pins everything falls, and a stiffer or looser rest length changes the shape.
+    net.node(sim).setFloat("pinEnds", 0.0f);
+    net.setTime(1.0);
+    CHECK(net.cook(sim)->y()[0] < rest->y()[0] - 1.0f);
+    net.node(sim).setFloat("neighborRadius", 1.5f);
+    CHECK(net.cook(sim)->pointCount() == 20);
+
+    net.node(sim).setFloat("restScale", 0.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(springsCanOutputTheirSpringsAsLines) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 20.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "tag = x * 2;");
+    NodeId sim = net.addNode("springs");
+    net.connect(wr, sim);
+    net.node(sim).setFloat("pinEnds", 1.0f);
+    net.setTime(2.0);
+    auto points = net.cook(sim);
+    net.node(sim).setString("output", "springs");
+    auto lines = net.cook(sim);
+    CHECK(lines->pointCount() == 38 && lines->primitiveCount() == 19);
+    for (const Primitive& p : lines->primitives()) CHECK(p.count == 2 && !p.closed);
+    const AttribArray* tag = lines->findAttrib(AttribClass::point, "tag");
+    CHECK(tag && lines->hasAttrib(AttribClass::point, "strain") && lines->hasAttrib(AttribClass::point, "spring"));
+    // Spring k joins points k and k + 1: its ends sit where the points are and carry their attributes.
+    for (size_t k = 0; k < 19; ++k) {
+        CHECK_NEAR(lines->x()[2 * k], points->x()[k]);
+        CHECK_NEAR(lines->y()[2 * k + 1], points->y()[k + 1]);
+        CHECK_NEAR(tag->at(2 * k), points->findAttrib(AttribClass::point, "tag")->at(k));
+        CHECK_NEAR(tag->at(2 * k + 1), points->findAttrib(AttribClass::point, "tag")->at(k + 1));
+        CHECK(lines->findAttrib(AttribClass::point, "spring")->ints()[2 * k] == static_cast<int32_t>(k));
+    }
+    // Lines from neighborRadius come from the mesh, not from primitives.
+    net.node(sim).setFloat("neighborRadius", 1.2f);
+    CHECK(net.cook(sim)->primitiveCount() > 19);
+    net.node(sim).setString("output", "mesh");
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(boidsAvoidObstaclesFromTheirExtraInputs) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId sim = net.addNode("boids");
+    net.connect(gen, sim);
+    net.node(sim).setFloat("radius", 1.5f);
+    net.node(sim).setFloat("boundsMinX", -8.0f);
+    net.node(sim).setFloat("boundsMaxX", 8.0f);
+    net.node(sim).setFloat("boundsMinY", -8.0f);
+    net.node(sim).setFloat("boundsMaxY", 8.0f);
+    auto insideCount = [&](const Geometry& g, float radius) {
+        size_t inside = 0;
+        for (size_t i = 0; i < g.pointCount(); ++i) inside += std::hypot(g.x()[i], g.y()[i]) < radius ? 1 : 0;
+        return inside;
+    };
+    net.setTime(4.0);
+    CHECK(insideCount(*net.cook(sim), 2.0f) > 0);  // without an obstacle the flock flies through the middle
+
+    NodeId rock = net.addNode("generate");
+    net.node(rock).setFloat("count", 1.0f);
+    net.node(rock).setFloat("width", 0.0f);
+    net.node(rock).setFloat("height", 0.0f);
+    net.connect(rock, sim, 1);
+    net.node(sim).setFloat("obstacleRadius", 2.0f);
+    for (double t : {0.5, 1.0, 4.0}) {
+        net.setTime(t);
+        CHECK(insideCount(*net.cook(sim), 2.0f - 0.01f) == 0);
+    }
+
+    Network threaded(4);
+    NodeId g2 = threaded.addNode("generate"), r2 = threaded.addNode("generate"), s2 = threaded.addNode("boids");
+    threaded.connect(g2, s2);
+    threaded.connect(r2, s2, 1);
+    for (const char* p : {"count", "width", "height"}) threaded.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"count", "width", "height"}) threaded.node(r2).setFloat(p, net.node(rock).getFloat(p));
+    for (const char* p : {"radius", "boundsMinX", "boundsMaxX", "boundsMinY", "boundsMaxY", "obstacleRadius"}) threaded.node(s2).setFloat(p, net.node(sim).getFloat(p));
+    threaded.setTime(4.0);
+    net.setTime(4.0);
+    CHECK(sameGeometry(*net.cook(sim), *threaded.cook(s2)));
+
+    // An obstacle's own radius attribute wins over the parameter.
+    NodeId sized = net.addNode("wrangle");
+    net.connect(rock, sized);
+    net.node(sized).setString("code", "radius = 4;");
+    net.connect(sized, sim, 1);
+    CHECK(insideCount(*net.cook(sim), 4.0f - 0.01f) == 0);
+}
+
+TEST(lsystemGrowsPlantsAndReportsBadRules) {
+    Network net(1);
+    NodeId ls = net.addNode("lsystem");
+    net.node(ls).setString("axiom", "F");
+    net.node(ls).setString("rules", "F=FF");
+    net.node(ls).setFloat("iterations", 3.0f);
+    net.node(ls).setFloat("length", 0.5f);
+    auto trunk = net.cook(ls);
+    CHECK(trunk->pointCount() == 9 && trunk->primitiveCount() == 1);
+    CHECK_NEAR(trunk->x()[8], 0.0f);
+    CHECK_NEAR(trunk->y()[8], 4.0f);  // 8 steps of 0.5 straight up
+    CHECK_NEAR(trunk->findAttrib(AttribClass::point, "u")->at(8), 1.0f);
+
+    // Four right-angle turns close a square; a branch starts a new stroke one level deeper.
+    net.node(ls).setString("axiom", "F+F+F+F");
+    net.node(ls).setString("rules", "");
+    net.node(ls).setFloat("angle", 90.0f);
+    net.node(ls).setFloat("length", 1.0f);
+    auto square = net.cook(ls);
+    CHECK(square->pointCount() == 5);
+    CHECK_NEAR(square->x()[4], square->x()[0]);
+    CHECK_NEAR(square->y()[4], square->y()[0]);
+    net.node(ls).setString("axiom", "F[+F]F");
+    auto branched = net.cook(ls);
+    CHECK(branched->primitiveCount() == 3);
+    bool sawDeep = false;
+    for (size_t i = 0; i < branched->pointCount(); ++i) sawDeep |= branched->findAttrib(AttribClass::point, "depth")->ints()[i] == 1;
+    CHECK(sawDeep);
+
+    // A plant: deterministic, and random rule choices and jitter depend on the seed only.
+    net.node(ls).setString("axiom", "X");
+    net.node(ls).setString("rules", "X=F[+X][-X]FX; X=F[+X]F[-X]; F=FF");
+    net.node(ls).setFloat("iterations", 6.0f);
+    net.node(ls).setFloat("angleJitter", 8.0f);
+    net.node(ls).setFloat("lengthJitter", 0.2f);
+    net.node(ls).setFloat("branchScale", 0.9f);
+    auto plant = net.cook(ls);
+    CHECK(plant->pointCount() > 1000 && plant->primitiveCount() > 100);
+    Network other(4);
+    NodeId l2 = other.addNode("lsystem");
+    for (const char* p : {"iterations", "angleJitter", "lengthJitter", "branchScale", "angle", "length"}) other.node(l2).setFloat(p, net.node(ls).getFloat(p));
+    for (const char* p : {"axiom", "rules"}) other.node(l2).setString(p, net.node(ls).getString(p));
+    CHECK(sameGeometry(*plant, *other.cook(l2)));
+    net.node(ls).setFloat("seed", 2.0f);
+    CHECK(!sameGeometry(*plant, *net.cook(ls)));
+
+    net.node(ls).setString("rules", "XY=F");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("rules", "F=FF");
+    net.node(ls).setString("axiom", "F]");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("axiom", "");
+    CHECK(cookThrows(net, ls));
+    net.node(ls).setString("axiom", "F");
+    net.node(ls).setFloat("iterations", 30.0f);
+    CHECK(cookThrows(net, ls));  // 2^30 symbols is over the limit
+}
+
+TEST(curveSampleSpacesPointsAlongCurvesWithFramesAndAttributes) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 11.0f);
+    net.node(line).setFloat("length", 10.0f);
+    net.node(line).setFloat("y", 3.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "w = x * 2;");
+    NodeId cs = net.addNode("curveSample");
+    net.connect(wr, cs);
+    net.node(cs).setFloat("count", 5.0f);
+    auto even = net.cook(cs);
+    CHECK(even->pointCount() == 5 && even->primitiveCount() == 0);
+    for (size_t i = 0; i < 5; ++i) {
+        CHECK_NEAR(even->x()[i], 2.5f * static_cast<float>(i));
+        CHECK_NEAR(even->y()[i], 3.0f);
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "u")->at(i), 0.25f * static_cast<float>(i));
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "w")->at(i), 5.0f * static_cast<float>(i));  // interpolated between points
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "tx")->at(i), 1.0f);
+        CHECK_NEAR(even->findAttrib(AttribClass::point, "ny")->at(i), 1.0f);
+        CHECK(even->findAttrib(AttribClass::point, "curve")->ints()[i] == 0);
+    }
+
+    net.node(cs).setFloat("offset", 0.5f);
+    CHECK_NEAR(net.cook(cs)->y()[2], 3.5f);  // along the normal, to the left of the direction of travel
+    net.node(cs).setFloat("offset", 0.0f);
+
+    net.node(cs).setFloat("spacing", 2.0f);
+    auto spaced = net.cook(cs);
+    CHECK(spaced->pointCount() == 6);
+    CHECK_NEAR(spaced->x()[5], 10.0f);
+
+    net.node(cs).setFloat("spacing", 0.0f);
+    net.node(cs).setFloat("count", 400.0f);
+    net.node(cs).setFloat("random", 1.0f);
+    auto scattered = net.cook(cs);
+    CHECK(scattered->pointCount() == 400);
+    for (size_t i = 0; i < 400; ++i) {
+        CHECK(scattered->x()[i] >= 0.0f && scattered->x()[i] <= 10.0f);
+        CHECK_NEAR(scattered->findAttrib(AttribClass::point, "w")->at(i), scattered->x()[i] * 2.0f);
+    }
+    Network other(4);
+    NodeId l2 = other.addNode("line"), w2 = other.addNode("wrangle"), c2 = other.addNode("curveSample");
+    other.connect(l2, w2);
+    other.connect(w2, c2);
+    other.node(l2).setFloat("count", 11.0f);
+    other.node(l2).setFloat("y", 3.0f);
+    other.node(w2).setString("code", "w = x * 2;");
+    other.node(c2).setFloat("count", 400.0f);
+    other.node(c2).setFloat("random", 1.0f);
+    CHECK(sameGeometry(*scattered, *other.cook(c2)));
+
+    net.node(line).setFloat("count", 1.0f);
+    CHECK(net.cook(cs)->pointCount() == 0);  // nothing to sample on a single point
+}
+
+TEST(boidsObstaclesDriftWithTheirVelocityWithoutRestarting) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 300.0f);
+    net.node(gen).setFloat("width", 10.0f);
+    net.node(gen).setFloat("height", 10.0f);
+    NodeId rock = net.addNode("generate");
+    net.node(rock).setFloat("count", 1.0f);
+    net.node(rock).setFloat("width", 0.0f);
+    net.node(rock).setFloat("height", 0.0f);
+    NodeId drift = net.addNode("wrangle");
+    net.connect(rock, drift);
+    net.node(drift).setString("code", "vx = 1.5; radius = 1.5;");
+    NodeId sim = net.addNode("boids");
+    net.connect(gen, sim);
+    net.connect(drift, sim, 1);
+    net.node(sim).setFloat("radius", 1.5f);
+    for (const char* p : {"boundsMinX", "boundsMinY"}) net.node(sim).setFloat(p, -12.0f);
+    for (const char* p : {"boundsMaxX", "boundsMaxY"}) net.node(sim).setFloat(p, 12.0f);
+
+    // The rock is at x = 1.5 * t, and no boid is ever inside it.
+    std::vector<std::shared_ptr<const Geometry>> walked;
+    for (double t : {0.5, 1.0, 2.0, 3.0}) {
+        net.setTime(t);
+        auto g = net.cook(sim);
+        const float cx = 1.5f * static_cast<float>(t);
+        for (size_t i = 0; i < g->pointCount(); ++i) CHECK(std::hypot(g->x()[i] - cx, g->y()[i]) >= 1.5f - 0.01f);
+        walked.push_back(g);
+    }
+
+    // A pure function of time: jumping straight to t = 3 gives what playing up to it gave.
+    Network jump(2);
+    NodeId g2 = jump.addNode("generate"), r2 = jump.addNode("generate"), w2 = jump.addNode("wrangle"), s2 = jump.addNode("boids");
+    jump.connect(g2, s2);
+    jump.connect(r2, w2);
+    jump.connect(w2, s2, 1);
+    for (const char* p : {"count", "width", "height"}) jump.node(g2).setFloat(p, net.node(gen).getFloat(p));
+    for (const char* p : {"count", "width", "height"}) jump.node(r2).setFloat(p, net.node(rock).getFloat(p));
+    jump.node(w2).setString("code", "vx = 1.5; radius = 1.5;");
+    for (const char* p : {"radius", "boundsMinX", "boundsMinY", "boundsMaxX", "boundsMaxY"}) jump.node(s2).setFloat(p, net.node(sim).getFloat(p));
+    jump.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *jump.cook(s2)));
+
+    // The velocity matters: a rock that stays put leaves the flock somewhere else.
+    net.node(drift).setString("code", "radius = 1.5;");
+    net.setTime(3.0);
+    CHECK(!sameGeometry(*walked.back(), *net.cook(sim)));
+}
+
+namespace {
+
+struct MovingRock {
+    Network net{2};
+    NodeId gen, rock, move, sized, sim;
+
+    explicit MovingRock(const char* obstacleTime) {
+        gen = net.addNode("generate");
+        net.node(gen).setFloat("count", 300.0f);
+        net.node(gen).setFloat("width", 10.0f);
+        net.node(gen).setFloat("height", 10.0f);
+        rock = net.addNode("generate");
+        net.node(rock).setFloat("count", 1.0f);
+        net.node(rock).setFloat("width", 0.0f);
+        net.node(rock).setFloat("height", 0.0f);
+        move = net.addNode("transform");
+        net.connect(rock, move);
+        net.node(move).setExpression("tx", "1.5 * time");
+        sized = net.addNode("wrangle");
+        net.connect(move, sized);
+        net.node(sized).setString("code", "radius = 1.5;");
+        sim = net.addNode("boids");
+        net.connect(gen, sim);
+        net.connect(sized, sim, 1);
+        net.node(sim).setFloat("radius", 1.5f);
+        for (const char* p : {"boundsMinX", "boundsMinY"}) net.node(sim).setFloat(p, -12.0f);
+        for (const char* p : {"boundsMaxX", "boundsMaxY"}) net.node(sim).setFloat(p, 12.0f);
+        net.node(sim).setString("obstacleTime", obstacleTime);
+    }
+};
+
+}  // namespace
+
+TEST(boidsSampledObstaclesFollowAMovingInputAsAPureFunctionOfTime) {
+    MovingRock stepped("sampled");
+    std::vector<GeometryHandle> walked;
+    for (double t : {0.5, 1.0, 2.0, 3.0}) {
+        stepped.net.setTime(t);
+        const GeometryHandle g = stepped.net.cook(stepped.sim);
+        const float cx = 1.5f * static_cast<float>(t);
+        for (size_t i = 0; i < g->pointCount(); ++i) CHECK(std::hypot(g->x()[i] - cx, g->y()[i]) >= 1.5f - 0.01f);
+        walked.push_back(g);
+    }
+
+    MovingRock jump("sampled");
+    jump.net.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *jump.net.cook(jump.sim)));
+
+    // Going back in time and forward again gives the same picture.
+    stepped.net.setTime(1.0);
+    CHECK(sameGeometry(*walked[1], *stepped.net.cook(stepped.sim)));
+    stepped.net.setTime(3.0);
+    CHECK(sameGeometry(*walked.back(), *stepped.net.cook(stepped.sim)));
+
+    // Editing anything upstream of the obstacle changes the run: a rock that moves faster pushes the flock elsewhere.
+    stepped.net.node(stepped.move).setExpression("tx", "3 * time");
+    CHECK(!sameGeometry(*walked.back(), *stepped.net.cook(stepped.sim)));
+
+    // 'start' keeps its old meaning: the rock is where the input has it now, for the whole run.
+    MovingRock frozen("start");
+    frozen.net.setTime(3.0);
+    CHECK(!sameGeometry(*walked.back(), *frozen.net.cook(frozen.sim)));
+
+    MovingRock bad("sometimes");
+    bad.net.setTime(1.0);
+    bool threw = false;
+    try {
+        bad.net.cook(bad.sim);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(ribbonWidensCurvesIntoOutlinesEdgesAndRungs) {
+    Network net(2);
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 11.0f);
+    net.node(line).setFloat("length", 10.0f);
+    net.node(line).setFloat("y", 3.0f);
+    NodeId rb = net.addNode("ribbon");
+    net.connect(line, rb);
+    net.node(rb).setFloat("width", 2.0f);
+    net.node(rb).setFloat("widthEnd", 2.0f);
+    auto outline = net.cook(rb);
+    CHECK(outline->pointCount() == 22 && outline->primitiveCount() == 1);
+    CHECK(outline->primitives()[0].closed && outline->primitives()[0].count == 22);
+    for (size_t i = 0; i < 22; ++i) {
+        const float side = outline->findAttrib(AttribClass::point, "side")->at(i);
+        CHECK_NEAR(outline->y()[i], 3.0f + side);  // left of +x is +y
+        CHECK_NEAR(outline->findAttrib(AttribClass::point, "width")->at(i), 2.0f);
+    }
+    CHECK(outline->findAttrib(AttribClass::point, "side")->at(0) == 1.0f && outline->findAttrib(AttribClass::point, "side")->at(21) == -1.0f);
+
+    net.node(rb).setString("output", "edges");
+    auto edges = net.cook(rb);
+    CHECK(edges->primitiveCount() == 2 && !edges->primitives()[0].closed && edges->primitives()[1].start == 11);
+    net.node(rb).setString("output", "rungs");
+    auto rungs = net.cook(rb);
+    CHECK(rungs->primitiveCount() == 11 && rungs->primitives()[3].count == 2);
+    CHECK_NEAR(rungs->y()[6] - rungs->y()[7], 2.0f);
+
+    // Width runs from one end to the other, tapers pinch the ends, and an attribute scales it.
+    net.node(rb).setString("output", "outline");
+    net.node(rb).setFloat("width", 0.0f);
+    net.node(rb).setFloat("widthEnd", 4.0f);
+    auto grown = net.cook(rb);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(0), 0.0f);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(10), 4.0f);
+    CHECK_NEAR(grown->findAttrib(AttribClass::point, "width")->at(5), 2.0f);
+    net.node(rb).setFloat("width", 2.0f);
+    net.node(rb).setFloat("widthEnd", 2.0f);
+    net.node(rb).setFloat("taper", 0.2f);
+    auto pinched = net.cook(rb);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(0), 0.0f);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(10), 0.0f);
+    CHECK_NEAR(pinched->findAttrib(AttribClass::point, "width")->at(5), 2.0f);
+    net.node(rb).setFloat("taper", 0.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(line, wr);
+    net.node(wr).setString("code", "w = x;");
+    net.connect(wr, rb);
+    net.node(rb).setString("widthAttrib", "w");
+    auto scaled = net.cook(rb);
+    CHECK_NEAR(scaled->findAttrib(AttribClass::point, "width")->at(4), 2.0f * scaled->findAttrib(AttribClass::point, "w")->at(4));
+    net.node(rb).setString("widthAttrib", "missing");
+    CHECK(cookThrows(net, rb));
+    net.node(rb).setString("widthAttrib", "");
+    net.node(rb).setString("output", "sideways");
+    CHECK(cookThrows(net, rb));
+
+    // Closed curves give two closed rings and every point keeps its source attributes.
+    Network cells(2);
+    NodeId pts = cells.addNode("generate"), vor = cells.addNode("voronoi"), rib = cells.addNode("ribbon");
+    cells.node(pts).setFloat("count", 12.0f);
+    cells.connect(pts, vor);
+    cells.connect(vor, rib);
+    cells.node(rib).setString("output", "edges");
+    auto base = cells.cook(vor);
+    auto rings = cells.cook(rib);
+    CHECK(rings->primitiveCount() == 2 * base->primitiveCount());
+    CHECK(rings->pointCount() == 2 * base->pointCount());
+    for (const Primitive& p : rings->primitives()) CHECK(p.closed);
+
+    Network other(4);
+    NodeId l2 = other.addNode("line"), r2 = other.addNode("ribbon");
+    other.connect(l2, r2);
+    other.node(l2).setFloat("count", 11.0f);
+    other.node(l2).setFloat("length", 10.0f);
+    other.node(l2).setFloat("y", 3.0f);
+    other.node(r2).setFloat("width", 0.0f);
+    other.node(r2).setFloat("widthEnd", 4.0f);
+    CHECK(sameGeometry(*grown, *other.cook(r2)));
+}
+
+TEST(trailDrawsStreaksBehindMovingPoints) {
+    Network net(2);
+    NodeId gen = net.addNode("generate");
+    net.node(gen).setFloat("count", 20.0f);
+    NodeId wr = net.addNode("wrangle");
+    net.connect(gen, wr);
+    net.node(wr).setString("code", "vx = 2; vy = 0;");
+    NodeId tr = net.addNode("trail");
+    net.connect(wr, tr);
+    net.node(tr).setFloat("length", 0.5f);
+    net.node(tr).setFloat("segments", 4.0f);
+    auto base = net.cook(wr);
+    auto g = net.cook(tr);
+    CHECK(g->pointCount() == 20 * 5 && g->primitiveCount() == 20);
+    for (size_t p = 0; p < 20; ++p) {
+        const size_t head = p * 5, tail = p * 5 + 4;
+        CHECK_NEAR(g->x()[head], base->x()[p]);
+        CHECK_NEAR(g->x()[tail], base->x()[p] - 1.0f);  // 2 per second for half a second, behind the point
+        CHECK_NEAR(g->y()[tail], base->y()[p]);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "u")->at(tail), 1.0f);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "alpha")->at(head), 1.0f);
+        CHECK_NEAR(g->findAttrib(AttribClass::point, "alpha")->at(tail), 0.0f);
+        CHECK(g->findAttrib(AttribClass::point, "trail")->ints()[tail] == static_cast<int32_t>(p));
+        CHECK(g->primitives()[p].start == head && g->primitives()[p].count == 5 && !g->primitives()[p].closed);
+    }
+    net.node(tr).setFloat("maxLength", 0.25f);
+    CHECK_NEAR(net.cook(tr)->x()[4], base->x()[0] - 0.25f);
+    net.node(tr).setFloat("fade", 0.0f);
+    CHECK_NEAR(net.cook(tr)->findAttrib(AttribClass::point, "alpha")->at(4), 1.0f);
+    net.connect(gen, tr);
+    CHECK(cookThrows(net, tr));  // no velocity to follow
+}
+
+TEST(reactionDiffusionGrowsPatternsDeterministicallyAndStaysBounded) {
+    auto build = [](Network& net, NodeId& sim) {
+        sim = net.addNode("reactionDiffusion");
+        net.node(sim).setFloat("width", 48.0f);
+        net.node(sim).setFloat("height", 32.0f);
+        net.node(sim).setFloat("stepsPerSecond", 200.0f);
+    };
+    Network net(2);
+    NodeId sim;
+    build(net, sim);
+    CHECK(net.dependsOnTime(sim));
+    auto start = net.cook(sim);
+    CHECK(start->pointCount() == 48 * 32);
+    size_t seeded = 0;
+    for (size_t i = 0; i < start->pointCount(); ++i) seeded += start->findAttrib(AttribClass::point, "v")->at(i) > 0.0f ? 1 : 0;
+    CHECK(seeded > 0 && seeded < start->pointCount() / 2);
+
+    net.setTime(5.0);
+    auto grown = net.cook(sim);
+    size_t active = 0;
+    for (size_t i = 0; i < grown->pointCount(); ++i) {
+        const float u = grown->findAttrib(AttribClass::point, "u")->at(i), v = grown->findAttrib(AttribClass::point, "v")->at(i);
+        CHECK(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f);
+        active += v > 0.05f ? 1 : 0;
+    }
+    CHECK(active > seeded);
+
+    auto fresh = [&](double t, size_t threads) {
+        Network other(threads);
+        NodeId s;
+        build(other, s);
+        other.setTime(t);
+        return other.cook(s);
+    };
+    CHECK(sameGeometry(*grown, *fresh(5.0, 1)));
+    CHECK(sameGeometry(*grown, *fresh(5.0, 4)));
+    net.setTime(2.0);
+    CHECK(sameGeometry(*net.cook(sim), *fresh(2.0, 3)));
+
+    // The grid is centred on (cx, cy) with cellSize spacing, and a pattern-free setting (no feed) dies out.
+    net.node(sim).setFloat("cx", 10.0f);
+    net.node(sim).setFloat("cellSize", 0.5f);
+    auto moved = net.cook(sim);
+    CHECK_NEAR(moved->x()[1] - moved->x()[0], 0.5f);
+    CHECK_NEAR(moved->x()[0] + moved->x()[47], 20.0f);
+    net.node(sim).setFloat("feed", 0.0f);
+    net.node(sim).setFloat("kill", 0.1f);
+    net.setTime(20.0);
+    auto dead = net.cook(sim);
+    for (size_t i = 0; i < dead->pointCount(); ++i) CHECK(dead->findAttrib(AttribClass::point, "v")->at(i) < 0.05f);
+
+    net.node(sim).setFloat("cellSize", 0.0f);
+    CHECK(cookThrows(net, sim));
+}
+
+TEST(xxh64MatchesReferenceVectors) {
+    const auto hash = [](const char* s) { return xxh64(s, std::strlen(s)); };
+    CHECK(xxh64("", 0) == 0xEF46DB3751D8E999ull);
+    CHECK(hash("abc") == 0x44BC2CF5AD770999ull);
+    CHECK(hash("Nobody inspects the spammish repetition") == 0xFBCEA83C8A378BF1ull);
+}
+
+namespace {
+
+bool sameBits(const Geometry& a, const Geometry& b) {
+    if (a.pointCount() != b.pointCount() || a.primitiveCount() != b.primitiveCount() || a.details().size() != b.details().size()) return false;
+    for (size_t i = 0; i < a.primitiveCount(); ++i) {
+        const Primitive &p = a.primitives()[i], &q = b.primitives()[i];
+        if (p.start != q.start || p.count != q.count || p.closed != q.closed || p.kind != q.kind) return false;
+    }
+    for (auto l = a.details().begin(), r = b.details().begin(); l != a.details().end(); ++l, ++r)
+        if (l->first != r->first || std::memcmp(&l->second, &r->second, 4) != 0) return false;
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        const auto &left = a.attribs(cls), &right = b.attribs(cls);
+        if (left.size() != right.size()) return false;
+        for (auto l = left.begin(), r = right.begin(); l != left.end(); ++l, ++r) {
+            if (l->first != r->first || l->second.type() != r->second.type() || l->second.size() != r->second.size()) return false;
+            if (std::memcmp(l->second.data(), r->second.data(), l->second.paddedSize() * 4) != 0) return false;
+        }
+    }
+    return true;
+}
+
+Geometry sampleGeometry() {
+    Geometry g;
+    g.resizePoints(37);
+    for (size_t i = 0; i < 37; ++i) {
+        g.x()[i] = static_cast<float>(i) * 0.5f;
+        g.y()[i] = -static_cast<float>(i * i);
+    }
+    AttribArray& tricky = g.attrib(AttribClass::point, "tricky");
+    const uint32_t bits[] = {0x80000000u, 0x7fc00001u, 0x7f800000u, 0xff800000u, 0x00000001u};
+    for (size_t i = 0; i < 5; ++i) std::memcpy(&tricky.floats()[i], &bits[i], 4);
+    AttribArray& id = g.attrib(AttribClass::point, "id", AttribType::int32);
+    for (size_t i = 0; i < 37; ++i) id.ints()[i] = static_cast<int32_t>(i) - 20;
+    g.addPrimitive({0, 12, true, PrimKind::polyline});
+    g.addPrimitive({12, 25, false, PrimKind::cubic});
+    g.attrib(AttribClass::primitive, "w").floats()[1] = 3.5f;
+    g.attrib(AttribClass::primitive, "kind", AttribType::int32).ints()[0] = 7;
+    g.setDetail("render.width", 640.0f);
+    g.setDetail("render.gamma", -0.0f);
+    return g;
+}
+
+void refreshChecksum(std::vector<uint8_t>& bytes) {
+    const uint64_t h = xxh64(bytes.data() + 64, bytes.size() - 64);
+    std::memcpy(bytes.data() + 32, &h, 8);
+}
+
+bool loadFails(const std::vector<uint8_t>& bytes, size_t length) {
+    try {
+        loadGeometry(bytes.data(), length);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(geoFileRoundTripIsBitIdentical) {
+    const Geometry g = sampleGeometry();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    CHECK(bytes.size() % 64 == 0);
+    const Geometry back = loadGeometry(bytes.data(), bytes.size());
+    CHECK(sameBits(g, back));
+    CHECK(saveGeometry(back) == bytes);
+
+    const Geometry empty;
+    const std::vector<uint8_t> emptyBytes = saveGeometry(empty);
+    const Geometry emptyBack = loadGeometry(emptyBytes.data(), emptyBytes.size());
+    CHECK(sameBits(empty, emptyBack));
+    CHECK(emptyBack.pointCount() == 0 && emptyBack.primitiveCount() == 0);
+
+    Geometry noPrims;
+    noPrims.resizePoints(5);
+    noPrims.setDetail("only", 1.0f);
+    const std::vector<uint8_t> noPrimBytes = saveGeometry(noPrims);
+    CHECK(sameBits(noPrims, loadGeometry(noPrimBytes.data(), noPrimBytes.size())));
+}
+
+TEST(geoFileAttributeArraysStayAlignedAndIndependent) {
+    const Geometry g = sampleGeometry();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    Geometry back = loadGeometry(bytes.data(), bytes.size());
+    for (const auto& [name, array] : back.attribs(AttribClass::point)) CHECK(reinterpret_cast<uintptr_t>(array.data()) % 64 == 0);
+    back.x()[0] = 99.0f;
+    CHECK(g.x()[0] == 0.0f);
+}
+
+TEST(geoFileWritesAndReadsFiles) {
+    const Geometry g = sampleGeometry();
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_geometry.jngeo").string();
+    saveGeometryToFile(g, path);
+    CHECK(!std::filesystem::exists(path + ".tmp"));
+    saveGeometryToFile(g, path);
+    CHECK(sameBits(g, loadGeometryFromFile(path)));
+    std::filesystem::remove(path);
+    bool threw = false;
+    try {
+        loadGeometryFromFile(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(geoFileRejectsEveryTruncationAndByteFlip) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    for (size_t length = 0; length < bytes.size(); ++length) CHECK(loadFails(bytes, length));
+    std::vector<uint8_t> extended = bytes;
+    extended.push_back(0);
+    CHECK(loadFails(extended, extended.size()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 8 || i == 9) continue;  // minor version: newer minors load
+        std::vector<uint8_t> mutated = bytes;
+        mutated[i] ^= 0x5a;
+        CHECK(loadFails(mutated, mutated.size()));
+    }
+}
+
+TEST(geoFileSurvivesMutationsWithAValidChecksum) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    size_t rejected = 0;
+    for (size_t i = 64; i < bytes.size(); ++i) {
+        for (uint8_t value : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x7f), uint8_t(0x80), uint8_t(0xff)}) {
+            std::vector<uint8_t> mutated = bytes;
+            if (mutated[i] == value) continue;
+            mutated[i] = value;
+            refreshChecksum(mutated);
+            try {
+                const Geometry g = loadGeometry(mutated.data(), mutated.size());
+                for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+                    for (const auto& [name, array] : g.attribs(cls)) CHECK(array.size() == g.count(cls));
+                for (const Primitive& p : g.primitives()) CHECK(static_cast<uint64_t>(p.start) + p.count <= g.pointCount());
+            } catch (const std::runtime_error&) {
+                ++rejected;
+            }
+        }
+    }
+    CHECK(rejected > 1000);
+}
+
+TEST(geoFileRejectsHugeCountsAndOffsets) {
+    const std::vector<uint8_t> bytes = saveGeometry(sampleGeometry());
+    const auto sectionOffset = [&](uint32_t id) {
+        uint64_t offset;
+        std::memcpy(&offset, bytes.data() + 64 + 24 * (id - 1) + 8, 8);
+        return static_cast<size_t>(offset);
+    };
+    const auto patched = [&](size_t at, uint64_t value) {
+        std::vector<uint8_t> mutated = bytes;
+        std::memcpy(mutated.data() + at, &value, 8);
+        refreshChecksum(mutated);
+        return mutated;
+    };
+    for (uint64_t huge : {uint64_t(0x7fffffff), uint64_t(0x80000000), uint64_t(1) << 40, ~uint64_t(0)}) {
+        CHECK(loadFails(patched(sectionOffset(2), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(2) + 8, huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(3), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(4), huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(5), huge), bytes.size()));
+        CHECK(loadFails(patched(64 + 8, huge), bytes.size()));
+        CHECK(loadFails(patched(64 + 16, huge), bytes.size()));
+        CHECK(loadFails(patched(sectionOffset(4) + 8 + 16, huge), bytes.size()));
+    }
+
+    std::vector<uint8_t> future = bytes;
+    future[10] = 2;
+    refreshChecksum(future);
+    CHECK(loadFails(future, future.size()));
+    std::vector<uint8_t> minor = bytes;
+    minor[8] = 5;
+    refreshChecksum(minor);
+    CHECK(!loadFails(minor, minor.size()));
+}
+
+TEST(fileReadPlaysABakedSequenceByFrame) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "jitnodes_test_sequence";
+    std::filesystem::create_directories(dir);
+    for (int frame = 1; frame <= 3; ++frame) {
+        Geometry g;
+        g.resizePoints(static_cast<size_t>(frame));
+        saveGeometryToFile(g, (dir / ("f" + std::string(frame < 10 ? "000" : "00") + std::to_string(frame) + ".jngeo")).string());
+    }
+    Network net(2);
+    net.setFps(10.0);
+    const NodeId read = net.addNode("fileRead");
+    net.node(read).setString("path", (dir / "f$F4.jngeo").string());
+    CHECK(net.dependsOnTime(read));
+    net.setTime(0.1);
+    CHECK(net.cook(read)->pointCount() == 1);
+    net.setTime(0.3);
+    CHECK(net.cook(read)->pointCount() == 3);
+    net.setTime(0.5);
+    CHECK(cookThrows(net, read));
+
+    net.node(read).setString("path", (dir / "f0002.jngeo").string());
+    CHECK(!net.dependsOnTime(read));
+    CHECK(net.cook(read)->pointCount() == 2);
+    net.node(read).setString("path", "");
+    CHECK(cookThrows(net, read));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(fileTrailFollowsPointsThroughRecordedFrames) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "jitnodes_test_trail";
+    std::filesystem::create_directories(dir);
+    for (int frame = 1; frame <= 4; ++frame) {
+        Geometry g;
+        g.resizePoints(2);
+        g.x()[0] = static_cast<float>(frame);
+        g.y()[0] = 0.0f;
+        g.x()[1] = 0.0f;
+        g.y()[1] = static_cast<float>(10 * frame);
+        saveGeometryToFile(g, (dir / ("t" + std::to_string(frame) + ".jngeo")).string());
+    }
+    Network net(2);
+    net.setFps(10.0);
+    const NodeId trail = net.addNode("fileTrail");
+    net.node(trail).setString("path", (dir / "t$F.jngeo").string());
+    net.node(trail).setFloat("frames", 3.0f);
+    CHECK(net.dependsOnTime(trail));
+
+    net.setTime(0.4);
+    GeometryHandle geo = net.cook(trail);
+    CHECK(geo->pointCount() == 8);
+    CHECK(geo->primitiveCount() == 2);
+    for (size_t k = 0; k < 4; ++k) {
+        CHECK(geo->x()[k] == static_cast<float>(4 - k));
+        CHECK(geo->y()[4 + k] == static_cast<float>(10 * (4 - k)));
+    }
+
+    net.setTime(0.2);
+    geo = net.cook(trail);
+    CHECK(geo->x()[0] == 2.0f && geo->x()[1] == 1.0f);
+    CHECK(geo->x()[2] == 1.0f && geo->x()[3] == 1.0f);
+
+    net.node(trail).setString("path", (dir / "t0001.jngeo").string());
+    CHECK(cookThrows(net, trail));
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+Geometry labelled(const std::vector<std::string>& texts, const std::vector<std::string>& tableOrder) {
+    Geometry g;
+    g.resizePoints(texts.size());
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    for (const std::string& t : tableOrder) label.intern(t);
+    for (size_t i = 0; i < texts.size(); ++i) label.ints()[i] = label.intern(texts[i]);
+    for (size_t i = 0; i < texts.size(); ++i) g.x()[i] = static_cast<float>(i);
+    return g;
+}
+
+std::vector<std::string> labelsOf(const Geometry& g) {
+    std::vector<std::string> out;
+    const AttribArray* a = g.findAttrib(AttribClass::point, "label");
+    for (size_t i = 0; i < g.pointCount(); ++i) out.push_back(a->stringAt(i));
+    return out;
+}
+
+}  // namespace
+
+TEST(stringAttributeTablesCopyOnWriteAndStartWithTheEmptyString) {
+    AttribArray a(AttribType::string);
+    CHECK(a.table().strings.size() == 1 && a.table().strings[0].empty());
+    CHECK(a.intern("") == 0);
+    const int32_t tree = a.intern("tree");
+    CHECK(tree == 1 && a.intern("tree") == tree);
+    a.resize(3);
+    a.ints()[0] = tree;
+
+    AttribArray b = a;
+    CHECK(b.tableHandle() == a.tableHandle());
+    CHECK(b.intern("rock") == 2);
+    CHECK(a.table().strings.size() == 2 && b.table().strings.size() == 3);
+    CHECK(a.stringAt(0) == "tree" && a.stringAt(1).empty());
+    a.ints()[2] = 9;
+    bool threw = false;
+    try {
+        a.stringAt(2);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    Geometry g;
+    g.resizePoints(3);
+    g.attrib(AttribClass::point, "label", AttribType::string).ints()[1] = 5;
+    threw = false;
+    try {
+        g.checkStrings();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(!g.hasAttrib(AttribClass::point, "label.x"));
+}
+
+TEST(stringAttributesKeepTheirTextWhenGeometriesAreMerged) {
+    const Geometry a = labelled({"tree", "rock", "", "tree"}, {"tree", "rock"});
+    const Geometry b = labelled({"rock", "bush", "tree", "bush", "moss"}, {"moss", "bush", "rock", "tree"});
+    const Geometry same = labelled({"rock", "tree"}, {"tree", "rock"});
+    Geometry plain;
+    plain.resizePoints(2);
+
+    ThreadPool pool(3);
+    const Geometry merged = Geometry::concat({&a, &plain, &b, &a}, &pool);
+    CHECK(merged.pointCount() == 4 + 2 + 5 + 4);
+    merged.checkStrings();
+    const std::vector<std::string> expected = {"tree", "rock", "", "tree", "", "", "rock", "bush", "tree", "bush", "moss", "tree", "rock", "", "tree"};
+    CHECK(labelsOf(merged) == expected);
+    CHECK(a.findAttrib(AttribClass::point, "label")->table().strings.size() == 3);
+
+    const Geometry serial = Geometry::concat({&a, &plain, &b, &a}, nullptr);
+    CHECK(sameGeometry(merged, serial));
+
+    Geometry appended = a;
+    appended.append(b);
+    appended.append(plain);
+    appended.checkStrings();
+    CHECK(labelsOf(appended) == std::vector<std::string>({"tree", "rock", "", "tree", "rock", "bush", "tree", "bush", "moss", "", ""}));
+
+    // Equal tables are shared, not rebuilt.
+    const Geometry twice = Geometry::concat({&same, &same}, nullptr);
+    CHECK(twice.findAttrib(AttribClass::point, "label")->tableHandle() == same.findAttrib(AttribClass::point, "label")->tableHandle());
+
+    // The same text is the same geometry, whatever order the table is in.
+    const Geometry reordered = labelled({"tree", "rock", "", "tree"}, {"rock", "tree"});
+    CHECK(sameGeometry(a, reordered));
+    CHECK(!sameGeometry(a, labelled({"tree", "rock", "", "rock"}, {"rock", "tree"})));
+}
+
+TEST(stringAttributesAreReadOnlyInKernels) {
+    Geometry g = labelled({"tree", "rock", "tree"}, {"tree", "rock"});
+    g.attrib(AttribClass::point, "mark");
+    KernelCompiler compiler;
+
+    auto kernel = compiler.compileFor(parseWrangle("mark = label * 10;", {}), g, AttribClass::point);
+    kernel->run(g, {}, AttribClass::point, nullptr);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(0) == 10.0f);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(1) == 20.0f);
+    CHECK(g.findAttrib(AttribClass::point, "mark")->at(2) == 10.0f);
+
+    bool threw = false;
+    try {
+        compiler.compileFor(parseWrangle("label = 1;", {}), g, AttribClass::point);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("cannot be assigned") != std::string::npos;
+    }
+    CHECK(threw);
+}
+
+// Every node type that cooks must leave string attributes consistent: all ids inside their table, and the text one of the input's.
+TEST(everyNodeTypeKeepsStringAttributesConsistent) {
+    const std::vector<std::string> words = {"tree", "rock", "bush", ""};
+    Geometry input;
+    input.resizePoints(24);
+    AttribArray& label = input.attrib(AttribClass::point, "label", AttribType::string);
+    label.intern("tree");
+    label.intern("rock");
+    label.intern("bush");
+    for (size_t i = 0; i < 24; ++i) {
+        input.x()[i] = static_cast<float>(i % 6) * 0.7f;
+        input.y()[i] = static_cast<float>(i / 6) * 0.9f;
+        label.ints()[i] = static_cast<int32_t>(i % 4);
+    }
+    for (uint32_t p = 0; p < 4; ++p) input.addPrimitive({p * 6, 6, p % 2 == 0, PrimKind::polyline});
+    AttribArray& kind = input.attrib(AttribClass::primitive, "kind", AttribType::string);
+    kind.ints()[0] = kind.intern("tree");
+    kind.ints()[1] = kind.intern("rock");
+    kind.ints()[2] = kind.intern("bush");
+    input.checkStrings();
+
+    size_t cooked = 0, kept = 0;
+    for (const std::string& type : NodeRegistry::instance().typeNames()) {
+        if (type == "subnetInput" || type == "subnet") continue;
+        Network net(1);
+        net.setExternalInputs({std::make_shared<Geometry>(input)});
+        const NodeId in = net.addNode("subnetInput", "in");
+        const NodeId node = net.addNode(type, "under");
+        const int inputs = net.node(node).inputCount();  // a node with variable inputs grows one with each connection
+        for (int i = 0; i < inputs; ++i) net.connect(in, node, i);
+        GeometryHandle out;
+        try {
+            out = net.cook(node);
+        } catch (const std::exception&) {
+            continue;
+        }
+        ++cooked;
+        out->checkStrings();
+        for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+            for (const auto& [name, array] : out->attribs(cls)) {
+                if (array.type() != AttribType::string) continue;
+                ++kept;
+                if (type == "attribString") continue;  // makes new text by design
+                for (size_t i = 0; i < array.size(); ++i) CHECK(std::find(words.begin(), words.end(), array.stringAt(i)) != words.end());
+            }
+        }
+    }
+    CHECK(cooked > 20);
+    CHECK(kept > 5);
+}
+
+namespace {
+
+bool wrangleThrows(const std::string& code, const Geometry& input) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", code);
+    net.connect(in, w);
+    try {
+        net.cook(w);
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(wrangleComparesStringAttributesWithLiterals) {
+    const Geometry input = labelled({"tree", "rock", "", "tree", "bush", "rock"}, {"rock", "tree"});
+    const std::vector<float> hit = {1, 0, 0, 1, 0, 0}, both = {0, 0, 1, 1, 1, 0}, rocks = {0, 1, 0, 0, 0, 1}, empty = {0, 0, 1, 0, 0, 0};
+    for (bool jit : {true, false}) {
+        for (bool fusion : {true, false}) {
+            Network net(2);
+            net.setFusionEnabled(fusion);
+            net.compiler().setJitEnabled(jit);
+            net.setExternalInputs({std::make_shared<Geometry>(input)});
+            const NodeId in = net.addNode("subnetInput", "in");
+            const NodeId w1 = net.addNode("wrangle", "w1");
+            const NodeId w2 = net.addNode("wrangle", "w2");
+            const NodeId out = net.addNode("null", "out");
+            net.node(w1).setString("code", "hit = label == \"tree\"; both = \"rock\" != label && x > 1;");
+            net.node(w2).setString("code", "rocks = label == \"rock\"; miss = label == \"nothing\"; gone = label != \"nothing\"; blank = label == \"\"; same = hit;");
+            net.connect(in, w1);
+            net.connect(w1, w2);
+            net.connect(w2, out);
+            net.setDisplayNode(out);
+            const GeometryHandle g = net.cookDisplay();
+            if (fusion) CHECK(net.fusedChainCount() == 1);
+            for (size_t i = 0; i < 6; ++i) {
+                CHECK(g->findAttrib(AttribClass::point, "hit")->at(i) == hit[i]);
+                CHECK(g->findAttrib(AttribClass::point, "both")->at(i) == both[i]);
+                CHECK(g->findAttrib(AttribClass::point, "rocks")->at(i) == rocks[i]);
+                CHECK(g->findAttrib(AttribClass::point, "blank")->at(i) == empty[i]);
+                CHECK(g->findAttrib(AttribClass::point, "miss")->at(i) == 0.0f);
+                CHECK(g->findAttrib(AttribClass::point, "gone")->at(i) == 1.0f);
+                CHECK(g->findAttrib(AttribClass::point, "same")->at(i) == hit[i]);
+            }
+            g->checkStrings();
+            CHECK(g->findAttrib(AttribClass::point, "label")->stringAt(4) == "bush");
+        }
+    }
+
+    // The kernel is shared by different texts; each geometry resolves its own ids.
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", "hit = label == \"tree\";");
+    net.connect(in, w);
+    net.cook(w);
+    const size_t compiled = net.compiler().compileCount();
+    net.node(w).setString("code", "hit = label == \"rock\";");
+    const GeometryHandle again = net.cook(w);
+    CHECK(net.compiler().compileCount() == compiled);
+    CHECK(again->findAttrib(AttribClass::point, "hit")->at(1) == 1.0f && again->findAttrib(AttribClass::point, "hit")->at(0) == 0.0f);
+
+    CHECK(wrangleThrows("hit = label + \"a\";", input));
+    CHECK(wrangleThrows("hit = x == \"a\";", input));
+    CHECK(wrangleThrows("hit = (label + 1) == \"a\";", input));
+    CHECK(wrangleThrows("hit = label < \"a\";", input));
+    CHECK(wrangleThrows("hit = label == \"unterminated;", input));
+    CHECK(wrangleThrows("label = 1;", input));
+    CHECK(!wrangleThrows("hit = label == \"quote\\\"d\";", input));
+}
+
+namespace {
+
+Geometry stringSample() {
+    Geometry g = sampleGeometry();
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    label.intern("unused");
+    const char* words[] = {"tree", "caf\xc3\xa9", "quote\"back\\slash\n", "", "\xf0\x9f\x8c\xb3"};
+    for (size_t i = 0; i < 37; ++i) label.ints()[i] = label.intern(words[i % 5]);
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road");
+    cls.ints()[1] = cls.intern("river");
+    return g;
+}
+
+bool sameTables(const Geometry& a, const Geometry& b) {
+    for (AttribClass cls : {AttribClass::point, AttribClass::primitive}) {
+        for (const auto& [name, array] : a.attribs(cls)) {
+            if (array.type() != AttribType::string) continue;
+            const AttribArray* other = b.findAttrib(cls, name);
+            if (other == nullptr || other->table().strings != array.table().strings) return false;
+        }
+    }
+    return true;
+}
+
+size_t sectionAt(const std::vector<uint8_t>& bytes, uint32_t id) {
+    uint64_t offset;
+    std::memcpy(&offset, bytes.data() + 64 + 24 * (id - 1) + 8, 8);
+    return static_cast<size_t>(offset);
+}
+
+}  // namespace
+
+TEST(geoFileKeepsStringAttributesWithTheirTables) {
+    const Geometry g = stringSample();
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    CHECK(bytes.size() % 64 == 0);
+    const Geometry back = loadGeometry(bytes.data(), bytes.size());
+    back.checkStrings();
+    CHECK(sameBits(g, back));
+    CHECK(sameTables(g, back));
+    CHECK(saveGeometry(back) == bytes);
+    CHECK(back.findAttrib(AttribClass::point, "label")->stringAt(2) == "quote\"back\\slash\n");
+    CHECK(back.findAttrib(AttribClass::primitive, "class")->stringAt(1) == "river");
+
+    // A file without string attributes has the same layout as 1.0 except the minor version.
+    const std::vector<uint8_t> plain = saveGeometry(sampleGeometry());
+    CHECK(plain[20] == 6 && bytes[20] == 7);
+    CHECK(plain[8] == 1 && plain[10] == 1);
+    const Geometry none = labelled({}, {});
+    const std::vector<uint8_t> noneBytes = saveGeometry(none);
+    CHECK(sameBits(none, loadGeometry(noneBytes.data(), noneBytes.size())));
+
+    // Merged geometries save and load like any other: the table is the merged one.
+    const Geometry first = labelled({"a", "b"}, {}), second = labelled({"b", "c"}, {"c"});
+    const Geometry merged = Geometry::concat({&first, &second}, nullptr);
+    const std::vector<uint8_t> mergedBytes = saveGeometry(merged);
+    CHECK(labelsOf(loadGeometry(mergedBytes.data(), mergedBytes.size())) == labelsOf(merged));
+}
+
+TEST(geoFileRejectsStringDataThatDoesNotFitItsTable) {
+    const Geometry small = labelled({"a", "b", "a"}, {});
+    const std::vector<uint8_t> bytes = saveGeometry(small);
+    const size_t tables = sectionAt(bytes, 7), payload = sectionAt(bytes, 6);
+    CHECK(!loadFails(bytes, bytes.size()));
+    const auto patched = [&](size_t at, std::vector<uint8_t> values) {
+        std::vector<uint8_t> mutated = bytes;
+        for (size_t i = 0; i < values.size(); ++i) mutated[at + i] = values[i];
+        refreshChecksum(mutated);
+        return loadFails(mutated, mutated.size());
+    };
+    // Layout: u64 table count, then u32 attribute, u32 count, u32 offsets[4], text "ab".
+    CHECK(patched(payload, {3, 0, 0, 0}));
+    CHECK(patched(payload, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(patched(payload + 8, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(!patched(payload, {2, 0, 0, 0}));
+    CHECK(patched(tables, {0, 0, 0, 0, 0, 0, 0, 0}));
+    CHECK(patched(tables, {2, 0, 0, 0, 0, 0, 0, 0}));
+    CHECK(patched(tables + 8, {1, 0, 0, 0}));
+    CHECK(patched(tables + 8, {9, 0, 0, 0}));
+    CHECK(patched(tables + 12, {0, 0, 0, 0}));
+    CHECK(patched(tables + 12, {0xff, 0xff, 0xff, 0x7f}));
+    CHECK(patched(tables + 12, {0xff, 0xff, 0xff, 0xff}));
+    CHECK(patched(tables + 12, {4, 0, 0, 0}));
+    CHECK(patched(tables + 20, {1, 0, 0, 0}));
+    CHECK(patched(tables + 32, {0xff}));
+    CHECK(patched(tables + 32, {0xc3}));
+    CHECK(patched(tables + 33, {'a'}));
+    CHECK(!patched(tables + 33, {'c'}));
+    CHECK(!patched(tables + 32, {0}));
+}
+
+TEST(geoFileRejectsEveryTruncationAndByteFlipWithStrings) {
+    const std::vector<uint8_t> bytes = saveGeometry(stringSample());
+    for (size_t length = 0; length < bytes.size(); ++length) CHECK(loadFails(bytes, length));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 8 || i == 9) continue;
+        std::vector<uint8_t> mutated = bytes;
+        mutated[i] ^= 0x5a;
+        CHECK(loadFails(mutated, mutated.size()));
+    }
+}
+
+TEST(geoFileWithStringsSurvivesMutationsWithAValidChecksum) {
+    const std::vector<uint8_t> bytes = saveGeometry(stringSample());
+    size_t rejected = 0;
+    for (size_t i = 64; i < bytes.size(); ++i) {
+        for (uint8_t value : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x7f), uint8_t(0x80), uint8_t(0xff)}) {
+            std::vector<uint8_t> mutated = bytes;
+            if (mutated[i] == value) continue;
+            mutated[i] = value;
+            refreshChecksum(mutated);
+            try {
+                const Geometry g = loadGeometry(mutated.data(), mutated.size());
+                g.checkStrings();
+                for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+                    for (const auto& [name, array] : g.attribs(cls)) CHECK(array.size() == g.count(cls));
+            } catch (const std::runtime_error&) {
+                ++rejected;
+            }
+        }
+    }
+    CHECK(rejected > 1000);
+}
+
+TEST(stringTextThatIsNotUtf8IsNotSaved) {
+    Geometry g = labelled({"ok"}, {});
+    g.attrib(AttribClass::point, "label", AttribType::string).intern("bad\xff");
+    bool threw = false;
+    try {
+        saveGeometry(g);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+namespace {
+
+GeometryHandle cookNodeOn(const std::string& type, const std::vector<std::pair<std::string, std::string>>& params, const Geometry& input) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId node = net.addNode(type, "under");
+    for (const auto& [name, value] : params) net.node(node).setString(name, value);
+    net.connect(in, node);
+    return net.cook(node);
+}
+
+std::vector<std::string> textsOf(const Geometry& g, AttribClass cls, const std::string& name) {
+    std::vector<std::string> out;
+    const AttribArray* a = g.findAttrib(cls, name);
+    for (size_t i = 0; i < g.count(cls); ++i) out.push_back(a->stringAt(i));
+    return out;
+}
+
+std::vector<int> membersOf(const Geometry& g, AttribClass cls, const std::string& group) {
+    std::vector<int> out;
+    for (size_t i = 0; i < g.count(cls); ++i) out.push_back(g.inGroup(cls, group, i) ? 1 : 0);
+    return out;
+}
+
+}  // namespace
+
+TEST(stringNodesCreateSetAndGroupAttributes) {
+    Geometry input = labelled({"tree", "rock", "treehouse", "", "a tree"}, {});
+    input.attrib(AttribClass::point, "kind", AttribType::int32);
+    const int kinds[] = {0, 1, 2, 5, -1};
+    for (size_t i = 0; i < 5; ++i) input.attrib(AttribClass::point, "kind", AttribType::int32).ints()[i] = kinds[i];
+    input.createGroup(AttribClass::point, "top").ints()[1] = 1;
+    input.createGroup(AttribClass::point, "top").ints()[4] = 1;
+    input.addPrimitive({0, 3, false, PrimKind::polyline});
+    input.addPrimitive({3, 2, false, PrimKind::polyline});
+
+    const auto created = cookNodeOn("attribCreate", {{"name", "tag"}, {"type", "string"}, {"text", "wood"}}, input);
+    created->checkStrings();
+    CHECK(textsOf(*created, AttribClass::point, "tag") == std::vector<std::string>(5, "wood"));
+    CHECK(created->findAttrib(AttribClass::point, "tag")->table().strings == std::vector<std::string>({"", "wood"}));
+
+    const auto named = cookNodeOn("attribString", {{"name", "type"}, {"source", "ints"}, {"from", "kind"}, {"names", "rock, tree ,bush"}}, input);
+    named->checkStrings();
+    CHECK(textsOf(*named, AttribClass::point, "type") == std::vector<std::string>({"rock", "tree", "bush", "", ""}));
+
+    const auto numbered = cookNodeOn("attribString", {{"name", "pt"}, {"source", "pattern"}, {"text", "id$P-$P"}}, input);
+    CHECK(textsOf(*numbered, AttribClass::point, "pt") == std::vector<std::string>({"id0-0", "id1-1", "id2-2", "id3-3", "id4-4"}));
+
+    const auto grouped = cookNodeOn("attribString", {{"name", "label"}, {"source", "group"}, {"group", "top"}, {"text", "top"}}, input);
+    grouped->checkStrings();
+    CHECK(textsOf(*grouped, AttribClass::point, "label") == std::vector<std::string>({"tree", "top", "treehouse", "", "top"}));
+
+    const auto prims = cookNodeOn("attribString", {{"name", "class"}, {"class", "primitive"}, {"text", "road$P"}}, input);
+    CHECK(textsOf(*prims, AttribClass::primitive, "class") == std::vector<std::string>({"road0", "road1"}));
+
+    const auto equals = cookNodeOn("groupByString", {{"attrib", "label"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*equals, AttribClass::point, "g") == std::vector<int>({1, 0, 0, 0, 0}));
+    const auto starts = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "startsWith"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*starts, AttribClass::point, "g") == std::vector<int>({1, 0, 1, 0, 0}));
+    const auto contains = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "contains"}, {"text", "tree"}, {"group", "g"}}, input);
+    CHECK(membersOf(*contains, AttribClass::point, "g") == std::vector<int>({1, 0, 1, 0, 1}));
+    const auto blank = cookNodeOn("groupByString", {{"attrib", "label"}, {"text", ""}, {"group", "g"}}, input);
+    CHECK(membersOf(*blank, AttribClass::point, "g") == std::vector<int>({0, 0, 0, 1, 0}));
+    const auto blankStarts = cookNodeOn("groupByString", {{"attrib", "label"}, {"match", "startsWith"}, {"text", ""}, {"group", "g"}}, input);
+    CHECK(membersOf(*blankStarts, AttribClass::point, "g") == std::vector<int>({1, 1, 1, 1, 1}));
+    CHECK(blank->findAttrib(AttribClass::point, "label")->stringAt(2) == "treehouse");
+
+    const auto missing = [&](const std::string& type, const std::vector<std::pair<std::string, std::string>>& params) {
+        try {
+            cookNodeOn(type, params, input);
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(missing("groupByString", {{"attrib", "kind"}}));
+    CHECK(missing("groupByString", {{"attrib", "nothing"}}));
+    CHECK(missing("groupByString", {{"attrib", "label"}, {"match", "sounds like"}}));
+    CHECK(missing("attribString", {{"name", "kind"}, {"source", "pattern"}}));
+    CHECK(missing("attribString", {{"name", "t"}, {"source", "ints"}, {"from", "label"}}));
+    CHECK(missing("attribString", {{"name", "t"}, {"source", "invented"}}));
+    CHECK(missing("attribCreate", {{"name", "t"}, {"type", "text"}}));
+
+    // The result feeds a wrangle comparison like any other string attribute.
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(input)});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId named2 = net.addNode("attribString", "named");
+    net.node(named2).setString("name", "type");
+    net.node(named2).setString("source", "ints");
+    net.node(named2).setString("from", "kind");
+    net.node(named2).setString("names", "rock, tree, bush");
+    const NodeId w = net.addNode("wrangle", "w");
+    net.node(w).setString("code", "hit = type == \"tree\";");
+    net.connect(in, named2);
+    net.connect(named2, w);
+    const GeometryHandle out = net.cook(w);
+    CHECK(out->findAttrib(AttribClass::point, "hit")->at(1) == 1.0f && out->findAttrib(AttribClass::point, "hit")->at(0) == 0.0f);
+}
+
+namespace {
+
+Geometry symmetrySample() {
+    Geometry g;
+    g.resizePoints(3);
+    const float xs[] = {1, 3, 2}, ys[] = {2, 4, 5};
+    for (size_t i = 0; i < 3; ++i) {
+        g.x()[i] = xs[i];
+        g.y()[i] = ys[i];
+        g.attrib(AttribClass::point, "vx").floats()[i] = static_cast<float>(i) + 1.0f;
+        g.attrib(AttribClass::point, "vy").floats()[i] = 10.0f;
+        g.attrib(AttribClass::point, "N.x").floats()[i] = 1.0f;
+        g.attrib(AttribClass::point, "N.y").floats()[i] = 0.0f;
+        g.attrib(AttribClass::point, "w").floats()[i] = 7.0f + static_cast<float>(i);
+    }
+    g.addPrimitive({0, 3, true, PrimKind::polyline});
+    g.attrib(AttribClass::primitive, "area").floats()[0] = 5.0f;
+    AttribArray& label = g.attrib(AttribClass::primitive, "label", AttribType::string);
+    label.ints()[0] = label.intern("tree");
+    return g;
+}
+
+bool nearly(float a, float b) { return std::fabs(a - b) < 1e-4f; }
+
+}  // namespace
+
+TEST(symmetryMirrorsRotatesAndKeepsAttributes) {
+    const Geometry in = symmetrySample();
+    SymmetryOptions o;
+    const Geometry m = symmetry(in, o);
+    CHECK(m.pointCount() == 6 && m.primitiveCount() == 2);
+    m.checkStrings();
+    CHECK(nearly(m.x()[0], 1) && nearly(m.x()[3], -1) && nearly(m.y()[3], 2) && nearly(m.x()[4], -3));
+    CHECK(m.primitives()[1].start == 3 && m.primitives()[1].count == 3 && m.primitives()[1].closed);
+    const AttribArray* vx = m.findAttrib(AttribClass::point, "vx");
+    CHECK(nearly(vx->at(1), 2) && nearly(vx->at(4), -2) && nearly(m.findAttrib(AttribClass::point, "vy")->at(4), 10));
+    CHECK(nearly(m.findAttrib(AttribClass::point, "N.x")->at(3), 1));  // not listed in `vectors`, so unchanged
+    CHECK(nearly(m.findAttrib(AttribClass::point, "w")->at(4), 8));
+    CHECK(nearly(m.findAttrib(AttribClass::primitive, "area")->at(1), 5));
+    CHECK(m.findAttrib(AttribClass::primitive, "label")->stringAt(1) == "tree");
+
+    o.vectors = {"N"};
+    const Geometry withNormals = symmetry(in, o);
+    CHECK(nearly(withNormals.findAttrib(AttribClass::point, "N.x")->at(3), -1) && nearly(withNormals.findAttrib(AttribClass::point, "N.x")->at(0), 1));
+
+    // The reflected copy alone, twice, is the input again.
+    o.keepOriginal = false;
+    const Geometry twice = symmetry(symmetry(in, o), o);
+    CHECK(twice.pointCount() == 3);
+    for (size_t i = 0; i < 3; ++i) CHECK(nearly(twice.x()[i], in.x()[i]) && nearly(twice.y()[i], in.y()[i]) && nearly(twice.findAttrib(AttribClass::point, "vx")->at(i), in.findAttrib(AttribClass::point, "vx")->at(i)));
+
+    // Other axes: 0 degrees flips y, 45 swaps x and y, an origin moves the line.
+    SymmetryOptions flat;
+    flat.angle = 0.0f;
+    flat.keepOriginal = false;
+    CHECK(nearly(symmetry(in, flat).y()[0], -2) && nearly(symmetry(in, flat).x()[0], 1));
+    flat.angle = 45.0f;
+    CHECK(nearly(symmetry(in, flat).x()[1], 4) && nearly(symmetry(in, flat).y()[1], 3));
+    SymmetryOptions shifted;
+    shifted.originX = 2.0f;
+    shifted.keepOriginal = false;
+    CHECK(nearly(symmetry(in, shifted).x()[0], 3) && nearly(symmetry(in, shifted).x()[1], 1));
+
+    SymmetryOptions turn;
+    turn.mode = SymmetryMode::rotate;
+    turn.folds = 4;
+    const Geometry fourFold = symmetry(in, turn);
+    CHECK(fourFold.pointCount() == 12 && fourFold.primitiveCount() == 4);
+    CHECK(nearly(fourFold.x()[3], -2) && nearly(fourFold.y()[3], 1));  // (1,2) turned 90 degrees
+    CHECK(nearly(fourFold.findAttrib(AttribClass::point, "vx")->at(3), -10) && nearly(fourFold.findAttrib(AttribClass::point, "vy")->at(3), 1));
+    turn.keepOriginal = false;
+    CHECK(symmetry(in, turn).pointCount() == 9);
+    turn.folds = 1;
+    CHECK(symmetry(in, turn).pointCount() == 0);
+
+    SymmetryOptions kal;
+    kal.mode = SymmetryMode::kaleidoscope;
+    kal.folds = 3;
+    const Geometry six = symmetry(in, kal);
+    CHECK(six.pointCount() == 18 && six.primitiveCount() == 6);
+    six.checkStrings();
+    // Every copy keeps its distances to the origin, and the whole set maps onto itself when mirrored.
+    for (size_t i = 0; i < 18; ++i) CHECK(nearly(std::hypot(six.x()[i], six.y()[i]), std::hypot(in.x()[i % 3], in.y()[i % 3])));
+    const Geometry again = symmetry(six, SymmetryOptions{});
+    std::multiset<std::pair<long, long>> seen;
+    for (size_t i = 0; i < 18; ++i) seen.insert({std::lround(six.x()[i] * 1000), std::lround(six.y()[i] * 1000)});
+    for (size_t i = 18; i < 36; ++i) CHECK(seen.count({std::lround(again.x()[i] * 1000), std::lround(again.y()[i] * 1000)}) > 0);
+
+    CHECK(symmetry(Geometry(), SymmetryOptions{}).pointCount() == 0);
+}
+
+TEST(mirrorNodeReadsItsParametersAndRejectsABadMode) {
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(symmetrySample())});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId node = net.addNode("mirror", "m");
+    net.connect(in, node);
+    CHECK(net.cook(node)->pointCount() == 6);
+    net.node(node).setString("mode", "kaleidoscope");
+    net.node(node).setFloat("folds", 5.0f);
+    CHECK(net.cook(node)->pointCount() == 30);
+    net.node(node).setString("mode", "rotate");
+    net.node(node).setFloat("keepOriginal", 0.0f);
+    CHECK(net.cook(node)->pointCount() == 12);
+    net.node(node).setString("mode", "mirror");
+    net.node(node).setString("vectors", " N , ");
+    CHECK(nearly(net.cook(node)->findAttrib(AttribClass::point, "N.x")->at(0), -1.0f));  // keepOriginal is still off: only the reflected copy
+    net.node(node).setString("mode", "fold");
+    bool threw = false;
+    try {
+        net.cook(node);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(svgExportWritesStringAttributesAsIdAndClass) {
+    Geometry g = labelled({"", "", "", "", "", ""}, {});
+    g.addPrimitive({0, 2, false, PrimKind::polyline});
+    g.addPrimitive({2, 2, true, PrimKind::polyline});
+    g.addPrimitive({4, 2, false, PrimKind::polyline});
+    AttribArray& id = g.attrib(AttribClass::primitive, "id", AttribType::string);
+    id.ints()[0] = id.intern("a&b\"<c>");
+    id.ints()[1] = id.intern("plain");
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road main");
+    cls.ints()[1] = cls.intern("tab\tline\nbreak");
+    const std::string svg = geometryToSvg(g, SvgOptions{});
+    CHECK(svg.find("<polyline id=\"a&amp;b&quot;&lt;c&gt;\" class=\"road main\" points=") != std::string::npos);
+    CHECK(svg.find("<polygon id=\"plain\" class=\"tab&#9;line&#10;break\" points=") != std::string::npos);
+    CHECK(svg.find("<polyline points=") != std::string::npos);
+
+    const std::string without = geometryToSvg(labelled({"x"}, {}), SvgOptions{});
+    CHECK(without.find(" id=") == std::string::npos);
+}
+
+TEST(svgExportColorsPrimitivesFromCdAndFillsClosedShapes) {
+    Geometry g;
+    g.resizePoints(6);
+    for (int i = 0; i < 6; ++i) {
+        g.x()[i] = static_cast<float>(i);
+        g.y()[i] = static_cast<float>(i % 2);
+    }
+    g.addPrimitive({0, 3, true, PrimKind::polyline});
+    g.addPrimitive({3, 3, false, PrimKind::polyline});
+    const float red[] = {1, 1, 1, 0, 0, 0}, green[] = {0, 0, 0, 0.5f, 0.5f, 0.5f}, blue[] = {0, 0, 0, 1, 1, 1}, alpha[] = {0.5f, 0.5f, 0.5f, 1, 1, 1};
+    const char* names[] = {"Cd.x", "Cd.y", "Cd.z", "alpha"};
+    const float* values[] = {red, green, blue, alpha};
+    for (int c = 0; c < 4; ++c) {
+        float* dst = g.attrib(AttribClass::point, names[c]).floats().data();
+        for (int i = 0; i < 6; ++i) dst[i] = values[c][i];
+    }
+
+    const std::string plain = geometryToSvg(g);
+    CHECK(plain.find("#ff0000") == std::string::npos);
+
+    SvgOptions options;
+    options.useColor = true;
+    const std::string stroked = geometryToSvg(g, options);
+    CHECK(stroked.find("stroke=\"#ff0000\" stroke-opacity=\"0.5\"") != std::string::npos);
+    CHECK(stroked.find("stroke=\"#0080ff\" stroke-opacity=\"1\"") != std::string::npos);
+    CHECK(stroked.find("fill-opacity") == std::string::npos);
+
+    g.setDetail("render.fill", 1.0f);
+    const std::string filled = geometryToSvg(g, options);
+    CHECK(filled.find("<polygon points=\"") != std::string::npos);
+    CHECK(filled.find("fill=\"#ff0000\" fill-opacity=\"0.5\" stroke=\"none\"") != std::string::npos);
+    CHECK(filled.find("stroke=\"#0080ff\"") != std::string::npos);
+}
+
+TEST(graphJsonKeepsStringAttributesOfInlineGeometry) {
+    if (!NodeRegistry::instance().has("testGeoParam")) NodeRegistry::instance().registerType("testGeoParam", [] { return std::make_unique<GeoParamNode>(); });
+    Geometry g = labelled({"tree", "caf\xc3\xa9", "quote\"back\\slash\n", "", "tree", "\xf0\x9f\x8c\xb3"}, {"unused"});
+    g.addPrimitive({0, 3, false, PrimKind::polyline});
+    g.addPrimitive({3, 3, true, PrimKind::polyline});
+    AttribArray& cls = g.attrib(AttribClass::primitive, "class", AttribType::string);
+    cls.ints()[0] = cls.intern("road");
+    cls.ints()[1] = cls.intern("river");
+    Network net;
+    const NodeId id = net.addNode("testGeoParam");
+    net.node(id).setGeometryParam("curve", std::make_shared<Geometry>(g));
+    const std::string text = saveNetwork(net);
+    CHECK(text.find("primStrings") != std::string::npos);
+
+    Network loaded;
+    loadNetwork(loaded, text);
+    const GeometryHandle back = loaded.node(loaded.nodeIds()[0]).geometryParam("curve");
+    back->checkStrings();
+    CHECK(sameGeometry(g, *back));
+    CHECK(back->findAttrib(AttribClass::point, "label")->stringAt(2) == "quote\"back\\slash\n");
+    CHECK(back->findAttrib(AttribClass::primitive, "class")->stringAt(1) == "river");
+    CHECK(saveNetwork(loaded) == text);
+
+    AttribArray& label = g.attrib(AttribClass::point, "label", AttribType::string);
+    label.ints()[0] = label.intern("bad\xff");
+    net.node(id).setGeometryParam("curve", std::make_shared<Geometry>(g));
+    bool threw = false;
+    try {
+        saveNetwork(net);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(traceRecordsEveryCookedTaskOnceAndChangesNothing) {
+    Branches plain(4, 4, 2000.0f), traced(4, 4, 2000.0f);
+    traced.net.setTraceEnabled(true);
+    CHECK(plain.net.traceEventCount() == 0);
+    const GeometryHandle expected = plain.net.cook(plain.out);
+    const GeometryHandle actual = traced.net.cook(traced.out);
+    CHECK(sameGeometry(*expected, *actual));
+    CHECK(plain.net.traceEventCount() == 0);
+
+    size_t tasks = 0;
+    for (NodeId id : traced.net.nodeIds()) {
+        const NodeStats& st = traced.net.node(id).stats();
+        if (st.cooks > 0 && st.fusedInto == invalidNodeId) ++tasks;
+    }
+    CHECK(tasks > 0);
+    CHECK(traced.net.traceEventCount() == tasks);
+
+    const std::string json = traced.net.traceJson();
+    CHECK(json.find("{\"traceEvents\":[") == 0);
+    size_t phases = 0;
+    for (size_t at = json.find("\"ph\":\"X\""); at != std::string::npos; at = json.find("\"ph\":\"X\"", at + 1)) ++phases;
+    CHECK(phases == tasks);
+    for (NodeId id : traced.net.nodeIds()) {
+        const NodeStats& st = traced.net.node(id).stats();
+        if (st.cooks == 0 || st.fusedInto != invalidNodeId) continue;
+        const std::string key = "\"name\":\"" + traced.net.node(id).name() + "\"";
+        const size_t first = json.find(key);
+        CHECK(first != std::string::npos);
+        CHECK(json.find(key, first + 1) == std::string::npos);
+    }
+
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_trace.json").string();
+    traced.net.writeTrace(path);
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::string onDisk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        CHECK(onDisk == json);
+    }
+    std::filesystem::remove(path);
+
+    traced.net.clearTrace();
+    CHECK(traced.net.traceEventCount() == 0);
+}
+
+TEST(fileCacheSkipsTheUpstreamCookWhenTheFileIsThere) {
+    const std::string path = (std::filesystem::temp_directory_path() / "jitnodes_test_cache.jngeo").string();
+    std::filesystem::remove(path);
+    const auto build = [&](Network& net, NodeId& source, NodeId& cache, const char* mode) {
+        source = net.addNode("generate");
+        net.node(source).setFloat("count", 500.0f);
+        cache = net.addNode("fileCache");
+        net.node(cache).setString("path", path);
+        net.node(cache).setString("mode", mode);
+        net.connect(source, cache, 0);
+    };
+
+    Network first(2);
+    NodeId source, cache;
+    build(first, source, cache, "auto");
+    auto written = first.cook(cache);
+    CHECK(first.node(source).cookCount() == 1);
+    CHECK(std::filesystem::exists(path));
+    CHECK(sameGeometry(*written, *first.cook(source)));
+
+    // A new session: the file satisfies the cache, so the generate node is never cooked.
+    Network second(2);
+    build(second, source, cache, "auto");
+    auto loaded = second.cook(cache);
+    CHECK(second.node(source).cookCount() == 0);
+    CHECK(sameGeometry(*loaded, *written));
+
+    // read mode works with nothing connected; write mode recooks and rewrites.
+    Network third(2);
+    const NodeId lone = third.addNode("fileCache");
+    third.node(lone).setString("path", path);
+    third.node(lone).setString("mode", "read");
+    CHECK(sameGeometry(*third.cook(lone), *written));
+
+    Network fourth(2);
+    build(fourth, source, cache, "write");
+    fourth.node(source).setFloat("count", 20.0f);
+    CHECK(fourth.cook(cache)->pointCount() == 20);
+    CHECK(loadGeometryFromFile(path).pointCount() == 20);
+
+    // A corrupt file: auto cooks and replaces it, read reports it.
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "not a geometry file";
+    }
+    Network fifth(2);
+    build(fifth, source, cache, "read");
+    CHECK(cookThrows(fifth, cache));
+    fifth.node(cache).setString("mode", "auto");
+    CHECK(fifth.cook(cache)->pointCount() == 500);
+    CHECK(fifth.node(source).cookCount() == 1);
+    CHECK(loadGeometryFromFile(path).pointCount() == 500);
+
+    fifth.node(cache).setString("mode", "sideways");
+    CHECK(cookThrows(fifth, cache));
+    std::filesystem::remove(path);
+}
+
+using Polyline = std::vector<std::pair<double, double>>;
+
+Geometry polylines(const std::vector<Polyline>& lines, bool closed = false) {
+    Geometry g;
+    size_t total = 0;
+    for (const Polyline& l : lines) total += l.size();
+    g.resizePoints(total);
+    size_t at = 0;
+    for (const Polyline& l : lines) {
+        g.addPrimitive({static_cast<uint32_t>(at), static_cast<uint32_t>(l.size()), closed, PrimKind::polyline});
+        for (const auto& p : l) {
+            g.x()[at] = static_cast<float>(p.first);
+            g.y()[at] = static_cast<float>(p.second);
+            ++at;
+        }
+    }
+    return g;
+}
+
+struct ShapeRig {
+    Network net{1};
+    NodeId node;
+    ShapeRig(Geometry g, const char* type) {
+        net.setExternalInputs({std::make_shared<Geometry>(std::move(g))});
+        const NodeId in = net.addNode("subnetInput", "in");
+        node = net.addNode(type, "n");
+        net.connect(in, node);
+    }
+    Node& n() { return net.node(node); }
+    GeometryHandle cook() { return net.cook(node); }
+};
+
+TEST(smoothShrinksARingOnlyWithoutPreserveAndKeepsOpenEnds) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 64.0f);
+    const NodeId smooth = net.addNode("smooth");
+    net.connect(ring, smooth);
+    net.node(smooth).setFloat("iterations", 40.0f);
+    net.node(smooth).setFloat("preserve", 0.0f);
+    auto plain = net.cook(smooth);
+    CHECK(plain->pointCount() == 64);
+    CHECK(std::hypot(plain->x()[0], plain->y()[0]) < 0.93f);
+    net.node(smooth).setFloat("preserve", 1.0f);
+    auto kept = net.cook(smooth);
+    for (size_t i = 0; i < 64; ++i) CHECK(std::fabs(std::hypot(kept->x()[i], kept->y()[i]) - 1.0f) < 0.01f);
+
+    ShapeRig zigzag(polylines({{{0, 0}, {1, 1}, {2, 0}, {3, 1}, {4, 0}}}), "smooth");
+    auto flat = zigzag.cook();
+    CHECK(nearly(flat->x()[0], 0.0f) && nearly(flat->y()[0], 0.0f) && nearly(flat->x()[4], 4.0f) && nearly(flat->y()[4], 0.0f));
+    CHECK(flat->y()[1] < 0.99f && flat->y()[1] > 0.0f);
+    zigzag.n().setFloat("iterations", 0.0f);
+    CHECK(nearly(zigzag.cook()->y()[1], 1.0f));
+}
+
+TEST(offsetMakesParallelCopiesOnTheLeftWithMiteredCorners) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 64.0f);
+    const NodeId off = net.addNode("offset");
+    net.connect(ring, off);
+    net.node(off).setFloat("distance", 0.2f);
+    net.node(off).setFloat("count", 2.0f);
+    net.node(off).setFloat("keepOriginal", 1.0f);
+    auto g = net.cook(off);
+    CHECK(g->primitiveCount() == 3 && g->pointCount() == 192);
+    const AttribArray* index = g->findAttrib(AttribClass::primitive, "offsetIndex");
+    CHECK(index && index->ints()[0] == 0 && index->ints()[2] == 2);
+    const float miter = 1.0f / std::cos(3.14159265f / 64.0f);
+    CHECK(std::fabs(std::hypot(g->x()[0], g->y()[0]) - 1.0f) < 1e-5f);
+    CHECK(std::fabs(std::hypot(g->x()[64], g->y()[64]) - (1.0f - 0.2f * miter)) < 1e-4f);
+    CHECK(std::fabs(std::hypot(g->x()[128], g->y()[128]) - (1.0f - 0.4f * miter)) < 1e-4f);
+
+    ShapeRig line(polylines({{{0, 0}, {1, 0}, {2, 0}}}), "offset");
+    line.n().setFloat("distance", -0.5f);
+    auto below = line.cook();
+    CHECK(below->primitiveCount() == 1 && nearly(below->y()[1], -0.5f) && nearly(below->x()[1], 1.0f));
+}
+
+TEST(sortReordersPrimitivesWithTheirPointsAndAttributes) {
+    Geometry g = polylines({{{2, 0}, {2, 1}}, {{0, 0}, {0, 1}}, {{1, 0}, {1, 1}}});
+    AttribArray& id = g.attrib(AttribClass::primitive, "id", AttribType::int32);
+    id.ints()[0] = 20;
+    id.ints()[1] = 0;
+    id.ints()[2] = 10;
+    g.attrib(AttribClass::point, "tag").floats()[0] = 7.0f;
+    ShapeRig rig(g, "sort");
+    auto sorted = rig.cook();
+    CHECK(sorted->primitiveCount() == 3 && sorted->pointCount() == 6);
+    for (size_t p = 0; p < 3; ++p) {
+        CHECK(sorted->primitives()[p].start == 2 * p);
+        CHECK(nearly(sorted->x()[2 * p], static_cast<float>(p)));
+        CHECK(sorted->findAttrib(AttribClass::primitive, "id")->ints()[p] == static_cast<int32_t>(10 * p));
+    }
+    CHECK(nearly(sorted->findAttrib(AttribClass::point, "tag")->floats()[4], 7.0f));
+
+    rig.n().setFloat("reverse", 1.0f);
+    CHECK(nearly(rig.cook()->x()[0], 2.0f));
+    rig.n().setFloat("reverse", 0.0f);
+    rig.n().setFloat("shift", 1.0f);
+    CHECK(nearly(rig.cook()->x()[0], 1.0f) && nearly(rig.cook()->x()[4], 0.0f));
+    rig.n().setFloat("shift", 0.0f);
+    rig.n().setString("key", "attrib");
+    rig.n().setString("attrib", "id");
+    CHECK(nearly(rig.cook()->x()[0], 0.0f));
+    rig.n().setString("key", "angle");
+    CHECK(rig.cook()->primitiveCount() == 3);
+    rig.n().setString("class", "point");
+    CHECK(cookThrows(rig.net, rig.node));
+    rig.n().setString("class", "primitive");
+    rig.n().setString("key", "nonsense");
+    CHECK(cookThrows(rig.net, rig.node));
+
+    Geometry cloud;
+    cloud.resizePoints(4);
+    const float xs[] = {3, 1, 2, 0};
+    for (int i = 0; i < 4; ++i) cloud.x()[i] = xs[i];
+    AttribArray& label = cloud.attrib(AttribClass::point, "label", AttribType::string);
+    const char* names[] = {"d", "b", "c", "a"};
+    for (int i = 0; i < 4; ++i) label.ints()[i] = label.intern(names[i]);
+    ShapeRig points(cloud, "sort");
+    points.n().setString("class", "point");
+    auto byX = points.cook();
+    for (int i = 0; i < 4; ++i) CHECK(nearly(byX->x()[i], static_cast<float>(i)));
+    points.n().setString("key", "attrib");
+    points.n().setString("attrib", "label");
+    auto byText = points.cook();
+    for (int i = 0; i < 4; ++i) CHECK(byText->findAttrib(AttribClass::point, "label")->stringAt(i) == std::string(1, static_cast<char>('a' + i)));
+    byText->checkStrings();
+}
+
+TEST(joinChainsCurvesThatMeetAndClosesLoops) {
+    ShapeRig chain(polylines({{{0, 0}, {1, 0}}, {{2, 0}, {1, 0}}, {{2, 0}, {2, 1}}}), "join");
+    auto joined = chain.cook();
+    CHECK(joined->primitiveCount() == 1 && joined->pointCount() == 4 && !joined->primitives()[0].closed);
+    const float wantX[] = {0, 1, 2, 2}, wantY[] = {0, 0, 0, 1};
+    for (int i = 0; i < 4; ++i) CHECK(nearly(joined->x()[i], wantX[i]) && nearly(joined->y()[i], wantY[i]));
+
+    ShapeRig loop(polylines({{{0, 0}, {1, 0}}, {{1, 0}, {1, 1}}, {{1, 1}, {0, 1}}, {{0, 1}, {0, 0}}}), "join");
+    auto ring = loop.cook();
+    CHECK(ring->primitiveCount() == 1 && ring->pointCount() == 4 && ring->primitives()[0].closed);
+    loop.n().setFloat("distance", 0.0f);
+    CHECK(loop.cook()->primitiveCount() == 1);
+
+    ShapeRig apart(polylines({{{0, 0}, {1, 0}}, {{1.5f, 0}, {2, 0}}}), "join");
+    CHECK(apart.cook()->primitiveCount() == 2);
+    apart.n().setFloat("distance", 0.6f);
+    CHECK(apart.cook()->primitiveCount() == 1);
+    apart.n().setFloat("distance", 0.001f);
+    apart.n().setString("mode", "all");
+    apart.n().setFloat("close", 1.0f);
+    auto all = apart.cook();
+    CHECK(all->primitiveCount() == 1 && all->pointCount() == 4 && all->primitives()[0].closed);
+    apart.n().setString("mode", "weave");
+    CHECK(cookThrows(apart.net, apart.node));
+
+    ShapeRig square(polylines({{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}, true), "join");
+    CHECK(square.cook()->primitiveCount() == 1 && square.cook()->primitives()[0].closed);
+}
+
+TEST(bevelCutsCornersAndRoundsThemWithSegments) {
+    ShapeRig square(polylines({{{0, 0}, {2, 0}, {2, 2}, {0, 2}}}, true), "bevel");
+    square.n().setFloat("distance", 0.5f);
+    auto chamfer = square.cook();
+    CHECK(chamfer->pointCount() == 8 && chamfer->primitives()[0].closed);
+    const float corners[4][2] = {{0, 0}, {2, 0}, {2, 2}, {0, 2}};
+    for (size_t i = 0; i < 8; ++i) {
+        float nearest = 1e9f;
+        for (const auto& c : corners) nearest = std::min(nearest, std::hypot(chamfer->x()[i] - c[0], chamfer->y()[i] - c[1]));
+        CHECK(std::fabs(nearest - 0.5f) < 1e-5f);
+    }
+    square.n().setFloat("segments", 4.0f);
+    auto round = square.cook();
+    CHECK(round->pointCount() == 20);
+    for (size_t i = 0; i < 20; ++i) {
+        const float x = round->x()[i], y = round->y()[i];
+        CHECK(x >= -1e-5f && x <= 2.00001f && y >= -1e-5f && y <= 2.00001f);
+    }
+    square.n().setFloat("distance", 5.0f);
+    auto clamped = square.cook();
+    CHECK(clamped->pointCount() == 20 && std::fabs(clamped->x()[0] - 0.0f) < 1e-5f && std::fabs(clamped->y()[0] - 1.0f) < 1e-5f);
+
+    ShapeRig bend(polylines({{{0, 0}, {1, 0}, {1, 1}}}), "bevel");
+    bend.n().setFloat("distance", 0.25f);
+    auto elbow = bend.cook();
+    CHECK(elbow->pointCount() == 4 && nearly(elbow->x()[0], 0.0f) && nearly(elbow->x()[1], 0.75f) && nearly(elbow->y()[2], 0.25f) && nearly(elbow->y()[3], 1.0f));
+    bend.n().setFloat("minAngle", 120.0f);
+    CHECK(bend.cook()->pointCount() == 3);
+}
+
+TEST(twistRotatesByDistanceAndFadesAtTheRadius) {
+    ShapeRig rig(polylines({{{1, 0}, {0, 2}, {0, 0}}}), "twist");
+    auto linear = rig.cook();
+    CHECK(nearly(linear->x()[0], 0.0f) && nearly(linear->y()[0], 1.0f));
+    CHECK(std::fabs(std::hypot(linear->x()[1], linear->y()[1]) - 2.0f) < 1e-4f);
+    CHECK(nearly(linear->x()[2], 0.0f) && nearly(linear->y()[2], 0.0f));
+    rig.n().setFloat("radius", 2.0f);
+    auto swirl = rig.cook();
+    CHECK(std::fabs(swirl->x()[0] - std::cos(3.14159265f / 4.0f)) < 1e-4f && std::fabs(swirl->y()[0] - std::sin(3.14159265f / 4.0f)) < 1e-4f);
+    CHECK(nearly(swirl->x()[1], 0.0f) && nearly(swirl->y()[1], 2.0f));
+    CHECK(nearly(swirl->x()[2], 0.0f));
+    rig.n().setFloat("amount", 0.0f);
+    CHECK(nearly(rig.cook()->x()[0], 1.0f));
+}
+
+TEST(peakPushesAlongTheLeftNormalOrRadially) {
+    Network net(1);
+    const NodeId ring = net.addNode("circle");
+    net.node(ring).setFloat("count", 32.0f);
+    const NodeId peak = net.addNode("peak");
+    net.connect(ring, peak);
+    net.node(peak).setFloat("amount", -0.25f);
+    auto grown = net.cook(peak);
+    for (size_t i = 0; i < 32; ++i) CHECK(std::fabs(std::hypot(grown->x()[i], grown->y()[i]) - 1.25f) < 1e-4f);
+    net.node(peak).setString("mode", "radial");
+    net.node(peak).setFloat("amount", 1.0f);
+    auto radial = net.cook(peak);
+    CHECK(std::fabs(std::hypot(radial->x()[5], radial->y()[5]) - 2.0f) < 1e-4f);
+    net.node(peak).setString("scaleAttrib", "missing");
+    CHECK(cookThrows(net, peak));
+
+    Geometry line = polylines({{{0, 0}, {1, 0}, {2, 0}}});
+    line.attrib(AttribClass::point, "w").floats()[1] = 3.0f;
+    ShapeRig rig(line, "peak");
+    rig.n().setString("scaleAttrib", "w");
+    rig.n().setFloat("amount", 0.5f);
+    auto lifted = rig.cook();
+    CHECK(nearly(lifted->y()[0], 0.0f) && nearly(lifted->y()[1], 1.5f) && nearly(lifted->x()[1], 1.0f));
+    rig.n().setString("mode", "sideways");
+    CHECK(cookThrows(rig.net, rig.node));
+}
+
+TEST(latticeMovesPointsWithTheControlGridAndRejectsAWrongCount) {
+    const auto grid = [](float dx, float dy, float stretch) {
+        Polyline pts;
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i) pts.push_back({i * stretch + dx, j * stretch + dy});
+        return polylines({pts});
+    };
+    Network net(1);
+    net.setExternalInputs({std::make_shared<Geometry>(polylines({{{0, 0}, {1, 1}, {2, 2}, {0.5, 1.5}}})), std::make_shared<Geometry>(grid(1.0f, -2.0f, 1.0f))});
+    const NodeId body = net.addNode("subnetInput", "body");
+    const NodeId cage = net.addNode("subnetInput", "cage");
+    net.node(cage).setFloat("index", 1.0f);
+    const NodeId lat = net.addNode("lattice", "lat");
+    net.connect(body, lat, 0);
+    net.connect(cage, lat, 1);
+    net.node(lat).setFloat("columns", 3.0f);
+    net.node(lat).setFloat("rows", 3.0f);
+    auto moved = net.cook(lat);
+    for (size_t i = 0; i < 4; ++i) {
+        const Geometry& rest = *net.cook(body);
+        CHECK(nearly(moved->x()[i], rest.x()[i] + 1.0f) && nearly(moved->y()[i], rest.y()[i] - 2.0f));
+    }
+    net.node(lat).setFloat("amount", 0.5f);
+    CHECK(nearly(net.cook(lat)->x()[2], 2.5f));
+    net.node(lat).setFloat("amount", 1.0f);
+    net.node(lat).setFloat("minX", -1.0f);
+    net.node(lat).setFloat("maxX", 3.0f);
+    net.node(lat).setFloat("minY", -1.0f);
+    net.node(lat).setFloat("maxY", 3.0f);
+    CHECK(net.cook(lat)->pointCount() == 4);
+    net.node(lat).setFloat("columns", 4.0f);
+    CHECK(cookThrows(net, lat));
+
+    Network scaled(1);
+    scaled.setExternalInputs({std::make_shared<Geometry>(polylines({{{0, 0}, {2, 0}, {1, 1}}})), std::make_shared<Geometry>(grid(0.0f, 0.0f, 2.0f))});
+    const NodeId b2 = scaled.addNode("subnetInput", "b");
+    const NodeId c2 = scaled.addNode("subnetInput", "c");
+    scaled.node(c2).setFloat("index", 1.0f);
+    const NodeId l2 = scaled.addNode("lattice");
+    scaled.connect(b2, l2, 0);
+    scaled.connect(c2, l2, 1);
+    scaled.node(l2).setFloat("columns", 3.0f);
+    scaled.node(l2).setFloat("rows", 3.0f);
+    auto stretched = scaled.cook(l2);
+    CHECK(std::fabs(stretched->x()[1] - 4.0f) < 1e-3f && std::fabs(stretched->y()[1]) < 1e-3f);
+    CHECK(std::fabs(stretched->x()[2] - 2.0f) < 1e-3f && std::fabs(stretched->y()[2] - 4.0f) < 1e-3f);
+}
+
+TEST(switchCooksOnlyTheSelectedInput) {
+    Network net(1);
+    const NodeId a = net.addNode("generate");
+    net.node(a).setFloat("count", 5.0f);
+    const NodeId b = net.addNode("generate");
+    net.node(b).setFloat("count", 9.0f);
+    const NodeId sw = net.addNode("switch");
+    net.connect(a, sw, 0);
+    net.connect(b, sw, 1);
+    CHECK(net.cook(sw)->pointCount() == 5);
+    CHECK(net.node(a).cookCount() == 1 && net.node(b).cookCount() == 0);
+    net.node(sw).setFloat("index", 1.0f);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    CHECK(net.node(b).cookCount() == 1);
+    net.node(sw).setFloat("index", 7.0f);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    net.node(sw).setFloat("index", -3.0f);
+    CHECK(net.cook(sw)->pointCount() == 5);
+    net.node(sw).setExpression("index", "time");
+    net.setTime(1.0);
+    CHECK(net.cook(sw)->pointCount() == 9);
+    net.setTime(0.0);
+    CHECK(net.cook(sw)->pointCount() == 5);
+
+    Network lone(1);
+    const NodeId empty = lone.addNode("switch");
+    CHECK(cookThrows(lone, empty));
+}
+
+TEST(polarBendsARowIntoARingAndBackAgain) {
+    Polyline row;
+    for (int i = 0; i < 8; ++i) row.push_back({static_cast<float>(i) / 8.0f, 2.0f});
+    ShapeRig rig(polylines({row}), "polar");
+    auto ring = rig.cook();
+    for (size_t i = 0; i < 8; ++i) CHECK(std::fabs(std::hypot(ring->x()[i], ring->y()[i]) - 2.0f) < 1e-5f);
+    CHECK(nearly(ring->x()[0], 2.0f) && std::fabs(ring->y()[2] - 2.0f) < 1e-5f);
+
+    Network net(1);
+    net.setExternalInputs({ring});
+    const NodeId in = net.addNode("subnetInput", "in");
+    const NodeId back = net.addNode("polar", "back");
+    net.connect(in, back);
+    net.node(back).setString("mode", "fromPolar");
+    auto flat = net.cook(back);
+    for (size_t i = 0; i < 8; ++i) CHECK(std::fabs(flat->x()[i] - static_cast<float>(i) / 8.0f) < 1e-4f && std::fabs(flat->y()[i] - 2.0f) < 1e-4f);
+
+    rig.n().setFloat("amount", 0.0f);
+    CHECK(nearly(rig.cook()->x()[3], 3.0f / 8.0f));
+    rig.n().setFloat("width", 0.0f);
+    CHECK(cookThrows(rig.net, rig.node));
+    rig.n().setFloat("width", 1.0f);
+    rig.n().setString("mode", "spiral");
+    CHECK(cookThrows(rig.net, rig.node));
+}
+
+// Four primitives of three points each; point (p, j) sits at x = p * 10 + j, and the primitive attribute "kind" is 0, 1, 0, 1.
+GeometryHandle loopInput() {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(12);
+    for (uint32_t p = 0; p < 4; ++p) {
+        for (uint32_t j = 0; j < 3; ++j) {
+            geo->x()[p * 3 + j] = static_cast<float>(p * 10 + j);
+            geo->y()[p * 3 + j] = 0.0f;
+        }
+        geo->addPrimitive({p * 3, 3, false, PrimKind::polyline});
+    }
+    AttribArray& kind = geo->attrib(AttribClass::primitive, "kind");
+    for (size_t p = 0; p < 4; ++p) kind.floats()[p] = static_cast<float>(p % 2);
+    return geo;
+}
+
+// input -> loop node -> null, with `subnetInput -> transform` inside the loop node. Returns the transform's network for edits.
+struct LoopRig {
+    Network net{1};
+    NodeId in, loop, out, inInner, xf;
+    explicit LoopRig(const char* type) {
+        net.setExternalInputs({loopInput()});
+        in = net.addNode("subnetInput", "in");
+        loop = net.addNode(type, "loop");
+        out = net.addNode("null", "out");
+        Network& inner = dynamic_cast<SubnetNode&>(net.node(loop)).network();
+        inInner = inner.addNode("subnetInput", "in");
+        xf = inner.addNode("transform", "xf");
+        inner.connect(inInner, xf);
+        inner.setDisplayNode(xf);
+        net.connect(in, loop);
+        net.connect(loop, out);
+        net.setDisplayNode(out);
+    }
+    Network& inner() { return dynamic_cast<SubnetNode&>(net.node(loop)).network(); }
+};
+
+TEST(foreachCooksTheChildGraphOncePerPrimitiveAndKnowsTheIteration) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration + 1");
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12 && out->primitiveCount() == 4);
+    for (size_t p = 0; p < 4; ++p) {
+        CHECK(out->primitives()[p].start == p * 3);
+        for (size_t j = 0; j < 3; ++j) {
+            CHECK_NEAR(out->x()[p * 3 + j], static_cast<float>(p * 10 + j));
+            CHECK_NEAR(out->y()[p * 3 + j], static_cast<float>(p + 1));
+        }
+    }
+    CHECK_NEAR(out->findAttrib(AttribClass::primitive, "kind")->floats()[3], 1.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("iteration") == 0.0f && rig.net.node(rig.loop).getFloat("numIterations") == 0.0f);
+
+    rig.net.cookDisplay();
+    CHECK(rig.net.node(rig.loop).cookCount() == 1);
+    rig.inner().node(rig.xf).setExpression("ty", "parent.numIterations");
+    CHECK_NEAR(rig.net.cookDisplay()->y()[7], 4.0f);
+}
+
+TEST(foreachGroupsPrimitivesByAnAttributeAndWalksPoints) {
+    LoopRig rig("foreach");
+    rig.net.node(rig.loop).setString("pieceAttrib", "kind");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration * 5");
+    auto out = rig.net.cookDisplay();
+    CHECK(out->primitiveCount() == 4);
+    const auto& kind = out->findAttrib(AttribClass::primitive, "kind")->floats();
+    CHECK(kind[0] == 0.0f && kind[1] == 0.0f && kind[2] == 1.0f && kind[3] == 1.0f);
+    CHECK_NEAR(out->y()[0], 0.0f);
+    CHECK_NEAR(out->y()[11], 5.0f);
+    CHECK_NEAR(out->x()[3], 20.0f);  // the first piece holds primitives 0 and 2
+
+    rig.net.node(rig.loop).setString("pieceAttrib", "missing");
+    CHECK(cookThrows(rig.net, rig.out));
+
+    rig.net.node(rig.loop).setString("pieceAttrib", "");
+    rig.net.node(rig.loop).setString("mode", "points");
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12 && out->primitiveCount() == 0);
+    CHECK_NEAR(out->y()[11], 55.0f);
+}
+
+TEST(foreachCopiesAndFeedbackRepeatTheChildGraph) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setFloat("tx", 100.0f);
+    rig.net.node(rig.loop).setString("mode", "copies");
+    rig.net.node(rig.loop).setFloat("count", 3.0f);
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 36 && out->primitiveCount() == 12);
+    CHECK_NEAR(out->x()[12], 100.0f);
+
+    rig.net.node(rig.loop).setString("mode", "feedback");
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12);
+    CHECK_NEAR(out->x()[0], 300.0f);
+    rig.net.node(rig.loop).setFloat("count", 0.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 0.0f);
+    rig.net.node(rig.loop).setFloat("count", 1e7f);
+    CHECK(cookThrows(rig.net, rig.out));
+    rig.net.node(rig.loop).setString("mode", "sideways");
+    CHECK(cookThrows(rig.net, rig.out));
+}
+
+TEST(foreachCooksPiecesInParallelWithTheSameResultAsSerially) {
+    LoopRig rig("foreach");
+    rig.net.setThreadCount(4);
+    rig.net.node(rig.loop).setString("mode", "points");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration * 2 + parent.numIterations");
+    auto expected = rig.net.cookDisplay();
+
+    rig.net.node(rig.loop).setFloat("parallel", 1.0f);
+    auto out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 12);
+    for (size_t i = 0; i < 12; ++i) {
+        CHECK_NEAR(out->x()[i], expected->x()[i]);
+        CHECK_NEAR(out->y()[i], expected->y()[i]);
+    }
+    CHECK_NEAR(out->y()[5], 22.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("iteration") == 0.0f && rig.net.node(rig.loop).getFloat("numIterations") == 0.0f);
+
+    rig.inner().node(rig.xf).setFloat("tx", 100.0f);
+    out = rig.net.cookDisplay();
+    CHECK_NEAR(out->x()[3], 110.0f);
+    CHECK_NEAR(out->y()[11], 34.0f);
+
+    rig.net.node(rig.loop).setString("mode", "copies");
+    rig.net.node(rig.loop).setFloat("count", 6.0f);
+    out = rig.net.cookDisplay();
+    CHECK(out->pointCount() == 72);
+    CHECK_NEAR(out->y()[12 * 5], 16.0f);
+}
+
+TEST(foreachSurvivesSavingAndLoading) {
+    LoopRig rig("foreach");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.iteration");
+    rig.net.node(rig.loop).setString("mode", "points");
+    const std::string text = saveNetwork(rig.net);
+    Network copy(1);
+    loadNetwork(copy, text);
+    CHECK(saveNetwork(copy) == text);
+    copy.setExternalInputs({loopInput()});
+    auto out = copy.cookDisplay();
+    CHECK(out->pointCount() == 12 && copy.node(copy.findNode("loop")).typeName() == "foreach");
+    CHECK_NEAR(out->y()[11], 11.0f);
+}
+
+// Scrubbing back resumes from a saved copy of the simulation state, and everything after that matches a run from the start.
+TEST(simulationsResumeFromSavedStatesWhenScrubbedBack) {
+    struct Case {
+        const char* name;
+        std::function<NodeId(Network&)> build;
+    };
+    const std::vector<Case> cases = {
+        {"particles",
+         [](Network& net) {
+             NodeId gen = net.addNode("generate"), sim = net.addNode("particles");
+             net.node(gen).setFloat("count", 300.0f);
+             net.connect(gen, sim);
+             net.node(sim).setFloat("noiseForce", 2.0f);
+             net.node(sim).setFloat("lifetime", 0.7f);
+             return sim;
+         }},
+        {"boids",
+         [](Network& net) {
+             NodeId gen = net.addNode("generate"), sim = net.addNode("boids");
+             net.node(gen).setFloat("count", 120.0f);
+             net.connect(gen, sim);
+             return sim;
+         }},
+        {"springs",
+         [](Network& net) {
+             NodeId line = net.addNode("line"), sim = net.addNode("springs");
+             net.node(line).setFloat("count", 20.0f);
+             net.connect(line, sim);
+             net.node(sim).setFloat("pinEnds", 1.0f);
+             return sim;
+         }},
+        {"reactionDiffusion",
+         [](Network& net) {
+             NodeId sim = net.addNode("reactionDiffusion");
+             net.node(sim).setFloat("width", 32.0f);
+             net.node(sim).setFloat("height", 24.0f);
+             net.node(sim).setFloat("stepsPerSecond", 200.0f);
+             return sim;
+         }},
+        {"gasField",
+         [](Network& net) {
+             NodeId sim = net.addNode("gasField");
+             net.node(sim).setFloat("nozzleSpeed", 6.0f);
+             net.node(sim).setFloat("nozzleDensity", 1.0f);
+             return sim;
+         }},
+        {"fluid",
+         [](Network& net) {
+             NodeId merge = net.addNode("merge"), sim = net.addNode("fluid");
+             for (int row = 0; row < 6; ++row) {
+                 NodeId line = net.addNode("line");
+                 net.node(line).setFloat("count", 16.0f);
+                 net.node(line).setFloat("length", 1.5f);
+                 net.node(line).setFloat("y", 0.1f * static_cast<float>(row));
+                 net.connect(line, merge, row);
+             }
+             net.connect(merge, sim);
+             net.node(sim).setFloat("boundsMinX", 0.0f);
+             net.node(sim).setFloat("boundsMaxX", 2.0f);
+             net.node(sim).setFloat("boundsMinY", -1.0f);
+             net.node(sim).setFloat("boundsMaxY", 3.0f);
+             return sim;
+         }},
+        {"grow",
+         [](Network& net) {
+             NodeId circle = net.addNode("circle"), sim = net.addNode("grow");
+             net.node(circle).setFloat("count", 8.0f);
+             net.node(circle).setFloat("radius", 0.3f);
+             net.connect(circle, sim);
+             net.node(sim).setFloat("repelRadius", 2.0f);
+             return sim;
+         }},
+    };
+
+    const int64_t savedInterval = SimulationCache::checkpointInterval;
+    SimulationCache::checkpointInterval = 4;
+    for (const Case& c : cases) {
+        Network net(2);
+        const NodeId sim = c.build(net);
+        auto fresh = [&](double t) {
+            Network other(2);
+            const NodeId s = c.build(other);
+            other.setTime(t);
+            return other.cook(s);
+        };
+        net.setTime(1.0);
+        net.cook(sim);
+        const size_t before = SimulationCache::restores;
+        net.setTime(0.45);
+        auto back = net.cook(sim);
+        if (SimulationCache::restores <= before) std::printf("%s did not resume from a saved state\n", c.name);
+        CHECK(SimulationCache::restores > before);
+        if (!sameGeometry(*back, *fresh(0.45))) std::printf("%s differs after scrubbing back\n", c.name);
+        CHECK(sameGeometry(*back, *fresh(0.45)));
+        net.setTime(1.3);
+        if (!sameGeometry(*net.cook(sim), *fresh(1.3))) std::printf("%s differs after playing on\n", c.name);
+        CHECK(sameGeometry(*net.cook(sim), *fresh(1.3)));
+        net.setTime(0.0);
+        CHECK(sameGeometry(*net.cook(sim), *fresh(0.0)));
+
+        // An edit drops the saved states, so the next run is a new one that saves its own.
+        const std::string first = net.node(sim).floatNames().front();
+        net.node(sim).setFloat(first, net.node(sim).baseFloat(first) + 0.25f);
+        net.setTime(0.9);
+        net.cook(sim);
+        const size_t afterEdit = SimulationCache::restores;
+        net.setTime(0.5);
+        auto edited = net.cook(sim);
+        CHECK(SimulationCache::restores > afterEdit);
+        Network other(2);
+        const NodeId s = c.build(other);
+        other.node(s).setFloat(first, other.node(s).baseFloat(first) + 0.25f);
+        other.setTime(0.5);
+        CHECK(sameGeometry(*edited, *other.cook(s)));
+    }
+    SimulationCache::checkpointInterval = savedInterval;
+}
+
+TEST(renderFillsClosedShapesWithCoverageAntiAliasing) {
+    Geometry g;
+    g.resizePoints(4);
+    const float xs[4] = {-2.05f, 2.0f, 2.0f, -2.05f}, ys[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
+    for (size_t i = 0; i < 4; ++i) {
+        g.x()[i] = xs[i];
+        g.y()[i] = ys[i];
+    }
+    g.addPrimitive({0, 4, true});
+    for (const char* name : {"Cd.x", "alpha"}) {
+        float* values = g.attrib(AttribClass::point, name).floats().data();
+        for (size_t i = 0; i < 4; ++i) values[i] = 1.0f;
+    }
+
+    RenderSettings s;
+    s.width = 100;
+    s.height = 50;
+    s.minX = -5.0f;
+    s.maxX = 5.0f;
+    s.minY = -2.5f;
+    s.maxY = 2.5f;
+    s.additive = false;
+    Image off = renderSplats(g, s, nullptr);
+    CHECK((off.pixels[25 * 100 + 50] & 0xFFFFFFu) == 0u);  // shapes are only drawn when fillShapes is set
+
+    s.fillShapes = true;
+    Image on = renderSplats(g, s, nullptr);
+    auto red = [&](int x, int y) { return static_cast<int>((on.pixels[static_cast<size_t>(y) * 100 + static_cast<size_t>(x)] >> 16) & 255u); };
+    CHECK(red(50, 25) >= 253);                        // inside
+    CHECK(red(10, 25) <= 2 && red(50, 5) <= 2);       // outside
+    CHECK(std::abs(red(29, 25) - 128) <= 12);         // the left edge at x = 29.5 px covers half of column 29
+    CHECK(red(30, 25) >= 253 && red(70, 25) <= 2);    // the right edge sits exactly on a pixel boundary
+    CHECK(red(50, 14) <= 2 && red(50, 15) >= 253);    // top edge on a row boundary
+    ThreadPool pool(4);
+    Image threaded = renderSplats(g, s, &pool);
+    CHECK(threaded.pixels == on.pixels);              // bands do not change the result
+}
+
+TEST(checkpointIntervalShrinksForSlowSteps) {
+    const int64_t savedInterval = SimulationCache::checkpointInterval;
+    const double savedBudget = SimulationCache::replayBudgetMs;
+    SimulationCache::checkpointInterval = 16;
+    auto run = [](double budgetMs, int64_t stepMs) {
+        SimulationCache::replayBudgetMs = budgetMs;
+        StateCheckpoints<int> cp;
+        for (int64_t s = 0; s < 33; ++s) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stepMs));
+            cp.offer(s, int(s), sizeof(int));
+        }
+        return cp.size();
+    };
+    CHECK(run(0.0, 3) == 3);  // fixed interval of 16: steps 0, 16, 32
+    CHECK(run(100.0, 0) == 3);  // cheap steps keep the configured interval
+    CHECK(run(24.0, 3) > 3);  // 3 ms steps: a replay of 16 would take 48 ms, so the interval drops to 4 or less
+    SimulationCache::checkpointInterval = savedInterval;
+    SimulationCache::replayBudgetMs = savedBudget;
+}
+
+TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
+    LoopRig rig("solver");
+    rig.net.node(rig.loop).setFloat("stepsPerSecond", 10.0f);
+    rig.inner().node(rig.xf).setFloat("tx", 1.0f);
+    rig.net.setTime(0.0);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 0.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 0);
+    rig.net.setTime(0.5);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 5.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 5);
+    rig.net.setTime(0.7);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 7.0f);
+    CHECK(rig.inner().node(rig.xf).cookCount() == 7);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[4], 18.0f);
+
+    const size_t restoresBefore = SimulationCache::restores;
+    rig.net.setTime(0.3);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 3.0f);
+    CHECK(SimulationCache::restores == restoresBefore + 1);  // resumed from the saved start state, no need to restart
+    rig.inner().node(rig.xf).setFloat("tx", 2.0f);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
+
+    rig.inner().node(rig.xf).setExpression("tx", "parent.step");
+    rig.net.setTime(0.4);
+    CHECK_NEAR(rig.net.cookDisplay()->x()[0], 10.0f);
+    CHECK(rig.net.node(rig.loop).getFloat("step") == 0.0f);
 }
 
 }  // namespace

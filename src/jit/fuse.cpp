@@ -68,13 +68,15 @@ void appendKernel(KernelSpec& acc, const KernelSpec& next, const std::function<A
     for (size_t c = 0; c < next.channels.size(); ++c) {
         auto it = produced.find(nextChannels[c]);
         if (it == produced.end()) continue;
-        const bool isInt = channelType ? channelType(next.channels[c]) == AttribType::int32 : next.channelTypes[c] == AttribType::int32;
+        const bool isInt = isIntegerStorage(channelType ? channelType(next.channels[c]) : next.channelTypes[c]);
         override[static_cast<int>(c)] = isInt ? storedAsInt(acc.graph, it->second) : it->second;
     }
     std::vector<int> nextMap = copyGraph(acc.graph, next, nextChannels, paramOffset, override);
     for (const auto& [channel, expr] : next.stores) produced[nextChannels[static_cast<size_t>(channel)]] = nextMap[static_cast<size_t>(expr)];
 
     acc.stores.assign(produced.begin(), produced.end());
+    for (const KernelSpec::StringParam& sp : next.stringParams)
+        acc.stringParams.push_back({sp.paramIndex + paramOffset, nextChannels[static_cast<size_t>(sp.channel)], sp.text});
 }
 
 KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second, const std::function<AttribType(const std::string&)>& channelType) {
@@ -90,6 +92,8 @@ KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second, con
     for (const auto& [channel, expr] : first.stores) out.stores.emplace_back(firstChannels[static_cast<size_t>(channel)], firstMap[static_cast<size_t>(expr)]);
     std::map<int, int> sorted(out.stores.begin(), out.stores.end());
     out.stores.assign(sorted.begin(), sorted.end());
+    for (const KernelSpec::StringParam& sp : first.stringParams)
+        out.stringParams.push_back({sp.paramIndex, firstChannels[static_cast<size_t>(sp.channel)], sp.text});
     appendKernel(out, second, channelType);
     return out;
 }

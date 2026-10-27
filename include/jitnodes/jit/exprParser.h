@@ -15,6 +15,9 @@ namespace jitnodes {
 //                min(a,b) max(a,b) abs(a) sqrt(a) clamp(v,lo,hi) lerp(a,b,t)
 //                sin cos exp log floor ceil pow(a,b)
 //
+// A string attribute can be compared with a literal on either side of == and !=: `label == "tree"`, `"rock" != kind`. Nothing else
+// takes a string (see KernelSpec::StringParam, and docs/wrangle.md).
+//
 // Identifiers listed in paramNames read the runtime parameter block; every other identifier is
 // an attribute channel (x, y, N.x, group.top, ...). Statements run in order, so later statements
 // see earlier assignments. Throws std::runtime_error with a message on syntax errors.

@@ -1,0 +1,29 @@
+// Position-based fluid: a dam break. A column of particles on the left of the box collapses under gravity and splashes across the floor;
+// colour is the particle speed. Cooked from startTime as a pure function of the time.
+//   jitnodesCli examples/graphs/fx/fxFluid.json --png fxFluid.png --time 2.5
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "column", floats: { count: 1100, seed: 3, cx: -3.4, cy: -1.0, width: 3.0, height: 4.0 }, strings: { shape: "rect" }, inputs: [] },
+    {
+      id: 2, type: "fluid", name: "water",
+      floats: {
+        spacing: 0.1, radiusScale: 2.2, iterations: 4, viscosity: 0.02, vorticity: 0.5, tension: 0.02,
+        boundsMinX: -5, boundsMaxX: 5, boundsMinY: -3, boundsMaxY: 3
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "colorRamp", name: "color", floats: { min: 0, max: 8 }, strings: { attribute: "speed", ramp: "0 #1b4b8f, 0.5 #3fb6e8, 1 #ffffff" }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "look", strings: { code: "radius = 0.07; alpha = 0.7; softness = 0.4;" }, inputs: [3] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 800, height: 480, viewCx: 0, viewCy: 0, viewWidth: 11 },
+      strings: { background: "#000000" },
+      inputs: [4]
+    }
+  ]
+}

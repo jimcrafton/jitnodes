@@ -1,0 +1,30 @@
+// Differential growth: a small closed curve whose nodes push each other apart while staying joined, and that splits its long segments,
+// so it buckles into coral-like folds inside the box. curveSample puts dots along the curve; colour is the age of the point.
+//   jitnodesCli examples/graphs/fx/fxGrow.json --png fxGrow.png --time 2.5
+// It is simulated from startTime and is a pure function of the time. See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "circle", name: "seedCurve", floats: { count: 12, radius: 0.8 }, inputs: [] },
+    {
+      id: 2, type: "grow", name: "coral",
+      floats: {
+        repel: 8, repelRadius: 0.5, attract: 8, smooth: 5, maxSpeed: 3, maxLength: 0.16, maxPoints: 20000,
+        useBounds: 1, boundsMinX: -5.5, boundsMaxX: 5.5, boundsMinY: -5.5, boundsMaxY: 5.5
+      },
+      inputs: [1]
+    },
+    { id: 3, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.03 }, inputs: [2] },
+    { id: 4, type: "colorRamp", name: "color", floats: { min: 0, max: 2.5 }, strings: { attribute: "age", ramp: "0 #ffe9a8, 0.5 #ff7a59, 1 #5b2a86" }, inputs: [3] },
+    { id: 5, type: "wrangle", name: "look", strings: { code: "radius = 0.04; alpha = 0.6; softness = 0.5;" }, inputs: [4] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 600, height: 600, viewCx: 0, viewCy: 0, viewWidth: 12 },
+      strings: { background: "#000000" },
+      inputs: [5]
+    }
+  ]
+}

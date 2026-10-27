@@ -42,18 +42,23 @@ clashes with jitnodes' asmjit. The first build compiles Blend2D and takes a few 
 whose `*.asset.json` files are registered at start-up.
 
 Sample graphs in `examples/graphs/`: `clouds.json` (sprites: sky, sun, drifting clouds), `bokeh.json` (soft discs),
-`rosette.json` (copyToPoints), `attributes.json` (colour by attribute), `wobble.json` (animated wrangle) and
-`assetDemo.json` (an asset instance).
+`rosette.json` (copyToPoints), `attributes.json` (colour by attribute), `wobble.json` (animated wrangle),
+`assetDemo.json` (an asset instance) and `nebula.json` (650k additive sprites, see [fx.md](fx.md)).
 
 ## A tour of the window
 
 ![The editor window](img/editor-layout.svg)
 
 - **Toolbar:** New, Open, Save (graph files are JSON5, see [architecture.md](architecture.md#persistence-undo-and-clips)),
-  Undo / Redo, Play with a time slider, and the global engine settings: fusion on/off, thread count, instruction set.
-- **Palette:** one button per node type. Clicking one adds a node and wires the *selected* node into its first input,
-  makes it the display node and selects it, so building a chain is "click, click, click". The Assets section lists
-  registered assets.
+  Undo / Redo, Play with a time slider, the **add node by name** field, and the global engine settings: fusion on/off, thread
+  count, instruction set. Type a node type in the field and press Enter: an exact name (any case) adds it, so does a prefix
+  or part of a name that only one type has (`groupbys`); an ambiguous or unknown text is reported in the status line with the
+  candidates. It reaches every registered type, including the ones without a palette button and loaded assets.
+- **Palette:** one button per common node type (58, two per row in a list that scrolls with the mouse wheel or its scroll bar;
+  the Assets section stays below it). Clicking one adds a node and wires the *selected* node into its first input,
+  makes it the display node and selects it, so building a chain is "click, click, click". The last twenty-one buttons
+  (generate, scatter, noise, warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles, boids, springs, reaction, lsystem, curveSample, ribbon, trail, render) are the [fx nodes](fx.md). The Assets section lists registered
+  assets.
 - **Graph:** the canvas. Nodes are boxes with input ports on top and an output port at the bottom; the display node
   is highlighted.
 - **Parameters:** the selected node's name, type and one row per parameter.
@@ -125,14 +130,31 @@ are recooked, so a static part of the graph costs nothing per frame.
 
 The viewport draws the display node's geometry after every cook. Primitives are stroked as polylines (closed ones are
 closed); points are dots for geometry without primitives or with at most 64 points; very large geometries are drawn
-with every n-th point. Drag pans, the wheel zooms around the cursor, double-click or Fit frames the geometry. The grid
+with every n-th point. Drag pans, the wheel zooms around the cursor, and Fit frames the geometry. The grid
 steps by powers of ten and shows its step in the corner.
+
+**Maximize and export.** The viewport starts as a thumbnail in the side column. **Double-click** it and it takes over the
+whole main area (the node palette, the graph and the parameters are hidden; the toolbar, the profile list and the status line
+stay) and is fitted to the new size. Double-click again to put everything back. **Right-click** it (a right *drag* still
+pans) for a context menu with **Export...**, which asks for a file name and saves a PNG (`.png`) or a JPEG (`.jpg`,
+`.jpeg`, quality 92) chosen by the extension or the file type list. What is saved:
+
+- geometry that went through a `render` node: the full image at that node's `width` x `height` and view window, the
+  same picture `jitnodesCli --png` writes, independent of how big the viewport is;
+- anything else: the viewport as it looks right now (grid, lines, sprites, colour legend), at the viewport's size.
+
+The status line shows the file name and size when the export worked, or the error.
 
 **Sprites.** When the geometry has a point attribute `radius` and no colour attribute is chosen, each point is drawn as
 an alpha-blended sprite in index order. Optional point attributes: `Cd.x`, `Cd.y`, `Cd.z` (colour 0-1, default white),
 `alpha` (default 1), `softness` (0 hard disc, 1 radial gradient; default 1), `aspect` (width over height) and
 `shape` (0.5 or more draws a box). Missing attributes read as 0 after a merge, so set what you need explicitly. This is
 how `clouds.json` and `bokeh.json` draw pictures out of points; see the sprite examples in [wrangle.md](wrangle.md#examples).
+
+**Images.** Geometry that went through a `render` node is drawn by the additive splat renderer instead: every point with a
+`radius` adds light to a floating-point image of the viewport's size, with no limit on the number of sprites, then the
+picture is tone mapped and optionally blooms (see [fx.md](fx.md)). Pan and zoom re-render it for the new view; choosing a
+*Color by* attribute returns to the normal drawing, and hover labels are off in image mode.
 
 **Colour by attribute.** The *Color by* list holds the point attributes (including `x`, `y`), the length of every vector
 attribute (`N (length)`) and primitive attributes (`prim: name`). Choosing one colours lines and dots and draws a legend

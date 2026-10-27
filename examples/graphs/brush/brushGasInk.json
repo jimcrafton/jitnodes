@@ -1,0 +1,42 @@
+// Painting with fluid: the stroke is poured into a gasField instead of being drawn. curveSample puts source points along the guide and their
+// tangent (tx, ty) becomes the velocity (vx, vy) each one blows with, so the paint is shoved along the curve and then swirls and feathers
+// under vorticity confinement, like ink dropped into moving water. The density grid is coloured with a ramp and drawn as one dot per cell.
+// The sources are read when the run starts, so the whole stroke is laid down at once; the picture is a pure function of the time.
+//   jitnodesCli examples/graphs/brush/brushGasInk.json --png brushGasInk.png --time 2.5
+// See docs/brushStrokes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "guide", floats: { count: 200, length: 14 }, inputs: [] },
+    {
+      id: 2, type: "wrangle", name: "bend",
+      strings: { code: "t = x / 14; x = x - 7; y = 2.2 * sin(t * 5.2) + 0.5 * sin(t * 13 + 1); dens = 6 * sin(t * 3.14159) + 0.5;" },
+      inputs: [1]
+    },
+    { id: 3, type: "curveSample", name: "sources", floats: { count: 0, spacing: 0.3 }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "blow", strings: { code: "vx = tx * 2.5; vy = ty * 2.5; density = dens * 1.4; radius = 0.4;" }, inputs: [3] },
+    {
+      id: 5, type: "gasField", name: "ink",
+      floats: {
+        boundsMinX: -9, boundsMaxX: 9, boundsMinY: -6, boundsMaxY: 6, resolution: 180, open: 1,
+        vorticity: 14, dissipation: 0.12, cooling: 1, buoyancy: 0, viscosity: 0.002, redBlack: 1
+      },
+      inputs: [4]
+    },
+    {
+      id: 6, type: "colorRamp", name: "color", floats: { min: 0, max: 6 },
+      strings: { attribute: "density", ramp: "0 #04050d, 0.25 #3a1c8f, 0.55 #e0407a, 0.85 #ffb347, 1 #fff3c8" },
+      inputs: [5]
+    },
+    { id: 7, type: "wrangle", name: "look", strings: { code: "radius = 0.14; alpha = clamp(density * 0.6, 0, 1); softness = 1;" }, inputs: [6] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 900, height: 600, viewCx: 0, viewCy: 0, viewWidth: 18 },
+      strings: { background: "#000000" },
+      inputs: [7]
+    }
+  ]
+}

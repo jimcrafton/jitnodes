@@ -1,0 +1,45 @@
+// Three L-systems drawn by lsystem and sampled with curveSample (which keeps the stroke's depth on every sample, unlike scatter).
+// Left: the classic fern-like plant, branches coloured by depth. Middle: a stochastic tree (three rules for X, picked per symbol by the seed)
+// with angle and length jitter and a branchScale that shortens every branch. Right: the Sierpinski triangle, coloured along each stroke.
+//   jitnodesCli examples/graphs/fx/fxLsystem.json --png fxLsystem.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 30,
+  nodes: [
+    {
+      id: 1, type: "lsystem", name: "fern",
+      floats: { iterations: 5, angle: 25, length: 0.16, startX: -13, startY: -6.5 },
+      strings: { axiom: "X", rules: "X=F+[[X]-X]-F[-FX]+X; F=FF" },
+      inputs: []
+    },
+    { id: 2, type: "curveSample", name: "fernSamples", floats: { count: 0, spacing: 0.05 }, inputs: [1] },
+    { id: 3, type: "colorRamp", name: "fernColor", floats: { min: 0, max: 6 }, strings: { attribute: "depth", ramp: "0 #7a4a22, 0.3 #5acb4a, 1 #e9ff8a" }, inputs: [2] },
+    {
+      id: 4, type: "lsystem", name: "tree",
+      floats: { iterations: 6, angle: 24, angleJitter: 9, length: 1.1, lengthJitter: 0.25, branchScale: 0.82, startX: 0, startY: -6.5, seed: 7 },
+      strings: { axiom: "X", rules: "X=F[+X][-X]FX; X=F[+X]F[-X]X; X=FF[+X][-X]" },
+      inputs: []
+    },
+    { id: 5, type: "curveSample", name: "treeSamples", floats: { count: 0, spacing: 0.05 }, inputs: [4] },
+    { id: 6, type: "colorRamp", name: "treeColor", floats: { min: 0, max: 8 }, strings: { attribute: "depth", ramp: "0 #8a5a3a, 0.4 #ff9a5a, 1 #ffe9a8" }, inputs: [5] },
+    {
+      id: 7, type: "lsystem", name: "triangle",
+      floats: { iterations: 6, angle: 120, length: 0.15, startX: 8, startY: 3.8, startAngle: 0 },
+      strings: { axiom: "F-G-G", rules: "F=F-G+F+G-F; G=GG" },
+      inputs: []
+    },
+    { id: 8, type: "curveSample", name: "triangleSamples", floats: { count: 0, spacing: 0.04 }, inputs: [7] },
+    { id: 9, type: "colorRamp", name: "triangleColor", floats: { min: 0, max: 1 }, strings: { attribute: "u", ramp: "0 #4aa8ff, 0.5 #b86aff, 1 #ff6ab0" }, inputs: [8] },
+    { id: 10, type: "merge", name: "all", inputs: [3, 6, 9] },
+    { id: 11, type: "wrangle", name: "look", strings: { code: "radius = 0.045; alpha = 0.8; softness = 1;" }, inputs: [10] },
+    {
+      id: 30, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 900, height: 360, viewCx: 0, viewCy: 0, viewWidth: 38 },
+      strings: { background: "#000000" },
+      inputs: [11]
+    }
+  ]
+}

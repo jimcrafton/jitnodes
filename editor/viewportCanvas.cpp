@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <thread>
 
 #include "drawText.h"
 #include "newui/mouse_constants.h"
@@ -34,11 +35,14 @@ std::string stepLabel(double step) {
 
 }  // namespace
 
-ViewportCanvas::ViewportCanvas(ViewportController& controller) : controller_(controller) {
+ViewportCanvas::ViewportCanvas(ViewportController& controller)
+    : controller_(controller), pool_(std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1) {
     setVisible(true);
 
     onMouseDown.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
         [this](newui::View&, const newui::Point& p, std::uint32_t buttons, std::uint32_t) {
+            rightDown_ = (buttons & newui::mbmRightButton) != 0;
+            rightStart_ = vec(p);
             if (controller_.mouseDown(vec(p), buttonsOf(buttons))) redraw();
             return newui::SyncReturn::Handled;
         }));
@@ -56,13 +60,17 @@ ViewportCanvas::ViewportCanvas(ViewportController& controller) : controller_(con
             return newui::SyncReturn::Handled;
         }));
     onMouseUp.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
-        [this](newui::View&, const newui::Point& p, std::uint32_t, std::uint32_t) {
+        [this](newui::View&, const newui::Point& p, std::uint32_t buttons, std::uint32_t) {
             controller_.mouseUp(vec(p));
+            // A right press and release that stayed put is a click; one that moved was a pan.
+            const bool click = rightDown_ && (buttons & newui::mbmRightButton) && std::fabs(p.x - rightStart_.x) < 4.0f && std::fabs(p.y - rightStart_.y) < 4.0f;
+            rightDown_ = false;
+            if (click && onContextMenu) onContextMenu();
             return newui::SyncReturn::Handled;
         }));
     onMouseDblClick.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, std::uint32_t, std::uint32_t)>(
-        [this](newui::View&, const newui::Point&, std::uint32_t, std::uint32_t) {
-            if (controller_.doubleClick()) redraw();
+        [this](newui::View&, const newui::Point&, std::uint32_t buttons, std::uint32_t) {
+            if (!(buttons & (newui::mbmRightButton | newui::mbmMiddleButton)) && onToggleMaximize) onToggleMaximize();
             return newui::SyncReturn::Handled;
         }));
     onMouseWheel.add(std::function<newui::SyncReturn(newui::View&, const newui::Point&, float)>(
@@ -120,6 +128,52 @@ void ViewportCanvas::drawSprites(BLContext& ctx) {
     }
 }
 
+void ViewportCanvas::drawRaster(BLContext& ctx, float width, float height) {
+    const GeometryHandle& geo = controller_.geometry();
+    const int w = std::max(1, static_cast<int>(width)), h = std::max(1, static_cast<int>(height));
+    if (geo != imageGeometry_ || controller_.zoom() != imageZoom_ || controller_.pan().x != imagePan_.x || controller_.pan().y != imagePan_.y ||
+        image_.width != w || image_.height != h) {
+        RenderSettings settings = renderSettingsFromDetails(*geo, w, h);
+        const Vec topLeft = controller_.toWorld({0, 0}), bottomRight = controller_.toWorld({static_cast<float>(w), static_cast<float>(h)});
+        settings.minX = topLeft.x;
+        settings.maxX = bottomRight.x;
+        settings.maxY = topLeft.y;
+        settings.minY = bottomRight.y;
+        image_ = renderSplats(*geo, settings, &pool_);
+        imageGeometry_ = geo;
+        imageZoom_ = controller_.zoom();
+        imagePan_ = controller_.pan();
+    }
+    BLImage image;
+    image.create_from_data(w, h, BL_FORMAT_PRGB32, image_.pixels.data(), static_cast<intptr_t>(w) * 4, BL_DATA_ACCESS_READ, nullptr, nullptr);
+    ctx.blit_image(BLPoint(0, 0), image);
+}
+
+Image ViewportCanvas::renderForExport() {
+    const GeometryHandle& geo = controller_.geometry();
+    if (!geo) return {};
+    if (controller_.rasterActive()) return renderSplats(*geo, renderSettingsFromDetails(*geo), &pool_);
+
+    const int w = std::max(1, static_cast<int>(bounds().width())), h = std::max(1, static_cast<int>(bounds().height()));
+    BLImage canvas(w, h, BL_FORMAT_PRGB32);
+    {
+        BLContext ctx(canvas);
+        paint(ctx);
+        ctx.end();
+    }
+    BLImageData data;
+    canvas.get_data(&data);
+    Image out;
+    out.width = w;
+    out.height = h;
+    out.pixels.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
+    for (int y = 0; y < h; ++y) {
+        const auto* row = reinterpret_cast<const std::uint32_t*>(static_cast<const char*>(data.pixel_data) + static_cast<size_t>(y) * static_cast<size_t>(data.stride));
+        std::copy(row, row + w, out.pixels.begin() + static_cast<std::ptrdiff_t>(y) * w);
+    }
+    return out;
+}
+
 void ViewportCanvas::paint(BLContext& ctx) {
     const float w = bounds().width(), h = bounds().height();
     controller_.setViewSize(w, h);
@@ -151,9 +205,11 @@ void ViewportCanvas::paint(BLContext& ctx) {
     ctx.fill_rect(BLRect(0, origin.y, w, 1));
     drawText(ctx, stepLabel(step), 10.0f, 6.0f, h - 6.0f, BLRgba32(0xFF6A6D75));
 
-    if (controller_.spritesActive() && controller_.geometry()->pointCount() > 0) drawSprites(ctx);
+    const bool raster = controller_.rasterActive();
+    if (raster) drawRaster(ctx, w, h);
+    else if (controller_.spritesActive() && controller_.geometry()->pointCount() > 0) drawSprites(ctx);
 
-    if (const GeometryHandle& geo = controller_.geometry(); geo && geo->pointCount() > 0 && !controller_.spritesActive()) {
+    if (const GeometryHandle& geo = controller_.geometry(); geo && geo->pointCount() > 0 && !raster && !controller_.spritesActive()) {
         const float* xs = geo->x();
         const float* ys = geo->y();
         const bool pointValues = controller_.hasValues() && controller_.valueClass() == AttribClass::point;

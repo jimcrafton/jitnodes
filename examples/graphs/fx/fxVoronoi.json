@@ -1,0 +1,32 @@
+// voronoi turns points into cells. Left: 70 random sites, cells filled with scatter and coloured per cell (srcPrim). Right: the same sites after
+// relax, drawn as open outlines walked by scatter: the even cells that a relaxed point set gives.
+//   jitnodesCli examples/graphs/fx/fxVoronoi.json --png fxVoronoi.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "sitesRandom", floats: { count: 70, seed: 3, cx: -10, width: 17, height: 16 }, inputs: [] },
+    { id: 2, type: "voronoi", name: "cells", floats: { closed: 1 }, inputs: [1] },
+    { id: 3, type: "scatter", name: "fill", floats: { count: 45000, lineCount: 0, seed: 1 }, inputs: [2] },
+    {
+      id: 4, type: "wrangle", name: "cellColor",
+      strings: { code: "h = srcPrim * 0.61803; t = h - floor(h); radius = 0.07; alpha = 0.5; softness = 0.5; Cd.x = 0.55 + 0.45 * sin(6.2832 * t); Cd.y = 0.55 + 0.45 * sin(6.2832 * t + 2.0944); Cd.z = 0.55 + 0.45 * sin(6.2832 * t + 4.1888);" },
+      inputs: [3]
+    },
+    { id: 5, type: "generate", name: "sitesEven", floats: { count: 70, seed: 3, cx: 10, width: 17, height: 16 }, inputs: [] },
+    { id: 6, type: "relax", name: "spread", floats: { radius: 2.2, iterations: 80, strength: 0.5 }, inputs: [5] },
+    { id: 7, type: "voronoi", name: "outlines", floats: { closed: 0 }, inputs: [6] },
+    { id: 8, type: "scatter", name: "walk", floats: { count: 0, lineCount: 30000, spread: 0.03, seed: 2 }, inputs: [7] },
+    { id: 9, type: "wrangle", name: "outlineLook", strings: { code: "radius = 0.06; alpha = 0.8; softness = 1; Cd.x = 0.5; Cd.y = 0.9; Cd.z = 1;" }, inputs: [8] },
+    { id: 10, type: "merge", name: "all", inputs: [4, 9] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 350, viewWidth: 38 },
+      strings: { background: "#000000" },
+      inputs: [10]
+    }
+  ]
+}

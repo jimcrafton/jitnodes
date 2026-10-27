@@ -29,7 +29,7 @@ Geometry gatherPoints(const Geometry& src, const std::vector<PointSample>& sampl
     Geometry dst;
     dst.resizePoints(samples.size());
     for (const auto& [name, array] : src.attribs(AttribClass::point)) {
-        AttribArray& out = dst.attrib(AttribClass::point, name, array.type());
+        AttribArray& out = dst.attribLike(AttribClass::point, name, array);
         if (array.type() == AttribType::float32) {
             const float* s = array.floats().data();
             float* o = out.floats().data();
@@ -44,13 +44,13 @@ Geometry gatherPoints(const Geometry& src, const std::vector<PointSample>& sampl
         }
     }
     for (const auto& [name, value] : src.details()) dst.setDetail(name, value);
-    for (const auto& [name, array] : src.attribs(AttribClass::primitive)) dst.attrib(AttribClass::primitive, name, array.type());
+    for (const auto& [name, array] : src.attribs(AttribClass::primitive)) dst.attribLike(AttribClass::primitive, name, array);
     return dst;
 }
 
 void transferPrimAttribs(const Geometry& src, Geometry& dst, const std::vector<uint32_t>& srcIndex) {
     for (const auto& [name, array] : src.attribs(AttribClass::primitive)) {
-        AttribArray& out = dst.attrib(AttribClass::primitive, name, array.type());
+        AttribArray& out = dst.attribLike(AttribClass::primitive, name, array);
         for (size_t i = 0; i < srcIndex.size(); ++i) {
             if (array.type() == AttribType::float32) out.floats()[i] = array.floats()[srcIndex[i]];
             else out.ints()[i] = array.ints()[srcIndex[i]];
@@ -258,6 +258,76 @@ Geometry copyToPoints(const Geometry& source, const Geometry& targets, float sca
     return out;
 }
 
+namespace {
+
+struct Linear {
+    float a = 1, b = 0, c = 0, d = 1;  // [a b; c d]
+    Linear then(const Linear& o) const { return {o.a * a + o.b * c, o.a * b + o.b * d, o.c * a + o.d * c, o.c * b + o.d * d}; }
+};
+
+void turnVectors(Geometry& g, AttribClass cls, const std::string& xName, const std::string& yName, const Linear& m) {
+    const AttribArray* ax = g.findAttrib(cls, xName);
+    const AttribArray* ay = g.findAttrib(cls, yName);
+    if (ax == nullptr || ay == nullptr || ax->type() != AttribType::float32 || ay->type() != AttribType::float32) return;
+    float* vx = g.attrib(cls, xName).floats().data();
+    float* vy = g.attrib(cls, yName).floats().data();
+    for (size_t i = 0; i < g.count(cls); ++i) {
+        const float px = vx[i], py = vy[i];
+        vx[i] = m.a * px + m.b * py;
+        vy[i] = m.c * px + m.d * py;
+    }
+}
+
+}  // namespace
+
+Geometry symmetry(const Geometry& in, const SymmetryOptions& o, ThreadPool* pool) {
+    const int folds = std::clamp(o.folds, 1, 64);
+    constexpr float degrees = 3.14159265358979f / 180.0f;
+    const float theta = o.angle * degrees;
+    const Linear reflect{std::cos(2 * theta), std::sin(2 * theta), std::sin(2 * theta), -std::cos(2 * theta)};
+
+    std::vector<Linear> copies;
+    const auto turn = [&](int k) {
+        const float phi = 2.0f * 3.14159265358979f * static_cast<float>(k) / static_cast<float>(folds);
+        return Linear{std::cos(phi), -std::sin(phi), std::sin(phi), std::cos(phi)};
+    };
+    if (o.mode == SymmetryMode::mirror) {
+        if (o.keepOriginal) copies.push_back({});
+        copies.push_back(reflect);
+    } else {
+        for (int k = 0; k < folds; ++k) {
+            if (k > 0 || o.keepOriginal) copies.push_back(turn(k));
+            if (o.mode == SymmetryMode::kaleidoscope) copies.push_back(reflect.then(turn(k)));
+        }
+    }
+    if (copies.empty()) return Geometry();
+
+    std::vector<std::pair<std::string, std::string>> pairs = {{"vx", "vy"}};
+    for (const std::string& name : o.vectors) pairs.push_back({name + ".x", name + ".y"});
+
+    // The flattened input is shared by every copy; each copy detaches only the arrays it changes.
+    std::vector<Geometry> made;
+    made.reserve(copies.size());
+    for (const Linear& m : copies) {
+        Geometry g = in;
+        if (g.pointCount() > 0) {
+            float* x = g.x();
+            float* y = g.y();
+            for (size_t i = 0; i < g.pointCount(); ++i) {
+                const float px = x[i] - o.originX, py = y[i] - o.originY;
+                x[i] = o.originX + m.a * px + m.b * py;
+                y[i] = o.originY + m.c * px + m.d * py;
+            }
+        }
+        for (AttribClass cls : {AttribClass::point, AttribClass::primitive})
+            for (const auto& [xn, yn] : pairs) turnVectors(g, cls, xn, yn, m);
+        made.push_back(std::move(g));
+    }
+    std::vector<const Geometry*> parts;
+    for (const Geometry& g : made) parts.push_back(&g);
+    return Geometry::concat(parts, pool);
+}
+
 Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bool keepGroup) {
     if (hasCurves(in)) return blast(flattenCurves(in), cls, group, keepGroup);
     const size_t n = in.pointCount();
@@ -299,6 +369,31 @@ Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bo
     }
     transferPrimAttribs(in, out, srcPrim);
     return out;
+}
+
+Geometry extractPrimitives(const Geometry& in, const std::vector<uint32_t>& prims) {
+    std::vector<PointSample> samples;
+    for (uint32_t pi : prims) {
+        const Primitive& p = in.primitives()[pi];
+        for (uint32_t j = 0; j < p.count; ++j) samples.push_back({p.start + j, p.start + j, 0.0f});
+    }
+    Geometry out = gatherPoints(in, samples);
+    uint32_t next = 0;
+    for (uint32_t pi : prims) {
+        Primitive p = in.primitives()[pi];
+        p.start = next;
+        next += p.count;
+        out.addPrimitive(p);
+    }
+    transferPrimAttribs(in, out, prims);
+    return out;
+}
+
+Geometry extractPoints(const Geometry& in, const std::vector<uint32_t>& points) {
+    std::vector<PointSample> samples;
+    samples.reserve(points.size());
+    for (uint32_t i : points) samples.push_back({i, i, 0.0f});
+    return gatherPoints(in, samples);
 }
 
 }  // namespace jitnodes

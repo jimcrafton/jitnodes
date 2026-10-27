@@ -34,4 +34,26 @@ Geometry subdividePolylines(const Geometry& in, int iterations);
 Geometry copyToPoints(const Geometry& source, const Geometry& targets, float scale, float angle);
 Geometry blast(const Geometry& in, AttribClass cls, const std::string& group, bool keepGroup);
 
+// The listed primitives (indices into `in`, in that order) with their points, attributes and detail values; curve kinds are kept. Points that
+// belong to no listed primitive are dropped.
+Geometry extractPrimitives(const Geometry& in, const std::vector<uint32_t>& prims);
+// The listed points (in that order) with their attributes and detail values, and no primitives.
+Geometry extractPoints(const Geometry& in, const std::vector<uint32_t>& points);
+
+enum class SymmetryMode { mirror, rotate, kaleidoscope };
+
+struct SymmetryOptions {
+    SymmetryMode mode = SymmetryMode::mirror;
+    float originX = 0.0f, originY = 0.0f;
+    float angle = 90.0f;  // degrees: the mirror line's direction (90 = the vertical line through the origin)
+    int folds = 2;        // rotate and kaleidoscope: copies around the origin, 1..64
+    bool keepOriginal = true;
+    // Float attribute pairs that turn with the points: `vx`/`vy` and, for every name listed, `name.x`/`name.y` (a point or primitive vector).
+    std::vector<std::string> vectors;
+};
+
+// Copies of the input reflected or rotated about a point, merged into one geometry (attributes, groups and strings carried). Copy k of
+// the output follows copy k-1, each one whole, so primitives of one copy stay together.
+Geometry symmetry(const Geometry& in, const SymmetryOptions& options, ThreadPool* pool = nullptr);
+
 }  // namespace jitnodes

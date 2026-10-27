@@ -1,13 +1,16 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -97,6 +100,19 @@ private:
 
 void registerBuiltinNodes();
 void registerTopologyNodes();
+void registerGenerateNodes();
+void registerFxNodes();
+void registerPatternNodes();
+void registerParticleNodes();
+void registerGasNodes();
+void registerFieldNodes();
+void registerCurveNodes();
+void registerShapeNodes();
+void registerGenerativeNodes();
+void registerFluidNodes();
+void registerFileNodes();
+void registerStringNodes();
+void registerLoopNodes();
 void registerSubnetNodes();
 
 class Network {
@@ -136,7 +152,15 @@ public:
     void disconnect(NodeId to, int inputIndex);
     NodeId inputOf(NodeId to, int inputIndex) const;
 
-    void markDirty(NodeId id);
+    // Called by a node that was edited by hand. A fused chain gives up its cached intermediate results, so editing near its end would
+    // recook all of it; a point-wise node that carries enough points therefore makes its input a cache boundary, which keeps the
+    // part of the chain above the edit cooked. At most maxAnchors boundaries exist at a time.
+    void noteEdited(NodeId id);
+    static constexpr size_t maxAnchors = 16;
+    static inline size_t anchorMinPoints = 1024;  // process-wide tuning knob; SIZE_MAX turns the boundaries off
+
+    // structural = false is for an edit that cannot change which nodes depend on time (a plain parameter value), so setTime keeps its cache.
+    void markDirty(NodeId id, bool structural = true);
 
     // Called by a node when the node names its expressions refer to change.
     void referencesChanged(NodeId id, const std::set<std::string>& before, const std::set<std::string>& after);
@@ -173,6 +197,15 @@ public:
     // Per-node timings of the latest cooks; see Node::stats().
     std::string profileReport() const;
     void resetProfile();
+
+    // Records one event per cooked task (node, thread, start, duration) while enabled; a subnet's network records into its root's.
+    // writeTrace emits Chrome trace JSON for chrome://tracing and Perfetto. Recording does not change any result.
+    void setTraceEnabled(bool enabled) { root().traceEnabled_ = enabled; }
+    bool traceEnabled() const { return root().traceEnabled_.load(); }
+    void clearTrace();
+    size_t traceEventCount() const;
+    std::string traceJson() const;
+    void writeTrace(const std::string& path) const;
 
     // A network owned by a subnet node shares its parent's kernel cache and thread pool.
     KernelCompiler& compiler() { return parent_ ? parent_->compiler() : ownCompiler_; }
@@ -236,6 +269,15 @@ private:
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
     void appendProfileRows(std::string& out, int depth) const;
     void runTask(const CookTask& task);
+    Network& root() { return parent_ ? parent_->root() : *this; }
+    const Network& root() const { return parent_ ? parent_->root() : *this; }
+    struct TraceEvent {
+        std::string name, type;
+        int thread = 0;
+        double startUs = 0.0, durationUs = 0.0;
+        size_t chain = 1;
+    };
+    void recordTrace(TraceEvent event);
     void collectMergeInputs(NodeId id, CookTask& task);
     bool cancelRequested() const { return parent_ ? parent_->cancelRequested() : cancelRequested_.load(); }
     void evaluateParams(Node& n);
@@ -246,11 +288,11 @@ private:
     static constexpr size_t maxExpressionDepth = 400;
 
     std::map<NodeId, Slot> slots_;
-    // The nodes setTime has to look at: those with an expression or keys on a parameter, and subnets. Rebuilt after any edit that can change which
-    // nodes those are (every markDirty, node added or removed); setTime's own markDirty calls do not.
-    mutable std::vector<NodeId> timeCandidates_;
-    mutable bool timeCandidatesValid_ = false;
-    bool settingTime_ = false;
+    // The nodes setTime recooks: those with an expression, keys or a playhead dependency, and subnets that contain one. Rebuilt after any edit
+    // that can change which nodes those are (a structural markDirty, node added or removed).
+    std::deque<NodeId> anchors_;
+    mutable std::vector<NodeId> timeAffected_;
+    mutable bool timeAffectedValid_ = false;
     // Reverse indexes, kept in step with every change of wiring and of expression references: consumers_ holds one entry per wired
     // input (so a node wired twice into one consumer appears twice), referrers_ the nodes whose expressions mention a node name.
     std::unordered_map<NodeId, std::vector<NodeId>> consumers_;
@@ -258,11 +300,14 @@ private:
     std::unordered_map<std::string, NodeId> names_;
     mutable std::unordered_map<std::string, size_t> suffixHint_;  // uniqueName: every number below the hint is taken for that stem
     void forgetName(const std::string& name);
+    void markDownstream(NodeId id, std::unordered_set<NodeId>& seen);
+    // A subnet's `parent.x` expressions follow the owner's parameters, so its cache goes stale with the owner's.
+    void invalidateTimeCache();
     NodeId nextId_ = 1;
     NodeId displayNode_ = invalidNodeId;
     KernelCompiler ownCompiler_;
-    void notifyOwner() {
-        if (parent_ && propagateToParent_) parent_->markDirty(owner_);
+    void notifyOwner(bool structural = true) {
+        if (parent_ && propagateToParent_) parent_->markDirty(owner_, structural);
     }
 
     Network* parent_ = nullptr;
@@ -277,6 +322,9 @@ private:
     std::atomic<bool> cooking_{false};
     std::atomic<bool> cancelRequested_{false};
     std::unique_ptr<ThreadPool> pool_;
+    std::atomic<bool> traceEnabled_{false};
+    mutable std::mutex traceMutex_;
+    std::vector<TraceEvent> traceEvents_;
 };
 
 }  // namespace jitnodes

@@ -1,0 +1,24 @@
+// Space colonization: a tree grows from one root point at the bottom towards 1200 attractor points scattered in a disc-shaped crown.
+// Branches are sampled into dots by curveSample and coloured by depth (nodes from the root).
+//   jitnodesCli examples/graphs/fx/fxColonize.json --png fxColonize.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "crown", floats: { count: 1200, seed: 5, cx: 0, cy: 1.5, width: 10, height: 8 }, strings: { shape: "disc" }, inputs: [] },
+    { id: 2, type: "generate", name: "root", floats: { count: 1, seed: 1, cx: 0, cy: -3.5, width: 0, height: 0 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 3, type: "colonize", name: "tree", floats: { influence: 4, killDistance: 0.25, segment: 0.12 }, inputs: [1, 2] },
+    { id: 4, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.03 }, inputs: [3] },
+    { id: 5, type: "colorRamp", name: "color", floats: { min: 0, max: 70 }, strings: { attribute: "depth", ramp: "0 #8a5a3a, 0.5 #ffb35a, 1 #e9ff8a" }, inputs: [4] },
+    { id: 6, type: "wrangle", name: "look", strings: { code: "radius = 0.035; alpha = 0.6; softness = 0.5;" }, inputs: [5] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 700, viewCx: 0, viewCy: 0, viewWidth: 14 },
+      strings: { background: "#000000" },
+      inputs: [6]
+    }
+  ]
+}

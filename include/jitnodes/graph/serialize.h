@@ -54,6 +54,7 @@ void unlockAssetInstance(Network& net, NodeId id);
 // contents are part of the subnet node's text and are reloaded when it changes.
 struct NodeSnapshot {
     std::shared_ptr<const std::string> text;  // the node's JSON without its wiring
+    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (container nodes)
     std::string type;
     std::string name;
     std::vector<std::string> spare;

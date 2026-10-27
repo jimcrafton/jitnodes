@@ -12,6 +12,7 @@ struct SvgOptions {
     std::string stroke = "#1f2933";
     std::string pointFill = "#e4572e";
     std::string background;   // empty = transparent
+    bool useColor = false;    // stroke each primitive with its first point's Cd/alpha; fill closed ones when render.fill is set
 };
 
 // Draws the primitives of a 2D geometry (x/y point channels) as polylines/polygons. +y is up.

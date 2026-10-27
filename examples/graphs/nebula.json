@@ -1,0 +1,106 @@
+// A nebula panorama built from half a million soft sprites: noise-driven gas, a scattered core, filaments along a curve and stars.
+//   jitnodesCli examples/graphs/nebula.json --png nebula.png
+//   jitnodesEditor examples/graphs/nebula.json   (the render node switches the viewport to additive rendering)
+// The structure is documented in docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 41,
+  nodes: [
+    // Gas: a uniform cloud of points, shaped by two noise fields, then pushed around by curl noise so it forms wisps.
+    { id: 1, type: "generate", name: "gasPoints", floats: { count: 300000, seed: 3, width: 44, height: 24 }, strings: { shape: "rect" }, inputs: [], pos: [60, 60] },
+    { id: 2, type: "noise", name: "gasField", floats: { scale: 0.09, octaves: 6, seed: 5 }, strings: { name: "gas", mode: "fbm" }, inputs: [52], pos: [60, 146] },
+    // Large soft puffs share the gas chain below (same noise, warp and ramp), so they line up with the fine points; `puff` tells gasLook which is which.
+    { id: 50, type: "generate", name: "puffPoints", floats: { count: 4000, seed: 31, width: 44, height: 24 }, strings: { shape: "rect" }, inputs: [], pos: [-180, 60] },
+    { id: 51, type: "wrangle", name: "puffTag", strings: { code: "puff = 1;" }, inputs: [50], pos: [-180, 146] },
+    { id: 52, type: "merge", name: "gasSources", inputs: [1, 51], pos: [60, 100] },
+    { id: 3, type: "noise", name: "gasRidges", floats: { scale: 0.22, octaves: 5, seed: 9, offsetX: 100 }, strings: { name: "ridge", mode: "ridged" }, inputs: [2], pos: [60, 232] },
+    {
+      id: 4, type: "wrangle", name: "gasMix",
+      strings: { code: "glow = exp(0 - (x * x * 0.004 + y * y * 0.025)); dens = clamp(ridge * 1.6 + gas * 0.9 + glow * 0.5 - 1.1, 0, 1); tone = clamp(gas * 0.8 + glow * 0.7 + ridge * 0.2 - 0.25, 0, 1);" },
+      inputs: [3], pos: [60, 318]
+    },
+    { id: 5, type: "warp", name: "gasWisps", floats: { amount: 6, scale: 0.07, octaves: 3, iterations: 4, seed: 2 }, strings: { mode: "curl" }, inputs: [4], pos: [60, 404] },
+    {
+      id: 6, type: "colorRamp", name: "gasColor",
+      floats: { min: 0, max: 1 },
+      strings: { attribute: "tone", ramp: "0 #070820, 0.3 #1f2d8f, 0.5 #5a54d6, 0.7 #c070c8, 0.88 #ff8c9a, 1 #ffe2c8" },
+      inputs: [5], pos: [60, 490]
+    },
+    {
+      id: 7, type: "wrangle", name: "gasLook",
+      strings: { code: "big = puff > 0.5; radius = big ? 1.4 + 1.6 * rand : 0.1 + 0.12 * dens; lit = clamp(tone - 0.3, 0, 1); alpha = big ? 0.14 * lit * lit : 0.006 + 0.035 * dens * dens; softness = 1;" },
+      inputs: [6], pos: [60, 576]
+    },
+
+    // Core: scatter fills a wobbly closed curve, the points then get the same noise, warp and colour treatment.
+    { id: 10, type: "circle", name: "blob", floats: { count: 48, radius: 6 }, inputs: [], pos: [300, 60] },
+    {
+      id: 11, type: "wrangle", name: "blobShape",
+      strings: { code: "nx = x + 1.2 * sin(y * 1.3) + 0.6 * cos(x * 2.1); ny = y * 0.7 + 0.8 * sin(x * 1.1); x = nx; y = ny;" },
+      inputs: [10], pos: [300, 146]
+    },
+    { id: 12, type: "scatter", name: "coreScatter", floats: { count: 160000, lineCount: 0, seed: 7 }, inputs: [11], pos: [300, 232] },
+    { id: 13, type: "noise", name: "coreField", floats: { scale: 0.25, octaves: 5, seed: 11 }, strings: { name: "gas", mode: "fbm" }, inputs: [12], pos: [300, 318] },
+    { id: 14, type: "warp", name: "coreWisps", floats: { amount: 3, scale: 0.18, octaves: 3, iterations: 3, seed: 4 }, strings: { mode: "curl" }, inputs: [13], pos: [300, 404] },
+    {
+      id: 15, type: "wrangle", name: "coreMix",
+      strings: { code: "tone = clamp(0.3 + gas * 1.0 - sqrt(x * x + y * y) * 0.03, 0, 1); dens = tone * tone;" },
+      inputs: [14], pos: [300, 490]
+    },
+    {
+      id: 16, type: "colorRamp", name: "coreColor",
+      strings: { attribute: "tone", ramp: "0 #3a1a70, 0.4 #c04a8a, 0.7 #ff8a6a, 1 #fff0d8" },
+      inputs: [15], pos: [300, 576]
+    },
+    {
+      id: 17, type: "wrangle", name: "coreLook",
+      strings: { code: "radius = 0.07 + 0.05 * dens; alpha = 0.004 + 0.05 * dens; softness = 1;" },
+      inputs: [16], pos: [300, 662]
+    },
+
+    // Filaments: scatter walks an open curve; spread gives the streaks some width.
+    { id: 20, type: "line", name: "filLine", floats: { count: 60, length: 36 }, inputs: [], pos: [540, 60] },
+    {
+      id: 21, type: "wrangle", name: "filShape",
+      strings: { code: "x = x - 18; y = 3.5 * sin(x * 0.28) + 1.5 * sin(x * 0.9 + 1) - 1;" },
+      inputs: [20], pos: [540, 146]
+    },
+    { id: 22, type: "scatter", name: "filScatter", floats: { count: 0, lineCount: 120000, spread: 0.35, seed: 3 }, inputs: [21], pos: [540, 232] },
+    { id: 23, type: "noise", name: "filField", floats: { scale: 0.35, octaves: 4, seed: 15 }, strings: { name: "ridge", mode: "ridged" }, inputs: [22], pos: [540, 318] },
+    { id: 24, type: "warp", name: "filWisps", floats: { amount: 4, scale: 0.2, octaves: 3, seed: 6 }, strings: { mode: "noise" }, inputs: [23], pos: [540, 404] },
+    {
+      id: 25, type: "colorRamp", name: "filColor",
+      strings: { attribute: "rand", ramp: "0 #4f8cff, 0.6 #9fd8ff, 1 #ffffff" },
+      inputs: [24], pos: [540, 490]
+    },
+    {
+      id: 26, type: "wrangle", name: "filLook",
+      strings: { code: "radius = 0.09 + 0.06 * rand2; alpha = 0.004 + 0.014 * ridge * ridge; softness = 1;" },
+      inputs: [25], pos: [540, 576]
+    },
+
+    // Stars: bright ones with a spread of sizes and tints, and a fine dust of sub-pixel ones.
+    { id: 30, type: "generate", name: "stars", floats: { count: 12000, seed: 21, width: 42, height: 22 }, strings: { shape: "rect" }, inputs: [], pos: [780, 60] },
+    {
+      id: 31, type: "wrangle", name: "starsLook",
+      strings: { code: "sz = rand * rand * rand * rand; sz = sz * sz; radius = 0.02 + 0.12 * sz; alpha = 0.8 + 0.2 * rand2; Cd.x = lerp(0.75, 1, rand2); Cd.y = lerp(0.82, 0.95, rand2); Cd.z = lerp(1, 0.8, rand2); softness = 1;" },
+      inputs: [30], pos: [780, 146]
+    },
+    { id: 32, type: "generate", name: "dust", floats: { count: 50000, seed: 22, width: 42, height: 22 }, strings: { shape: "rect" }, inputs: [], pos: [1020, 60] },
+    {
+      id: 33, type: "wrangle", name: "dustLook",
+      strings: { code: "radius = 0.012 + 0.012 * rand; alpha = 0.2 + 0.6 * rand2; Cd.x = 0.85; Cd.y = 0.9; Cd.z = 1; softness = 0.5;" },
+      inputs: [32], pos: [1020, 146]
+    },
+
+    { id: 40, type: "merge", name: "all", inputs: [7, 17, 26, 31, 33], pos: [540, 760] },
+    {
+      id: 41, type: "render", name: "image",
+      floats: { exposure: 0.7, gamma: 2.2, bloom: 0.25, bloomRadius: 9, width: 1400, height: 700, viewWidth: 40 },
+      strings: { background: "#02030a" },
+      inputs: [40], pos: [540, 846]
+    }
+  ]
+}

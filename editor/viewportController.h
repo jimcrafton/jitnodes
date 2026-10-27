@@ -60,6 +60,9 @@ public:
     std::string describePoint(size_t index) const;
     // Points with a `radius` attribute are drawn as sprites (see the editor README) while no colour attribute is chosen.
     bool spritesActive() const { return !hasValues() && geometry_ && geometry_->findAttrib(AttribClass::point, "radius"); }
+    // Geometry that went through a `render` node is drawn by the splat renderer (additive blending, bloom; see docs/fx.md) while no
+    // colour attribute is chosen.
+    bool rasterActive() const { return !hasValues() && geometry_ && hasRenderSettings(*geometry_); }
     const GeometryHandle& geometry() const { return geometry_; }
     const Bounds& bounds() const { return bounds_; }
     std::string info() const;
@@ -77,10 +80,6 @@ public:
     bool mouseMove(Vec screen);
     bool mouseUp(Vec screen);
     bool wheel(Vec screen, float delta);
-    bool doubleClick() {
-        fit();
-        return true;
-    }
 
     // Largest step so that drawing every step-th element stays within the budget (1 when everything fits).
     static size_t drawStride(size_t count, size_t budget) { return count <= budget || budget == 0 ? 1 : (count + budget - 1) / budget; }

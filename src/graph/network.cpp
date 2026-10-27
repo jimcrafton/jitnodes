@@ -77,7 +77,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     s.inputs.assign(static_cast<size_t>(n->inputCount()), invalidNodeId);
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     names_[name] = id;
     nextId_ = std::max(nextId_, id + 1);
     slots_.at(id).node->onAttached(*this);
@@ -86,7 +86,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 
 void Network::clear() {
     slots_.clear();
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     consumers_.clear();
     referrers_.clear();
     names_.clear();
@@ -130,7 +130,7 @@ void Network::removeNode(NodeId id) {
     indexReferences(*slot(id).node, false);
     forgetName(slot(id).node->name());
     slots_.erase(id);
-    timeCandidatesValid_ = false;
+    timeAffectedValid_ = false;
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
 
@@ -241,6 +241,7 @@ void Network::renameNode(NodeId id, const std::string& newName) {
     for (auto& entry : slots_) rewriteReferences(entry.first, renames);
     forgetName(target.name_);
     target.name_ = newName;
+    target.touch();
     names_[newName] = id;
     markAllDirty();
 }
@@ -293,10 +294,44 @@ NodeId Network::inputOf(NodeId to, int inputIndex) const {
     return s.inputs.at(static_cast<size_t>(inputIndex));
 }
 
-void Network::markDirty(NodeId id) {
+void Network::markDirty(NodeId id, bool structural) {
     slot(id);
-    if (!settingTime_) timeCandidatesValid_ = false;
     std::unordered_set<NodeId> seen;
+    markDownstream(id, seen);
+    if (structural) {
+        timeAffectedValid_ = false;
+        for (NodeId reached : seen)
+            if (Network* child = slot(reached).node->childNetwork()) child->invalidateTimeCache();
+    }
+    notifyOwner(structural);
+}
+
+void Network::noteEdited(NodeId id) {
+    auto it = slots_.find(id);
+    if (it == slots_.end()) return;
+    const Node& edited = *it->second.node;
+    if (!edited.isPointwise() || edited.lastPoints_ < anchorMinPoints || it->second.inputs.empty()) return;
+    const NodeId up = it->second.inputs[0];
+    if (up == invalidNodeId) return;
+    Node& above = *slot(up).node;
+    // A node that is not point-wise already ends the chain above the edit.
+    if (!above.isPointwise() || above.anchor_) return;
+    above.anchor_ = true;
+    anchors_.push_back(up);
+    while (anchors_.size() > maxAnchors) {
+        auto old = slots_.find(anchors_.front());
+        if (old != slots_.end()) old->second.node->anchor_ = false;
+        anchors_.pop_front();
+    }
+}
+
+void Network::invalidateTimeCache() {
+    timeAffectedValid_ = false;
+    for (auto& entry : slots_)
+        if (Network* child = entry.second.node->childNetwork()) child->invalidateTimeCache();
+}
+
+void Network::markDownstream(NodeId id, std::unordered_set<NodeId>& seen) {
     std::vector<NodeId> pending{id};
     while (!pending.empty()) {
         const NodeId current = pending.back();
@@ -308,11 +343,10 @@ void Network::markDirty(NodeId id) {
         if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
         if (auto it = referrers_.find(n.name()); it != referrers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
     }
-    notifyOwner();
 }
 
 void Network::markAllDirty() {
-    timeCandidatesValid_ = false;
+    invalidateTimeCache();
     for (auto& entry : slots_) {
         entry.second.node->dirty_ = true;
         entry.second.node->cooked_.reset();
@@ -376,23 +410,23 @@ bool Network::indexesConsistent() const {
 bool Network::setTime(double t) {
     if (t == time_) return false;
     time_ = t;
-    if (!timeCandidatesValid_) {
-        timeCandidates_.clear();
+    if (!timeAffectedValid_) {
+        timeAffected_.clear();
         for (const auto& entry : slots_) {
             const Node& n = *entry.second.node;
-            bool candidate = n.childNetwork() != nullptr;
+            bool candidate = n.childNetwork() != nullptr || n.dependsOnPlayhead();
             for (auto it = n.floats_.begin(); !candidate && it != n.floats_.end(); ++it) candidate = it->second.animated();
-            if (candidate) timeCandidates_.push_back(entry.first);
+            if (candidate && dependsOnTime(entry.first)) timeAffected_.push_back(entry.first);
         }
-        timeCandidatesValid_ = true;
+        timeAffectedValid_ = true;
     }
-    std::vector<NodeId> affected;
-    for (NodeId id : timeCandidates_)
-        if (dependsOnTime(id)) affected.push_back(id);
-    settingTime_ = true;
-    for (NodeId id : affected) markDirty(id);
-    settingTime_ = false;
-    return !affected.empty();
+    std::unordered_set<NodeId> seen;
+    for (NodeId id : timeAffected_) markDownstream(id, seen);
+    // Few animated nodes: keep what lies above them cached, as for an edit by hand. Many would only churn the boundaries.
+    if (timeAffected_.size() <= maxAnchors)
+        for (NodeId id : timeAffected_) noteEdited(id);
+    if (!timeAffected_.empty()) notifyOwner(false);
+    return !timeAffected_.empty();
 }
 
 float Network::resolveSymbol(NodeId owner, const std::string& symbol) {
@@ -471,7 +505,7 @@ bool Network::dependsOnTime(NodeId id) const {
     for (const auto& entry : n.floats_)
         // A plain number cannot depend on time; skipping it avoids the lookups by name, which dominate when a graph has thousands of nodes.
         if (entry.second.animated() && paramDependsOnTime(id, entry.first, visiting)) return true;
-    return n.childDependsOnTime();
+    return n.childDependsOnTime() || n.dependsOnPlayhead();
 }
 
 bool Network::anyDependsOnTime() const {
@@ -547,7 +581,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             const NodeId up = slot(task.chain.back()).inputs[0];
             if (up == invalidNodeId) break;
             const Node& upNode = *slot(up).node;
-            const bool fusable = upNode.isPointwise() && upNode.attribClass() == task.cls &&
+            const bool fusable = upNode.isPointwise() && !upNode.anchor_ && upNode.attribClass() == task.cls &&
                                  (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
             if (!fusable) break;
             task.chain.push_back(up);
@@ -558,7 +592,14 @@ Network::CookTask Network::buildTask(NodeId id) {
     } else if (fusionEnabled() && n.isMerge()) {
         collectMergeInputs(id, task);
         if (task.inputs.empty()) throw std::runtime_error(n.name() + ": no input is connected");
-    } else {
+    } else if (n.selectsInput()) {
+        evaluateParams(n);
+        const Slot& s = slot(id);
+        const int pick = n.selectedInput();
+        if (pick < 0 || static_cast<size_t>(pick) >= s.inputs.size() || s.inputs[static_cast<size_t>(pick)] == invalidNodeId)
+            throw std::runtime_error(n.name() + ": input " + std::to_string(pick) + " is not connected");
+        task.inputs.push_back(s.inputs[static_cast<size_t>(pick)]);
+    } else if (n.needsInputs()) {
         const Slot& s = slot(id);
         for (size_t i = 0; i < s.inputs.size(); ++i) {
             if (s.inputs[i] == invalidNodeId) {
@@ -567,7 +608,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             }
             task.inputs.push_back(s.inputs[i]);
         }
-        if (task.inputs.empty() && n.hasVariableInputs()) throw std::runtime_error(n.name() + ": no input is connected");
+        if (task.inputs.empty() && n.hasVariableInputs() && !n.inputsOptional()) throw std::runtime_error(n.name() + ": no input is connected");
     }
 
     return task;
@@ -638,6 +679,7 @@ void Network::runTask(const CookTask& task) {
         const auto compileStart = Clock::now();
         auto kernel = compiler().compileFor(fused.spec, *geo, task.cls);
         const auto runStart = Clock::now();
+        resolveStringParams(fused.spec, *geo, task.cls, fused.params);
         kernel->run(*geo, fused.params, task.cls, pool());
         const auto runEnd = Clock::now();
         timings.compileMs = millis(compileStart, runStart);
@@ -657,6 +699,8 @@ void Network::runTask(const CookTask& task) {
 
     tail.cooked_ = result;
     tail.dirty_ = false;
+    tail.lastPoints_ = result->pointCount();
+    for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).lastPoints_ = tail.lastPoints_;
     ++tail.cookCount_;
 
     const double total = millis(start, Clock::now());
@@ -668,6 +712,70 @@ void Network::runTask(const CookTask& task) {
     stats.lastKernelMs = timings.kernelMs;
     stats.lastChainLength = task.chain.empty() ? 1 : task.chain.size();
     stats.fusedInto = invalidNodeId;
+
+    if (traceEnabled()) {
+        static std::atomic<int> nextThread{0};
+        thread_local const int thread = nextThread++;
+        static const auto origin = Clock::now();
+        TraceEvent event;
+        event.name = tail.name();
+        event.type = tail.typeName();
+        event.thread = thread;
+        event.startUs = std::chrono::duration<double, std::micro>(start - origin).count();
+        event.durationUs = total * 1000.0;
+        event.chain = stats.lastChainLength;
+        recordTrace(std::move(event));
+    }
+}
+
+void Network::recordTrace(TraceEvent event) {
+    Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    r.traceEvents_.push_back(std::move(event));
+}
+
+void Network::clearTrace() {
+    Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    r.traceEvents_.clear();
+}
+
+size_t Network::traceEventCount() const {
+    const Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    return r.traceEvents_.size();
+}
+
+std::string Network::traceJson() const {
+    const Network& r = root();
+    std::lock_guard<std::mutex> lock(r.traceMutex_);
+    auto escaped = [](const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '"' || c == '\\') out += '\\';
+            if (static_cast<unsigned char>(c) < 0x20) continue;
+            out += c;
+        }
+        return out;
+    };
+    std::string out = "{\"traceEvents\":[\n";
+    char line[512];
+    for (size_t i = 0; i < r.traceEvents_.size(); ++i) {
+        const TraceEvent& e = r.traceEvents_[i];
+        std::snprintf(line, sizeof(line), "{\"name\":\"%s\",\"cat\":\"%s\",\"ph\":\"X\",\"ts\":%.3f,\"dur\":%.3f,\"pid\":1,\"tid\":%d,\"args\":{\"chain\":%zu}}%s\n",
+                      escaped(e.name).c_str(), escaped(e.type).c_str(), e.startUs, e.durationUs, e.thread, e.chain,
+                      i + 1 < r.traceEvents_.size() ? "," : "");
+        out += line;
+    }
+    return out + "]}\n";
+}
+
+void Network::writeTrace(const std::string& path) const {
+    const std::string json = traceJson();
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (!file) throw std::runtime_error("cannot open '" + path + "' for writing");
+    const bool ok = std::fwrite(json.data(), 1, json.size(), file) == json.size();
+    if (std::fclose(file) != 0 || !ok) throw std::runtime_error("cannot write '" + path + "'");
 }
 
 GeometryHandle Network::cook(NodeId id) {

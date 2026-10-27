@@ -57,6 +57,11 @@ private:
 
 // Compiles KernelSpecs and caches the result by structure. Because tweakable values are
 // runtime parameters rather than baked-in constants, editing a slider reuses the cached kernel.
+// Fills the parameter slots of spec.stringParams with the id of each literal in its attribute's table (-1 when the table lacks it, so it
+// matches nothing; params is grown to spec.paramCount). Call it with the geometry the kernel is about to run on. Throws when the compared
+// attribute is missing or is not a string attribute.
+void resolveStringParams(const KernelSpec& spec, const Geometry& geo, AttribClass cls, std::vector<float>& params);
+
 class KernelCompiler {
 public:
     KernelCompiler();

@@ -50,6 +50,7 @@ EditorModel::EditorModel() { resetHistory(); }
 void EditorModel::resetHistory() {
     history_ = std::make_unique<History>(net_);
     saved_ = snapshotNetwork(net_);
+    probe_ = saved_;
     lastCook_ = CookResult{};
     geometry_.reset();
 }
@@ -80,9 +81,15 @@ void EditorModel::save(const std::string& path) {
     saveNetworkToFile(net_, path);
     path_ = path;
     saved_ = snapshotNetwork(net_);
+    probe_ = saved_;
 }
 
-bool EditorModel::modified() const { return !sameGraph(snapshotNetwork(net_), saved_); }
+bool EditorModel::modified() const {
+    // Seeded from the previous probe rather than saved_, so a graph that differs from the saved one in thousands of nodes
+    // does not write them all out again on every refresh.
+    probe_ = snapshotNetwork(net_, &probe_);
+    return !sameGraph(probe_, saved_);
+}
 
 std::vector<NodeId> EditorModel::selection() const {
     std::vector<NodeId> out;

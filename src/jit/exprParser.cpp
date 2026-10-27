@@ -134,11 +134,58 @@ private:
         return l;
     }
 
-    int comparison() {
-        int l = additive();
+    bool atStringLiteral() {
+        skipSpace();
+        return pos_ < src_.size() && src_[pos_] == '"';
+    }
+
+    std::string stringLiteral() {
+        ++pos_;
+        std::string text;
+        for (;; ++pos_) {
+            if (pos_ >= src_.size() || src_[pos_] == '\n') fail("unterminated string");
+            char c = src_[pos_];
+            if (c == '"') break;
+            if (c == '\\' && pos_ + 1 < src_.size() && (src_[pos_ + 1] == '"' || src_[pos_ + 1] == '\\')) c = src_[++pos_];
+            text += c;
+        }
+        ++pos_;
+        return text;
+    }
+
+    // `attribute == "text"` compares ids: the literal becomes a parameter that holds its id in the attribute's table (see KernelSpec::StringParam).
+    int stringComparison(int attribute, const std::string& text, bool equal) {
         ExprGraph& g = spec_.graph;
-        if (accept("==")) return g.binary(Op::eq, l, additive());
-        if (accept("!=")) return g.unary(Op::logicalNot, g.binary(Op::eq, l, additive()));
+        const ExprNode& n = g.nodes()[static_cast<size_t>(attribute)];
+        if (n.op != Op::load) fail("a string can only be compared with an attribute");
+        int param = -1;
+        for (const KernelSpec::StringParam& sp : spec_.stringParams)
+            if (sp.channel == n.index && sp.text == text) param = sp.paramIndex;
+        if (param < 0) {
+            param = spec_.paramCount++;
+            spec_.stringParams.push_back({param, n.index, text});
+        }
+        const int same = g.binary(Op::eq, attribute, g.param(param));
+        return equal ? same : g.unary(Op::logicalNot, same);
+    }
+
+    int comparison() {
+        ExprGraph& g = spec_.graph;
+        if (atStringLiteral()) {
+            const std::string text = stringLiteral();
+            const bool equal = accept("==");
+            if (!equal && !accept("!=")) fail("a string can only be compared with == or !=");
+            return stringComparison(additive(), text, equal);
+        }
+        int l = additive();
+        if (accept("==")) {
+            if (atStringLiteral()) return stringComparison(l, stringLiteral(), true);
+            return g.binary(Op::eq, l, additive());
+        }
+        if (accept("!=")) {
+            if (atStringLiteral()) return stringComparison(l, stringLiteral(), false);
+            return g.unary(Op::logicalNot, g.binary(Op::eq, l, additive()));
+        }
         if (accept("<=")) return g.binary(Op::le, l, additive());
         if (accept(">=")) return g.binary(Op::ge, l, additive());
         if (accept("<")) return g.binary(Op::lt, l, additive());
@@ -175,6 +222,7 @@ private:
         skipSpace();
         if (pos_ >= src_.size()) fail("unexpected end of input");
         char c = src_[pos_];
+        if (c == '"') fail("a string can only be compared with an attribute using == or !=");
         if (c == '(') {
             ++pos_;
             int v = expr();

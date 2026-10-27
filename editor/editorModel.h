@@ -195,6 +195,7 @@ private:
     Network net_;
     std::unique_ptr<History> history_;
     GraphSnapshot saved_;
+    mutable GraphSnapshot probe_;
     std::string path_;
     std::vector<NodeId> subnetPath_;
     std::set<NodeId> selection_;

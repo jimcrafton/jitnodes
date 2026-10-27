@@ -18,15 +18,20 @@
   .toolbar .spacer { flex-grow: 1; }
   .toolbar .timeLabel { width: 70px; color: var(--muted); text-align: right; }
   .toolbar input[type=range] { width: 240px; }
+  .toolbar input[type=text] { width: 170px; color: #202020; }
 
   .main { display: flex; flex-direction: row; gap: 6px; flex-grow: 1; }
 
-  .palette { display: flex; flex-direction: column; gap: 4px; width: 150px; padding: 8px; background: var(--panel); border-radius: 4px; }
+  .nodeScroll { flex-grow: 1; overflow-y: auto; }
+  .nodeList { display: flex; flex-direction: column; gap: 3px; width: 156px; }
+  .nodeRow { display: flex; flex-direction: row; gap: 4px; }
+  .palette { display: flex; flex-direction: column; gap: 3px; width: 190px; padding: 8px; background: var(--panel); border-radius: 4px; }
   .palette h3 { font-size: 12px; font-weight: 600; color: var(--muted); }
   .palette button { height: 24px; }
   .palette select { height: 24px; }
-  #assetListHost { height: 84px; background: var(--panelAlt); }
-  #assetDetails { height: 66px; font-size: 11px; color: var(--muted); }
+  .palette .nodeRow button { flex-grow: 1; height: 22px; }
+  #assetListHost { height: 28px; background: var(--panelAlt); }
+  #assetDetails { height: 30px; font-size: 11px; color: var(--muted); }
 
   .graphArea { display: flex; flex-direction: column; flex-grow: 1; gap: 4px; padding: 6px; background: var(--panel); border-radius: 4px; }
   .graphHeader { display: flex; flex-direction: row; justify-content: space-between; align-items: center; height: 20px; }
@@ -81,6 +86,8 @@
     <button id="playButton">Play</button>
     <input id="timeSlider" type="range" min="0" max="100" value="0">
     <span id="timeLabel" class="timeLabel">0.00 s</span>
+    <div class="sep"></div>
+    <input id="addByName" type="text" placeholder="add node by name">
     <div class="spacer"></div>
     <label><input id="fusionToggle" type="checkbox" checked> Fusion</label>
     <span class="muted">Threads</span>
@@ -89,30 +96,48 @@
   </div>
 
   <div class="main">
-    <div class="palette">
+    <div id="palettePanel" class="palette">
       <h3>Nodes</h3>
-      <button id="addLine">line</button>
-      <button id="addTransform">transform</button>
-      <button id="addWrangle">wrangle</button>
-      <button id="addMerge">merge</button>
-      <button id="addAttribCreate">attribCreate</button>
-      <button id="addResample">resample</button>
-      <button id="addSubdivide">subdivide</button>
-      <button id="addCopyToPoints">copyToPoints</button>
-      <button id="addBlast">blast</button>
-      <button id="addSubnet">subnet</button>
-      <button id="addSubnetInput">subnetInput</button>
-      <button id="addNull">null</button>
+      <div id="nodeScroll" class="nodeScroll"><div id="nodeList" class="nodeList">
+      <div class="nodeRow"><button id="addLine">line</button><button id="addTransform">transform</button></div>
+      <div class="nodeRow"><button id="addWrangle">wrangle</button><button id="addMerge">merge</button></div>
+      <div class="nodeRow"><button id="addAttribCreate">attribCreate</button><button id="addAttribString">attribString</button></div>
+      <div class="nodeRow"><button id="addGroupByString">groupByStr</button><button id="addResample">resample</button></div>
+      <div class="nodeRow"><button id="addSubdivide">subdivide</button><button id="addCopyToPoints">copyToPoints</button></div>
+      <div class="nodeRow"><button id="addBlast">blast</button><button id="addMirror">mirror</button></div>
+      <div class="nodeRow"><button id="addSubnet">subnet</button><button id="addSubnetInput">subnetInput</button></div>
+      <div class="nodeRow"><button id="addNull">null</button><button id="addGenerate">generate</button></div>
+      <div class="nodeRow"><button id="addScatter">scatter</button><button id="addNoise">noise</button></div>
+      <div class="nodeRow"><button id="addWarp">warp</button><button id="addColorRamp">colorRamp</button></div>
+      <div class="nodeRow"><button id="addRelax">relax</button><button id="addAttribBlur">attribBlur</button></div>
+      <div class="nodeRow"><button id="addWave">wave</button><button id="addAttractor">attractor</button></div>
+      <div class="nodeRow"><button id="addFlow">flow</button><button id="addVoronoi">voronoi</button></div>
+      <div class="nodeRow"><button id="addLloyd">lloyd</button><button id="addParticles">particles</button></div>
+      <div class="nodeRow"><button id="addBoids">boids</button><button id="addSprings">springs</button></div>
+      <div class="nodeRow"><button id="addReaction">reaction</button><button id="addLsystem">lsystem</button></div>
+      <div class="nodeRow"><button id="addCurveSample">curveSample</button><button id="addRibbon">ribbon</button></div>
+      <div class="nodeRow"><button id="addTrail">trail</button><button id="addFileRead">fileRead</button></div>
+      <div class="nodeRow"><button id="addFileCache">fileCache</button><button id="addFileTrail">fileTrail</button></div>
+      <div class="nodeRow"><button id="addRender">render</button><button id="addGasField">gasField</button></div>
+      <div class="nodeRow"><button id="addGrow">grow</button><button id="addStreamlines">streamlines</button></div>
+      <div class="nodeRow"><button id="addBevel">bevel</button><button id="addCircle">circle</button></div>
+      <div class="nodeRow"><button id="addColonize">colonize</button><button id="addFlatten">flatten</button></div>
+      <div class="nodeRow"><button id="addFluid">fluid</button><button id="addForeach">foreach</button></div>
+      <div class="nodeRow"><button id="addJoin">join</button><button id="addLattice">lattice</button></div>
+      <div class="nodeRow"><button id="addOffset">offset</button><button id="addPeak">peak</button></div>
+      <div class="nodeRow"><button id="addPolar">polar</button><button id="addSmooth">smooth</button></div>
+      <div class="nodeRow"><button id="addSolver">solver</button><button id="addSort">sort</button></div>
+      <div class="nodeRow"><button id="addSwitch">switch</button><button id="addTwist">twist</button></div>
+      </div></div>
       <hr>
       <h3>Assets</h3>
       <canvas id="assetListHost"></canvas>
       <span id="assetDetails">wobbleAsset v1: 1 input, 2 parameters (amount, speed), 1 in the graph</span>
-      <button id="addAssetButton">Add asset</button>
-      <button id="reloadAssetButton">Reload asset</button>
+      <div class="nodeRow"><button id="addAssetButton">Add asset</button><button id="reloadAssetButton">Reload asset</button></div>
       <button id="loadAssetButton">Load asset...</button>
     </div>
 
-    <div class="graphArea">
+    <div id="graphPanel" class="graphArea">
       <div class="graphHeader">
         <span class="title">Network</span>
         <span id="graphPath" class="title">/</span>
@@ -126,8 +151,8 @@
       <canvas id="graphCanvas"></canvas>
     </div>
 
-    <div class="side">
-      <div class="params">
+    <div id="sidePanel" class="side">
+      <div id="paramsPanel" class="params">
         <span id="nodeTitle" class="nodeTitle">transform1</span>
         <span id="nodeType" class="nodeType">transform, cooked 1x</span>
         <div class="paramRow"><span class="name">Name</span><input id="nodeName" type="text" value="transform1"><button id="renameButton">Rename</button></div>
@@ -140,7 +165,7 @@
         <span id="paramError" class="error">&middot;</span>
       </div>
 
-      <div class="viewport">
+      <div id="viewportPanel" class="viewport">
         <div class="head"><span class="title">Viewport</span><span id="viewportInfo" class="title">100 points, 1 primitive</span><button id="fitButton">Fit</button></div>
         <div class="head2"><span class="title">Color by</span><select id="attrSelect"><option>(none)</option></select></div>
         <div class="head2"><span class="title">Map</span><select id="mapSelect"><option>Viridis</option></select><span class="title">Range</span><input id="rangeMin" type="text" placeholder="auto"><input id="rangeMax" type="text" placeholder="auto"><button id="autoRangeButton">Auto</button></div>

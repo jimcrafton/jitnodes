@@ -92,10 +92,15 @@ public:
 
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
+        if (hasPosition_ && posX_ == x && posY_ == y) return;
         posX_ = x;
         posY_ = y;
         hasPosition_ = true;
+        touch();
     }
+    // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
+    // same id), so a snapshot can reuse the text it wrote for a node whose revision it still sees.
+    uint64_t revision() const { return revision_; }
     bool hasPosition() const { return hasPosition_; }
     float posX() const { return posX_; }
     float posY() const { return posY_; }
@@ -118,18 +123,32 @@ public:
     // Nodes with variable inputs start with inputCount() inputs and the network keeps exactly one unconnected input after
     // the last connected one; unconnected inputs are skipped when cooking.
     virtual bool hasVariableInputs() const { return false; }
+    // For variable-input nodes: cook() also works with no input connected.
+    virtual bool inputsOptional() const { return false; }
 
     // Container nodes (subnets, assets) own a child network.
     virtual Network* childNetwork() { return nullptr; }
     virtual const Network* childNetwork() const { return nullptr; }
     virtual bool isAssetInstance() const { return false; }  // child graph comes from the asset definition, not the file
     virtual bool childDependsOnTime() const { return false; }
+    // True for nodes that read the playhead (CookContext::time) themselves, such as a simulation: the network recooks them when the time changes.
+    virtual bool dependsOnPlayhead() const { return false; }
+    // Asked while planning a cook: false means cook() will not look at its inputs, so they are neither cooked nor required to be connected.
+    virtual bool needsInputs() { return true; }
+    // A selector node (switch) cooks only one of its inputs. selectedInput() is asked while planning, after the node's parameters have
+    // been evaluated for the current time; it returns the input slot to use, and cook() then receives that one geometry.
+    virtual bool selectsInput() const { return false; }
+    virtual int selectedInput() const { return -1; }
     virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
 protected:
     void declareFloat(const std::string& name, float defaultValue);
     void declareString(const std::string& name, const std::string& defaultValue);
     void declareGeometry(const std::string& name);
+    const Network* owner() const { return network_; }
+    // For container nodes that hand a value to the graph inside them (the loop counter, read there as `parent.name`): sets a declared
+    // parameter during a cook without marking the node dirty.
+    void publishFloat(const std::string& name, float value);
 
 private:
     friend class Network;
@@ -148,9 +167,11 @@ private:
     FloatParam& floatParam(const std::string& name);
     const FloatParam& floatParam(const std::string& name) const;
     void rebuildReferences();
-    void markChanged();
+    void markChanged(bool structural = true);
+    void touch();
 
     NodeId id_ = invalidNodeId;
+    uint64_t revision_;
     std::string typeName_;
     std::string name_;
     int inputCount_ = 0;
@@ -161,6 +182,8 @@ private:
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
     bool dirty_ = true;
+    bool anchor_ = false;     // a fused chain stops below this node (see Network::noteEdited)
+    size_t lastPoints_ = 0;   // points in the latest cook of the node, or of the fused chain it was part of
     float posX_ = 0.0f;
     float posY_ = 0.0f;
     bool hasPosition_ = false;

@@ -1,0 +1,43 @@
+// Left: a gasField, a hot nozzle at the bottom of a closed box; heat makes the smoke rise (buoyancy) and vorticity confinement keeps it curling.
+// Right: particles blown through a gas by a nozzle that fires to the right (the jet drags the gas along, the gas drags the particles).
+//   jitnodesCli examples/graphs/fx/fxGas.json --png fxGas.png --time 4
+// Both are simulated from the start and are a pure function of the time. See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    {
+      id: 1, type: "gasField", name: "smoke",
+      floats: {
+        boundsMinX: -10, boundsMaxX: 0, boundsMinY: -6, boundsMaxY: 6, resolution: 64,
+        nozzleX: -5, nozzleY: -5.4, nozzleRadius: 0.7, nozzleDensity: 40, nozzleHeat: 40,
+        buoyancy: 5, vorticity: 8, dissipation: 0.15, cooling: 0.6
+      },
+      inputs: []
+    },
+    { id: 2, type: "colorRamp", name: "smokeColor", floats: { min: 0, max: 3 }, strings: { attribute: "density", ramp: "0 #1a1a2e, 0.4 #e8603c, 0.8 #ffd27a, 1 #ffffff" }, inputs: [1] },
+    { id: 3, type: "wrangle", name: "smokeLook", strings: { code: "radius = 0.2; alpha = 0.6 * density / (density + 0.5); softness = 1;" }, inputs: [2] },
+    { id: 4, type: "generate", name: "dust", floats: { count: 3000, seed: 5, cx: 2.5, cy: 0, width: 2.5, height: 5 }, inputs: [] },
+    {
+      id: 5, type: "particles", name: "blown",
+      floats: {
+        gravityY: 0, drag: 0.4, gas: 1, gasResolution: 48, gasInfluence: 3, gasVorticity: 10, gasDissipation: 0.3,
+        gasNozzleX: 0.8, gasNozzleY: 0, gasNozzleAngle: 0, gasNozzleSpeed: 9, gasNozzleRadius: 1.2,
+        boundsMinX: 0, boundsMaxX: 10, boundsMinY: -6, boundsMaxY: 6, bounce: 0.5
+      },
+      strings: { boundary: "bounce" },
+      inputs: [4]
+    },
+    { id: 6, type: "colorRamp", name: "dustColor", floats: { min: 0, max: 8 }, strings: { attribute: "speed", ramp: "0 #6a3cff, 0.5 #4fd0ff, 1 #eaffff" }, inputs: [5] },
+    { id: 7, type: "wrangle", name: "dustLook", strings: { code: "radius = 0.06; alpha = 0.7; softness = 1;" }, inputs: [6] },
+    { id: 8, type: "merge", name: "all", inputs: [3, 7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.1, gamma: 2.2, width: 700, height: 420, viewCx: 0, viewCy: 0, viewWidth: 21 },
+      strings: { background: "#000000" },
+      inputs: [8]
+    }
+  ]
+}

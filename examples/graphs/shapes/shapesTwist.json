@@ -1,0 +1,28 @@
+// A pentagon offset outwards 14 times, every ring's corners rounded by bevel (more segments than the default chamfer), then wound up
+// with twist: the angle fades from 110 degrees at the centre to nothing at radius 7. Points move, so the rings are resampled before
+// the twist to keep the curves smooth.
+//   jitnodesCli examples/graphs/shapes/shapesTwist.json --png shapesTwist.png
+// See docs/shapes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "circle", name: "pentagon", floats: { count: 5, radius: 1.2, cx: 0, cy: 0 }, inputs: [] },
+    { id: 2, type: "offset", name: "rings", floats: { distance: -0.4, count: 14, keepOriginal: 1, miterLimit: 3 }, inputs: [1] },
+    { id: 3, type: "bevel", name: "round", floats: { distance: 0.5, segments: 8, minAngle: 1 }, inputs: [2] },
+    { id: 4, type: "resample", name: "even", floats: { count: 0, spacing: 0.08 }, inputs: [3] },
+    { id: 5, type: "twist", name: "wind", floats: { angle: 110, radius: 7, power: 1.0, amount: 1 }, inputs: [4] },
+    { id: 6, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.03 }, inputs: [5] },
+    { id: 7, type: "wrangle", name: "distance", strings: { code: "r = sqrt(x * x + y * y);" }, inputs: [6] },
+    { id: 8, type: "colorRamp", name: "color", floats: { min: 0, max: 7 }, strings: { attribute: "r", ramp: "0 #ffe9a8, 0.5 #5ad2ff, 1 #6a3aff" }, inputs: [7] },
+    { id: 9, type: "wrangle", name: "look", strings: { code: "radius = 0.035; alpha = 0.5; softness = 0.5;" }, inputs: [8] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 700, height: 700, viewCx: 0, viewCy: 0, viewWidth: 17 },
+      strings: { background: "#000000" },
+      inputs: [9]
+    }
+  ]
+}

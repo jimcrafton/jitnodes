@@ -98,12 +98,17 @@ it may do with the node:
 |---|---|
 | `isPointwise()` / `pointKernel()` | one input, topology unchanged, only rewrites point channels, and can describe its work as a `KernelSpec`: may be **fused** with neighbours |
 | `isMerge()` | accepts any number of inputs: trees of merges are flattened into one concatenation |
+| `selectsInput()` / `selectedInput()` | a selector (`switch`): planning keeps only the input slot `selectedInput()` returns, after the node's parameters are evaluated for the current time |
+| `needsInputs()` | false when `cook` will not use its inputs: they are not planned, cooked or required (`fileCache` in read mode) |
 | `hasVariableInputs()` | the network keeps exactly one free input slot after the last connected one (`merge`) |
 | `childNetwork()` | container (subnet, asset instance) that owns a nested `Network` |
 
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
-`merge`, `attribCreate`, `null`, `resample`, `subdivide`, `copyToPoints`, `blast`, `subnet0` ... `subnet4` and
-`subnetInput`; assets register more.
+`merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, `mirror` (reflections and n-fold copies, `symmetry()` in `src/geo/topology.cpp`), `attribString` and `groupByString` ([strings.md](strings.md)), the point and image nodes
+`generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `gasField`, `boids`, `springs`, `grow`, `streamlines`, `fluid`, `colonize`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail`, the curve and layout nodes `smooth`, `offset`, `sort`, `join`, `bevel`, `polar`, `twist`, `peak`, `lattice` and `switch` ([shapes.md](shapes.md)) and `render` (see
+[fx.md](fx.md); sources in `src/graph/generateNodes.cpp`, `fxNodes.cpp`, `patternNodes.cpp` and `particleNodes.cpp`, the splat renderer in `src/geo/raster.cpp`), `subnet0` ... `subnet4`,
+`fileRead` and `fileCache` ([geometryFiles.md](geometryFiles.md), `src/graph/fileNodes.cpp`; `fileCache` reads without cooking its input through `Node::needsInputs()`),
+and `subnetInput`; assets register more.
 
 **`Network`** owns the nodes in slots (`Node` + its input ids), assigns ids, checks for cycles on `connect`, keeps the
 kernel cache and thread pool, and implements cooking. One node is the *display node*, the one `cookDisplay()` cooks.
@@ -192,7 +197,10 @@ Consequences worth knowing:
   starts its next task. Finished nodes keep their results, unfinished ones stay dirty. Granularity is one node.
 - **Time:** `setTime(t)` only dirties nodes whose parameters depend on time: keyframes, `time` / `frame` in an
   expression, or references (transitively, also through `parent.`) to such parameters. Everything else keeps its cache,
-  which is why scrubbing or playing a mostly static graph is cheap.
+  which is why scrubbing or playing a mostly static graph is cheap. A node that reads `CookContext::time` itself (the
+  `particles` simulation) says so by overriding `Node::dependsOnPlayhead()`, and is then dirtied by every `setTime`. Such a
+  node may keep state between cooks (the simulation keeps its latest step) as long as the result stays a pure function of
+  inputs, parameters and time.
 
 ## The JIT: from wrangle text to machine code
 
@@ -448,7 +456,7 @@ sanitizer run were not measured. The method and the numbers of the earlier run a
   expressions, keyframes and time dependence, subnets and assets (versions, migration, unlock), serialization round
   trips, undo/redo, clips, merge trees, cancellation, topology algorithms.
 - `jitnodesCli graph.json [--time T] [--node NAME] [--threads N] [--isa sse2|avx2|avx512] [--svg out.svg [--points]]
-  [--save out.json] [--profile] [--asset file]...` and `jitnodesCli --types`.
+  [--save out.json] [--profile] [--trace out.json] [--asset file]...` and `jitnodesCli --types`.
 - `jitnodesStress`: thousands of nodes and tens of thousands of points per node, checked against an independent reference and across every configuration; see [stress-test.md](stress-test.md). `ctest` runs its quick size.
 - `editorModelTests` and the newui GUI tests are described in [editor.md](editor.md#testing).
 

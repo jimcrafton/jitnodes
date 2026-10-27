@@ -1,0 +1,25 @@
+// Three overlapping soft clouds drawn additively: where they overlap the light adds up towards white.
+// fxRenderOver.json is the same picture with additive = 0.
+//   jitnodesCli examples/graphs/fx/fxRenderAdditive.json --png fxRenderAdditive.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "redPoints", floats: { count: 30000, seed: 1, cx: -3, cy: 1.5, width: 10, height: 10 }, strings: { shape: "gaussian" }, inputs: [] },
+    { id: 2, type: "wrangle", name: "redLook", strings: { code: "radius = 0.5; alpha = 0.06; softness = 1; Cd.x = 1; Cd.y = 0.15; Cd.z = 0.1;" }, inputs: [1] },
+    { id: 3, type: "generate", name: "greenPoints", floats: { count: 30000, seed: 2, cx: 3, cy: 1.5, width: 10, height: 10 }, strings: { shape: "gaussian" }, inputs: [] },
+    { id: 4, type: "wrangle", name: "greenLook", strings: { code: "radius = 0.5; alpha = 0.06; softness = 1; Cd.x = 0.1; Cd.y = 1; Cd.z = 0.2;" }, inputs: [3] },
+    { id: 5, type: "generate", name: "bluePoints", floats: { count: 30000, seed: 3, cx: 0, cy: -2, width: 10, height: 10 }, strings: { shape: "gaussian" }, inputs: [] },
+    { id: 6, type: "wrangle", name: "blueLook", strings: { code: "radius = 0.5; alpha = 0.06; softness = 1; Cd.x = 0.15; Cd.y = 0.3; Cd.z = 1;" }, inputs: [5] },
+    { id: 7, type: "merge", name: "all", inputs: [2, 4, 6] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 0.9, gamma: 2.2, width: 700, height: 350, viewWidth: 40 },
+      strings: { background: "#000000" },
+      inputs: [7]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+// A grid pattern before warping (left), after the noise warp (middle) and after the curl warp (right).
+//   jitnodesCli examples/graphs/fx/fxWarp.json --png fxWarp.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "points", floats: { count: 80000, seed: 1, width: 9, height: 9 }, strings: { shape: "rect" }, inputs: [] },
+    { id: 2, type: "wrangle", name: "grid", strings: { code: "g = sin(x * 2.5) * sin(y * 2.5); tone = clamp(g * 3 + 0.5, 0, 1); radius = 0.07; alpha = 1; softness = 0.5;" }, inputs: [1] },
+    { id: 3, type: "colorRamp", name: "color", floats: { min: 0, max: 1 }, strings: { attribute: "tone", ramp: "0 #101a4a, 0.5 #3aa0d8, 1 #ffd070" }, inputs: [2] },
+    { id: 4, type: "wrangle", name: "shiftLeft", strings: { code: "x = x - 11;" }, inputs: [3] },
+    { id: 5, type: "warp", name: "noiseWarp", floats: { amount: 1.2, scale: 0.2, octaves: 2, seed: 2 }, strings: { mode: "noise" }, inputs: [3] },
+    { id: 6, type: "warp", name: "curlWarp", floats: { amount: 1.5, scale: 0.2, octaves: 2, iterations: 3, seed: 2 }, strings: { mode: "curl" }, inputs: [3] },
+    { id: 7, type: "wrangle", name: "shiftRight", strings: { code: "x = x + 11;" }, inputs: [6] },
+    { id: 8, type: "merge", name: "all", inputs: [4, 5, 7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, width: 700, height: 350, viewWidth: 34 },
+      strings: { background: "#05060c" },
+      inputs: [8]
+    }
+  ]
+}

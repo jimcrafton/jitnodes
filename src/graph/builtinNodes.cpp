@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 
@@ -54,6 +55,7 @@ public:
         const auto compileStart = std::chrono::steady_clock::now();
         auto compiled = ctx.compiler.compileFor(kernel.spec, *geo, cls);
         const auto runStart = std::chrono::steady_clock::now();
+        resolveStringParams(kernel.spec, *geo, cls, kernel.params);
         compiled->run(*geo, kernel.params, cls, ctx.pool);
         if (ctx.timings) {
             const auto runEnd = std::chrono::steady_clock::now();
@@ -103,6 +105,7 @@ public:
         }
         out.spec = spec_;
         out.params = {getFloat("a"), getFloat("b"), getFloat("c"), getFloat("d")};
+        out.params.resize(static_cast<size_t>(out.spec.paramCount), 0.0f);  // the slots after the named ones belong to string literals
         return true;
     }
 
@@ -127,6 +130,23 @@ public:
     }
 };
 
+// Passes one of its inputs through. Only the selected input is cooked, so a branch that is switched off costs nothing; `index` is clamped
+// to the connected inputs, and the selected input must be connected.
+class SwitchNode : public Node {
+public:
+    SwitchNode() : Node("switch", 2) { declareFloat("index", 0.0f); }
+
+    bool hasVariableInputs() const override { return true; }
+    bool selectsInput() const override { return true; }
+    int selectedInput() const override {
+        const float index = getFloat("index");
+        const int last = std::max(inputCount() - 2, 0);
+        return std::isnan(index) ? 0 : static_cast<int>(std::clamp(std::floor(index), 0.0f, static_cast<float>(last)));
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override { return in[0]; }
+};
+
 class AttribCreateNode : public Node {
 public:
     AttribCreateNode() : Node("attribCreate", 1) {
@@ -134,17 +154,20 @@ public:
         declareString("class", "point");
         declareString("type", "float");
         declareFloat("value", 0.0f);
+        declareString("text", "");
     }
 
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
         auto geo = std::make_shared<Geometry>(*in[0]);
         const std::string& type = getString("type");
-        if (type != "float" && type != "int") throw std::runtime_error("attribCreate: type must be 'float' or 'int'");
+        if (type != "float" && type != "int" && type != "string") throw std::runtime_error("attribCreate: type must be 'float', 'int' or 'string'");
         AttribArray& a = geo->attrib(parseAttribClass(getString("class")), getString("name"),
-                                     type == "int" ? AttribType::int32 : AttribType::float32);
+                                     type == "float" ? AttribType::float32 : type == "int" ? AttribType::int32 : AttribType::string);
         const float v = getFloat("value");
+        const int32_t id = a.type() == AttribType::string ? a.intern(getString("text")) : 0;
         for (size_t i = 0; i < a.size(); ++i) {
-            if (a.type() == AttribType::int32) a.ints()[i] = static_cast<int32_t>(v);
+            if (a.type() == AttribType::string) a.ints()[i] = id;
+            else if (a.type() == AttribType::int32) a.ints()[i] = static_cast<int32_t>(v);
             else a.floats()[i] = v;
         }
         return geo;
@@ -170,9 +193,23 @@ void registerBuiltinNodes() {
     add<TransformNode>("transform");
     add<WrangleNode>("wrangle");
     add<MergeNode>("merge");
+    add<SwitchNode>("switch");
     add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");
     registerTopologyNodes();
+    registerGenerateNodes();
+    registerFxNodes();
+    registerPatternNodes();
+    registerParticleNodes();
+    registerGasNodes();
+    registerFieldNodes();
+    registerCurveNodes();
+    registerShapeNodes();
+    registerGenerativeNodes();
+    registerFluidNodes();
+    registerFileNodes();
+    registerStringNodes();
+    registerLoopNodes();
     registerSubnetNodes();
 }
 

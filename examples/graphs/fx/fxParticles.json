@@ -1,0 +1,41 @@
+// Two particles nodes at the playhead time. Left: a fountain (initialSpeed and a 60 degree spread, gravity, a floor that bounces, a lifetime that
+// respawns particles so the stream never runs out). Right: 12,000 particles given a tangential speed (55% of circular) by a wrangle, orbiting an
+// attractor with a little drag; at t = 6 s the disc has wound up into concentric shells.
+//   jitnodesCli examples/graphs/fx/fxParticles.json --png fxParticles.png --time 6
+// The simulation is deterministic: the same time always gives the same picture, and playing forward only simulates the new steps.
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "nozzle", floats: { count: 14000, seed: 1, cx: -10, cy: -5.5, width: 0.5, height: 0.2 }, inputs: [] },
+    {
+      id: 2, type: "particles", name: "fountain",
+      floats: {
+        gravityY: -9.8, drag: 0.05, initialSpeed: 11, speedVariation: 0.25, direction: 90, spread: 50, lifetime: 4,
+        bounce: 0.45, boundsMinX: -20, boundsMaxX: 0, boundsMinY: -6, boundsMaxY: 8, seed: 3
+      },
+      strings: { boundary: "bounce" },
+      inputs: [1]
+    },
+    { id: 3, type: "colorRamp", name: "fountainColor", floats: { min: 0, max: 1 }, strings: { attribute: "life", ramp: "0 #9fe6ff, 0.5 #3a8cff, 1 #1b2a8a" }, inputs: [2] },
+    { id: 4, type: "generate", name: "disc", floats: { count: 12000, seed: 2, cx: 10, width: 11, height: 11 }, strings: { shape: "disc" }, inputs: [] },
+    { id: 5, type: "wrangle", name: "orbit", strings: { code: "dx = x - 10; r = sqrt(dx * dx + y * y) + 0.05; v = 0.55 * sqrt(30 / r); vx = 0 - y / r * v; vy = dx / r * v;" }, inputs: [4] },
+    {
+      id: 6, type: "particles", name: "orbiters",
+      floats: { gravityY: 0, drag: 0.02, attractX: 10, attractY: 0, attract: 30, attractSoftening: 0.6, seed: 4 },
+      inputs: [5]
+    },
+    { id: 7, type: "colorRamp", name: "orbitColor", floats: { min: 1.5, max: 6 }, strings: { attribute: "speed", ramp: "0 #6a3cff, 0.5 #ff6ab0, 1 #ffe9a8" }, inputs: [6] },
+    { id: 8, type: "merge", name: "all", inputs: [3, 7] },
+    { id: 9, type: "wrangle", name: "look", strings: { code: "radius = 0.08; alpha = 0.55; softness = 1;" }, inputs: [8] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.2, gamma: 2.2, width: 700, height: 350, viewCx: 0, viewCy: 1, viewWidth: 40 },
+      strings: { background: "#000000" },
+      inputs: [9]
+    }
+  ]
+}

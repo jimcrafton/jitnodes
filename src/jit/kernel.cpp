@@ -170,7 +170,7 @@ void Kernel::compileJit() {
         if (n.op == Op::load) {
             x86::Vec d = em.newVec("ld");
             const x86::Mem mem = x86::ptr(channelPtr[static_cast<size_t>(n.index)], index, 2);
-            if (spec_.channelTypes[static_cast<size_t>(n.index)] == AttribType::int32) em.loadInt(d, mem);
+            if (isIntegerStorage(spec_.channelTypes[static_cast<size_t>(n.index)])) em.loadInt(d, mem);
             else em.load(d, mem);
             value[i] = d;
             continue;
@@ -181,7 +181,7 @@ void Kernel::compileJit() {
 
     for (const auto& [channel, expr] : spec_.stores) {
         const x86::Mem dst = x86::ptr(channelPtr[static_cast<size_t>(channel)], index, 2);
-        if (spec_.channelTypes[static_cast<size_t>(channel)] == AttribType::int32) em.storeInt(dst, value[static_cast<size_t>(expr)]);
+        if (isIntegerStorage(spec_.channelTypes[static_cast<size_t>(channel)])) em.storeInt(dst, value[static_cast<size_t>(expr)]);
         else em.store(dst, value[static_cast<size_t>(expr)]);
     }
 
@@ -211,7 +211,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
                 case Op::constant: v[i] = n.value; break;
                 case Op::param: v[i] = params[n.index]; break;
                 case Op::load:
-                    v[i] = spec_.channelTypes[static_cast<size_t>(n.index)] == AttribType::int32
+                    v[i] = isIntegerStorage(spec_.channelTypes[static_cast<size_t>(n.index)])
                                ? static_cast<float>(static_cast<const int32_t*>(channels[n.index])[e])
                                : static_cast<const float*>(channels[n.index])[e];
                     break;
@@ -220,7 +220,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
         }
         for (const auto& [channel, expr] : spec_.stores) {
             const float result = v[static_cast<size_t>(expr)];
-            if (spec_.channelTypes[static_cast<size_t>(channel)] == AttribType::int32) static_cast<int32_t*>(channels[channel])[e] = toInt32(result);
+            if (isIntegerStorage(spec_.channelTypes[static_cast<size_t>(channel)])) static_cast<int32_t*>(channels[channel])[e] = toInt32(result);
             else static_cast<float*>(channels[channel])[e] = result;
         }
     }
@@ -269,6 +269,18 @@ void Kernel::run(Geometry& geo, const std::vector<float>& params, AttribClass cl
     run(ptrs.data(), params.data(), geo.paddedCount(cls), pool);
 }
 
+void resolveStringParams(const KernelSpec& spec, const Geometry& geo, AttribClass cls, std::vector<float>& params) {
+    if (spec.stringParams.empty()) return;
+    if (params.size() < static_cast<size_t>(spec.paramCount)) params.resize(static_cast<size_t>(spec.paramCount), 0.0f);
+    for (const KernelSpec::StringParam& sp : spec.stringParams) {
+        const std::string& name = spec.channels[static_cast<size_t>(sp.channel)];
+        const AttribArray* a = geo.findAttrib(cls, name);
+        if (!a || a->type() != AttribType::string)
+            throw std::runtime_error("'" + name + "' is compared with the string \"" + sp.text + "\" but is not a string attribute");
+        params[static_cast<size_t>(sp.paramIndex)] = static_cast<float>(a->table().find(sp.text));
+    }
+}
+
 KernelCompiler::KernelCompiler() : backend_(std::make_shared<JitBackend>()) {
     jitSupported_ = backend_->sse2;
     // Conservative default: AVX2. AVX-512 is available through setIsa (see docs/performance.md).
@@ -307,6 +319,9 @@ size_t KernelCompiler::cacheSize() const {
 std::shared_ptr<const Kernel> KernelCompiler::compileFor(KernelSpec spec, const Geometry& geo, AttribClass cls) {
     for (size_t c = 0; c < spec.channels.size(); ++c)
         if (const AttribArray* existing = geo.findAttrib(cls, spec.channels[c])) spec.channelTypes[c] = existing->type();
+    for (const auto& store : spec.stores)
+        if (spec.channelTypes[static_cast<size_t>(store.first)] == AttribType::string)
+            throw std::runtime_error("string attribute '" + spec.channels[static_cast<size_t>(store.first)] + "' cannot be assigned");
     return compile(spec);
 }
 

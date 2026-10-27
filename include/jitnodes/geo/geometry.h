@@ -50,6 +50,11 @@ public:
 
     // Creates the attribute (zero filled) when missing; throws if it exists with another type.
     AttribArray& attrib(AttribClass cls, const std::string& name, AttribType type = AttribType::float32);
+    // Creates an attribute of the same type as `like` (a string attribute starts with like's table) unless the name exists. Use it, not
+    // attrib(..., like.type()), to make an attribute that will receive like's values, so string ids keep their meaning.
+    AttribArray& attribLike(AttribClass cls, const std::string& name, const AttribArray& like);
+    // Throws when a string attribute holds an id that is not in its table.
+    void checkStrings() const;
     const AttribArray* findAttrib(AttribClass cls, const std::string& name) const;
     bool hasAttrib(AttribClass cls, const std::string& name) const { return findAttrib(cls, name) != nullptr; }
     const std::map<std::string, AttribArray>& attribs(AttribClass cls) const;

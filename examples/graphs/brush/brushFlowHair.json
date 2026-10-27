@@ -1,0 +1,36 @@
+// Brush hairs that unravel: 1800 seeds scattered along a curve each start a trail through a curl-noise field (flow), so the stroke begins as a tight
+// band on the guide and fans out into curling filaments, like paint dragged through water. The trail's u fades and shrinks each hair towards its tip;
+// the seed's rand picks its hue (flow copies every seed attribute to the whole trail).
+//   jitnodesCli examples/graphs/brush/brushFlowHair.json --png brushFlowHair.png
+// See docs/brushStrokes.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "guide", floats: { count: 200, length: 14 }, inputs: [] },
+    { id: 2, type: "wrangle", name: "bend", strings: { code: "t = x / 14; x = x - 7; y = 1.8 * sin(t * 4.6) + 0.4 * sin(t * 11 + 1) - 1;" }, inputs: [1] },
+    { id: 3, type: "scatter", name: "seeds", floats: { count: 0, lineCount: 1800, spread: 0.3, seed: 11 }, inputs: [2] },
+    {
+      id: 4, type: "flow", name: "hairs",
+      floats: { steps: 70, stepLength: 0.07, scale: 0.22, octaves: 2, seed: 5, bothWays: 0 },
+      strings: { mode: "curl" },
+      inputs: [3]
+    },
+    { id: 5, type: "curveSample", name: "dots", floats: { count: 0, spacing: 0.035 }, inputs: [4] },
+    {
+      id: 6, type: "wrangle", name: "look",
+      strings: {
+        code: "fade = 1 - u; Cd.x = lerp(0.2, 1.0, rand); Cd.y = lerp(0.75, 0.35, rand) * (0.6 + 0.4 * fade); Cd.z = lerp(1.0, 0.45, rand); radius = 0.02 + 0.03 * fade; alpha = 0.16 * fade * fade; softness = 1;"
+      },
+      inputs: [5]
+    },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 900, height: 600, viewCx: 0, viewCy: 0, viewWidth: 18 },
+      strings: { background: "#000000" },
+      inputs: [6]
+    }
+  ]
+}

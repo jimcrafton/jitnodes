@@ -1,0 +1,36 @@
+// Left: two point sources ten units apart make interference fringes (wave attribute through a colorRamp, 90,000 points).
+// Right: a plane wave that also displaces the points along x, so they bunch up and thin out like a compression wave.
+//   jitnodesCli examples/graphs/fx/fxWave.json --png fxWave.png
+// See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "generate", name: "fieldPoints", floats: { count: 90000, seed: 1, cx: -11, width: 14, height: 14 }, inputs: [] },
+    {
+      id: 2, type: "wave", name: "interference",
+      floats: { cx: -14, cy: -2.5, cx2: -14, cy2: 2.5, sourceCount: 2, wavelength: 1.4, falloff: 0.02 },
+      strings: { mode: "radial", name: "wave" },
+      inputs: [1]
+    },
+    { id: 3, type: "colorRamp", name: "fieldColor", floats: { min: -1, max: 1 }, strings: { attribute: "wave", ramp: "0 #06123a, 0.5 #2a7bc4, 1 #fff1c8" }, inputs: [2] },
+    { id: 4, type: "generate", name: "gasPoints", floats: { count: 40000, seed: 2, cx: 11, width: 14, height: 14 }, inputs: [] },
+    {
+      id: 5, type: "wave", name: "compression",
+      floats: { cx: 4, cy: 0, angle: 0, wavelength: 3.5, displaceX: 0.7 },
+      strings: { mode: "plane", name: "wave" },
+      inputs: [4]
+    },
+    { id: 6, type: "colorRamp", name: "gasColor", floats: { min: -1, max: 1 }, strings: { attribute: "wave", ramp: "0 #ff6a3a, 0.5 #3a2a60, 1 #7fe3ff" }, inputs: [5] },
+    { id: 7, type: "merge", name: "all", inputs: [3, 6] },
+    { id: 8, type: "wrangle", name: "look", strings: { code: "radius = 0.09; alpha = 1; softness = 0.4;" }, inputs: [7] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 0, width: 700, height: 350, viewWidth: 40 },
+      strings: { background: "#05060c" },
+      inputs: [8]
+    }
+  ]
+}

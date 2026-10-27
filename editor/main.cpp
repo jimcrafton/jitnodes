@@ -208,6 +208,47 @@ bool selfCheck(EditorWindow& window, EditorModel& model) {
     const Vec onNode = graph.toScreen({model.network().node(first).posX() + 10, model.network().node(first).posY() + 6});
     expect(pixelAt({3, 3}) == 0xFF1A1B1Eu, "the canvas paints its background");
     expect(pixelAt(onNode) != 0xFF1A1B1Eu, "the canvas paints the nodes");
+
+    // Geometry from a render node goes through the splat renderer instead of the grid and sprite drawing.
+    {
+        model.newGraph();
+        Network& net = model.network();
+        const NodeId gen = net.addNode("generate"), wr = net.addNode("wrangle"), render = net.addNode("render");
+        net.node(gen).setFloat("count", 500.0f);
+        net.node(gen).setFloat("width", 10.0f);
+        net.node(gen).setFloat("height", 6.0f);
+        net.node(wr).setString("code", "radius = 0.8; alpha = 1; softness = 0; Cd.x = 1; Cd.y = 0; Cd.z = 0;");
+        net.connect(gen, wr);
+        net.connect(wr, render);
+        model.setDisplay(render);
+        model.cook();
+        window.refresh();
+        expect(window.viewport().rasterActive(), "geometry from a render node is drawn as an image");
+        BLImage rimage(500, 300, BL_FORMAT_PRGB32);
+        BLContext rctx(rimage);
+        window.viewportCanvas().paint(rctx);
+        rctx.end();
+        BLImageData rdata;
+        rimage.get_data(&rdata);
+        size_t red = 0;
+        for (int y = 0; y < 300; ++y) {
+            const auto* row = reinterpret_cast<const std::uint32_t*>(static_cast<const char*>(rdata.pixel_data) + static_cast<size_t>(y) * static_cast<size_t>(rdata.stride));
+            for (int x = 0; x < 500; ++x) red += ((row[x] >> 16) & 255u) > 200u && (row[x] & 255u) < 40u ? 1 : 0;
+        }
+        expect(red > 500, "the additive image shows the sprites");
+    }
+
+    // Double clicking the viewport maximizes it over the graph; doing it again puts it back in the side column.
+    {
+        const float thumbnail = window.viewportCanvas().bounds().width();
+        window.toggleViewportMaximized();
+        newui::View* graphPanel = window.canvas().parent()->parent();  // the canvas sits in a host view inside the graph panel
+        expect(window.viewportMaximized() && !graphPanel->isVisible(), "maximizing hides the graph panel");
+        expect(window.viewportCanvas().bounds().width() > thumbnail * 2.0f, "the maximized viewport takes the main area");
+        window.toggleViewportMaximized();
+        expect(!window.viewportMaximized() && graphPanel->isVisible(), "restoring shows the graph panel again");
+        expect(std::fabs(window.viewportCanvas().bounds().width() - thumbnail) < 1.0f, "the restored viewport has its thumbnail size back");
+    }
     return failed == 0;
 }
 

@@ -1,0 +1,38 @@
+// Two springs nodes at the playhead time, both drawn with curveSample (which keeps the point attributes, unlike scatter).
+// Left: a chain of 80 points pinned at its left end (pinEnds) that has swung down under gravity, coloured by speed.
+// Right: a jelly, a disc of 160 random points joined to every neighbour closer than 1 (neighborRadius), that has just hit a floor
+// (useBounds) and squashed. Its output is set to springs, so every spring is a line; curveSample puts points along them, coloured by
+// strain (green stretched, red squeezed).
+//   jitnodesCli examples/graphs/fx/fxSprings.json --png fxSprings.png --time 1.1
+// The simulation is deterministic: the same time always gives the same picture. See docs/fx.md.
+{
+  format: "jitnodes",
+  version: 1,
+  fps: 24,
+  display: 20,
+  nodes: [
+    { id: 1, type: "line", name: "chain", floats: { count: 80, length: 10, y: 4 }, inputs: [] },
+    { id: 2, type: "wrangle", name: "place", strings: { code: "x = x - 17;" }, inputs: [1] },
+    { id: 3, type: "springs", name: "swing", floats: { pinEnds: 1, gravityY: -9, damping: 0.05, iterations: 16 }, inputs: [2] },
+    { id: 4, type: "curveSample", name: "ropeSamples", floats: { count: 0, spacing: 0.025 }, inputs: [3] },
+    { id: 5, type: "colorRamp", name: "ropeColor", floats: { min: 0, max: 14 }, strings: { attribute: "speed", ramp: "0 #4aa8ff, 0.5 #5affb0, 1 #ffe9a8" }, inputs: [4] },
+    { id: 6, type: "wrangle", name: "ropeLook", strings: { code: "radius = 0.08; alpha = 0.25; softness = 1;" }, inputs: [5] },
+    { id: 7, type: "generate", name: "blob", floats: { count: 160, seed: 3, cx: 9, cy: 5, width: 7, height: 7 }, strings: { shape: "disc" }, inputs: [] },
+    {
+      id: 8, type: "springs", name: "jelly",
+      floats: { gravityY: -24, damping: 0.1, neighborRadius: 1.0, stiffness: 0.35, iterations: 6, useBounds: 1, boundsMinX: 0, boundsMaxX: 18, boundsMinY: -6, boundsMaxY: 8 },
+      strings: { output: "springs" },
+      inputs: [7]
+    },
+    { id: 9, type: "curveSample", name: "springSamples", floats: { count: 0, spacing: 0.1 }, inputs: [8] },
+    { id: 10, type: "colorRamp", name: "strainColor", floats: { min: -0.15, max: 0.15 }, strings: { attribute: "strain", ramp: "0 #ff4a4a, 0.5 #5a7a9c, 1 #4affd0" }, inputs: [9] },
+    { id: 11, type: "wrangle", name: "jellyLook", strings: { code: "radius = 0.05; alpha = 0.22; softness = 1;" }, inputs: [10] },
+    { id: 12, type: "merge", name: "all", inputs: [6, 11] },
+    {
+      id: 20, type: "render", name: "image",
+      floats: { additive: 1, exposure: 1.0, gamma: 2.2, width: 840, height: 360, viewCx: -1, viewCy: -0.5, viewWidth: 34 },
+      strings: { background: "#000000" },
+      inputs: [12]
+    }
+  ]
+}

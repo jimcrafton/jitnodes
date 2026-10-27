@@ -1,5 +1,6 @@
 #include "editorWindow.h"
 
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -10,8 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include "imageExport.h"
 #include "keyframeDialog.h"
 #include "newui/clipboardmgr.h"
+#include "newui/menus.h"
 #include "newui/dialogs.h"
 #include "newui/utils.h"
 
@@ -28,9 +31,45 @@ const std::vector<PaletteEntry> palette = {
     {"addLine", "line"}, {"addTransform", "transform"}, {"addWrangle", "wrangle"}, {"addMerge", "merge"},
     {"addAttribCreate", "attribCreate"}, {"addResample", "resample"}, {"addSubdivide", "subdivide"},
     {"addCopyToPoints", "copyToPoints"}, {"addBlast", "blast"}, {"addSubnet", "subnet"}, {"addSubnetInput", "subnetInput"}, {"addNull", "null"},
+    {"addAttribString", "attribString"}, {"addGroupByString", "groupByString"}, {"addMirror", "mirror"}, {"addFileTrail", "fileTrail"},
+    {"addGenerate", "generate"}, {"addScatter", "scatter"}, {"addNoise", "noise"}, {"addWarp", "warp"}, {"addColorRamp", "colorRamp"},
+    {"addRelax", "relax"}, {"addAttribBlur", "attribBlur"}, {"addWave", "wave"}, {"addAttractor", "attractor"}, {"addFlow", "flow"},
+    {"addVoronoi", "voronoi"}, {"addLloyd", "lloyd"}, {"addParticles", "particles"}, {"addBoids", "boids"},
+    {"addSprings", "springs"}, {"addReaction", "reactionDiffusion"},
+    {"addLsystem", "lsystem"}, {"addCurveSample", "curveSample"}, {"addRibbon", "ribbon"}, {"addTrail", "trail"},
+    {"addFileRead", "fileRead"}, {"addFileCache", "fileCache"}, {"addRender", "render"}, {"addGasField", "gasField"},
+    {"addGrow", "grow"}, {"addStreamlines", "streamlines"},
+    {"addBevel", "bevel"}, {"addCircle", "circle"}, {"addColonize", "colonize"}, {"addFlatten", "flatten"},
+    {"addFluid", "fluid"}, {"addForeach", "foreach"}, {"addJoin", "join"}, {"addLattice", "lattice"},
+    {"addOffset", "offset"}, {"addPeak", "peak"}, {"addPolar", "polar"}, {"addSmooth", "smooth"},
+    {"addSolver", "solver"}, {"addSort", "sort"}, {"addSwitch", "switch"}, {"addTwist", "twist"},
 };
 
 const std::vector<const char*> displayOnlyViews = {};
+
+// The registered node type a typed name stands for: an exact match (any case), else the only type that starts with it, else the only type
+// that contains it. Throws with the candidates when it is ambiguous or matches nothing.
+std::string resolveNodeType(const std::string& typed) {
+    const auto lower = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    const std::string wanted = lower(typed);
+    const std::vector<std::string> types = NodeRegistry::instance().typeNames();
+    std::vector<std::string> starts, contains;
+    for (const std::string& type : types) {
+        const std::string t = lower(type);
+        if (t == wanted) return type;
+        if (t.compare(0, wanted.size(), wanted) == 0) starts.push_back(type);
+        else if (t.find(wanted) != std::string::npos) contains.push_back(type);
+    }
+    const std::vector<std::string>& found = !starts.empty() ? starts : contains;
+    if (found.size() == 1) return found.front();
+    if (found.empty()) throw std::runtime_error("no node type matches '" + typed + "'");
+    std::string list;
+    for (size_t i = 0; i < found.size() && i < 6; ++i) list += (i ? ", " : "") + found[i];
+    throw std::runtime_error("'" + typed + "' could be " + list + (found.size() > 6 ? ", ..." : ""));
+}
 
 std::string format(const char* pattern, double value) {
     char buf[64];
@@ -188,6 +227,15 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
     viewportCanvas_->setBounds(newui::Rect(0, 0, viewportHost->bounds().width(), viewportHost->bounds().height()));
     viewportCanvas_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(1.0f));
     viewportHost->addChild(viewportCanvas_);
+    palettePanel_ = &view<newui::SubView>("palettePanel");
+    auto& nodeScroll = view<newui::ScrollView>("nodeScroll");
+    nodeScroll.setContentSize(newui::Size(nodeScroll.contentSize().width - 24.0f, nodeScroll.contentSize().height));
+    graphPanel_ = &view<newui::SubView>("graphPanel");
+    sidePanel_ = &view<newui::SubView>("sidePanel");
+    paramsPanel_ = &view<newui::SubView>("paramsPanel");
+    view<newui::SubView>("viewportPanel");
+    viewportCanvas_->onToggleMaximize = [this] { newui::Application::instance().runLoop().post([this] { toggleViewportMaximized(); }); };
+    viewportCanvas_->onContextMenu = [this] { newui::Application::instance().runLoop().post([this] { showViewportMenu(); }); };
     view<newui::Label>("viewportInfo");
     view<newui::DropDownList>("attrSelect").onSelectionChanged.add(std::function<newui::SyncReturn(newui::DropDownList&)>([this](newui::DropDownList& d) {
         if (!updatingUi_ && d.selectedIndex()) {
@@ -270,6 +318,16 @@ EditorWindow::EditorWindow(newui::Frame& frame, EditorModel& model) : frame_(fra
             edited();
         });
     }
+    view<newui::TextField>("addByName").onReturnPressed.add(std::function<newui::SyncReturn(newui::TextField&)>([this](newui::TextField& field) {
+        guarded([&] {
+            const std::string typed = newui::wideToUtf8(field.text());
+            if (typed.empty()) return;
+            model_.addNode(resolveNodeType(typed));
+            field.setText(L"");
+            edited();
+        });
+        return newui::SyncReturn::Handled;
+    }));
 
     view<newui::Button>("playButton").onClick.add(std::function<newui::SyncReturn(newui::Control&)>([this](newui::Control&) {
         model_.setPlaying(!model_.playing());
@@ -607,6 +665,75 @@ void EditorWindow::doCreateAsset() {
     message_ = model_.createAsset(id, type, path, true, &updated);
     if (message_.empty() && updated > 0) message_ = std::to_string(updated) + " existing instance(s) updated; undo history was reset";
     edited();
+}
+
+void EditorWindow::toggleViewportMaximized() {
+    viewportMaximized_ = !viewportMaximized_;
+    for (newui::SubView* panel : {palettePanel_, graphPanel_, paramsPanel_}) panel->setVisible(!viewportMaximized_);
+    // The side column has a fixed width in the thumbnail state; with the other panels hidden it takes all the room.
+    sidePanel_->setLayoutParams(std::make_unique<newui::FlexLayoutParams>(viewportMaximized_ ? 1.0f : 0.0f));
+    if (newui::View* row = sidePanel_->parent()) row->updateLayout();
+    viewport_->resetFit();
+    viewportCanvas_->redraw();
+}
+
+void EditorWindow::showViewportMenu() {
+    newui::MenuItem menu;
+    bool exportChosen = false, saveChosen = false;
+    menu.addChild(std::make_unique<newui::MenuItem>("Export..."))->onClick.add([&exportChosen](newui::MenuItem&) {
+        exportChosen = true;
+        return newui::SyncReturn::Handled;
+    });
+    menu.addChild(std::make_unique<newui::MenuItem>("Save geometry..."))->onClick.add([&saveChosen](newui::MenuItem&) {
+        saveChosen = true;
+        return newui::SyncReturn::Handled;
+    });
+    POINT at{};
+    ::GetCursorPos(&at);
+    newui::ContextMenu popup;
+    popup.show(frame_.frameHandle(), menu, at.x, at.y);
+    if (exportChosen) guarded([this] { doExportImage(); });
+    if (saveChosen) guarded([this] { doSaveGeometry(); });
+}
+
+void EditorWindow::doSaveGeometry() {
+    const GeometryHandle& geo = viewport_->geometry();
+    if (!geo) {
+        message_ = "there is nothing to save";
+        refresh();
+        return;
+    }
+    newui::FileDialogOptions options;
+    options.title = "Save geometry";
+    options.defaultFileName = "geometry.jngeo";
+    options.defaultExtension = "jngeo";
+    options.filters = {{"geometry files", "*.jngeo"}};
+    std::string path;
+    if (!newui::Dialog::showSaveFile(frame_.frameHandle(), options, path)) return;
+    if (std::filesystem::path(path).extension().empty()) path += ".jngeo";
+    saveGeometryToFile(*geo, path);
+    message_ = "saved " + baseName(path) + " (" + std::to_string(geo->pointCount()) + " points)";
+    refresh();
+}
+
+void EditorWindow::doExportImage() {
+    if (!viewport_->geometry()) {
+        message_ = "there is nothing to export";
+        refresh();
+        return;
+    }
+    newui::FileDialogOptions options;
+    options.title = "Export image";
+    options.defaultFileName = "viewport.png";
+    options.defaultExtension = "png";
+    options.filters = {{"PNG image", "*.png"}, {"JPEG image", "*.jpg;*.jpeg"}};
+    std::string path;
+    if (!newui::Dialog::showSaveFile(frame_.frameHandle(), options, path)) return;
+    if (std::filesystem::path(path).extension().empty()) path += ".png";
+    const Image image = viewportCanvas_->renderForExport();
+    message_ = exportImage(image, path);
+    if (message_.empty()) message_ = "exported " + baseName(path) + " (" + std::to_string(image.width) + " x " + std::to_string(image.height) + ")";
+    refresh();
 }
 
 void EditorWindow::afterNavigation() {

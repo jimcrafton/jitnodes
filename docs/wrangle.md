@@ -205,6 +205,25 @@ The attributes of the input geometry are the variables. For `class = point` they
 - **Topology is read-only:** you cannot add or remove points or primitives, or read a neighbour's value. Anything that
   needs neighbours (smoothing, resampling) is a topology node (`resample`, `subdivide`, ...).
 
+### String attributes
+A string attribute (type `string`, see `design.md` "string attributes") holds text per point or primitive, stored as ids into a table
+that belongs to the attribute. A program can compare one with a literal on either side of `==` or `!=`, and nothing else:
+
+```
+tree = label == "tree";             // 1 where the text is "tree"
+other = "rock" != label && x > 1;   // the literal may come first; combines with && || ?: like any comparison
+blank = label == "";                // the empty string, which is what a new element starts with
+```
+
+- The literal is turned into a number before the kernel runs: its id in the attribute's table at that moment, or -1 when the table
+  does not contain it, so `label == "nothing"` is false everywhere and `label != "nothing"` true everywhere. The compiled kernel does
+  not depend on the text, so changing a literal does not recompile, and the same kernel serves geometries whose tables differ.
+- A string attribute is **read-only**: `label = ...;` fails with "string attribute 'label' cannot be assigned". Using `label` in
+  arithmetic is allowed but gives the id, which means nothing outside its geometry.
+- Comparing an attribute that is missing or is not a string attribute with a literal fails the cook ("'x' is compared with the string
+  "a" but is not a string attribute"). A literal anywhere else (`label + "a"`, `label < "a"`) is a parse error. The escapes are `\"` and `\\`.
+- It works in fused chains of wrangles and on the interpreter the same as on the JIT; the test is `wrangleComparesStringAttributesWithLiterals`.
+
 ## Order of evaluation
 
 ![How a wrangle program runs](img/wrangle-flow.svg)
@@ -267,7 +286,8 @@ The language has no built-in attributes except `x` and `y`, but several nodes an
 | `group.<name>` | point / primitive | `blast` | non-zero = in group `<name>` |
 | `scale`, `angle` | point (on the *target* input of `copyToPoints`) | `copyToPoints` | per-instance scale (multiplied with the node's `scale`) and rotation in radians (added to its `angle`) |
 | `copyIndex` | point, primitive | *written by* `copyToPoints` | which target point an instance came from (int) |
-| `radius` | point | editor viewport | presence turns on sprite drawing: disc radius in world units |
+| `rand`, `rand2` | point | *written by* `generate`, `scatter` | independent uniform random numbers in 0..1 per point (the language has no `rand` of its own); see [fx.md](fx.md) |
+| `radius` | point | editor viewport, `render` | presence turns on sprite drawing: disc radius in world units |
 | `Cd.x`, `Cd.y`, `Cd.z` | point | editor viewport (sprites) | colour 0-1, default white |
 | `alpha` | point | editor viewport (sprites) | opacity 0-1, default 1 |
 | `softness` | point | editor viewport (sprites) | 0 hard disc, 1 radial gradient (default 1) |
@@ -526,8 +546,8 @@ Other things that look like bugs but are not:
 
 - No control flow other than `? :`, no loops, no local variables, no functions, no comments.
 - No operators `%`, `^`, `&`, `|`, `<<`, bit tricks, compound assignment (`+=`) or increment.
-- No access to other points, primitives, neighbours or detail values, no random or noise functions, no string, matrix
-  or vector values.
+- No access to other points, primitives, neighbours or detail values, no random or noise functions, no matrix or vector
+  values, and strings only as the literal in a comparison (see [String attributes](#string-attributes)).
 - Float32 only: precision about seven decimal digits, integers exact to 2^24.
 - Attributes cannot be deleted, renamed or retyped from a wrangle (use `attribCreate` for int attributes ahead of time).
 - The JIT targets x86-64 (SSE2, AVX2, AVX-512). Other hosts run the same programs on the scalar interpreter, identically
@@ -543,6 +563,9 @@ conditional := or [ '?' expression ':' expression ]
 or          := and { '||' and }
 and         := comparison { '&&' comparison }
 comparison  := additive [ ( '==' | '!=' | '<' | '>' | '<=' | '>=' ) additive ]
+             | additive ( '==' | '!=' ) string        (additive must be a string attribute)
+             | string ( '==' | '!=' ) additive
+string      := '"' { any character but '"' and newline, or '\"' or '\\' } '"'
 additive    := term { ( '+' | '-' ) term }
 term        := unary { ( '*' | '/' ) unary }
 unary       := '-' unary | '!' unary | primary

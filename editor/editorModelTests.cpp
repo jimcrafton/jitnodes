@@ -1,13 +1,16 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "editorModel.h"
 #include "graphController.h"
+#include "imageExport.h"
 #include "keyframeEditor.h"
 #include "profileController.h"
 #include "viewportController.h"
@@ -463,7 +466,7 @@ TEST(viewportPansZoomsAndRefits) {
     m.cook();
     v.setGeometry(m.geometry());
     CHECK(std::fabs(v.zoom() - fitted) > 1e-3f);
-    CHECK(v.doubleClick());
+    v.fit();
     CHECK(std::fabs(v.zoom() - 352.0f / 20.0f) < 1e-3f);
     v.setGeometry(nullptr);
     CHECK(v.info() == "no geometry" && !v.bounds().valid);
@@ -1211,6 +1214,31 @@ TEST(copyAndPasteOfSeveralNodesKeepsTheWiresBetweenThem) {
     CHECK(m.network().nodeIds().size() == 3);
     m.select(a);
     CHECK(m.cutSelected() && m.undoLabel() == "cut line1" && m.paste().empty() && m.network().findNode("line1") != invalidNodeId);
+}
+
+TEST(exportImageWritesPngAndJpegByExtension) {
+    Image image;
+    image.width = 40;
+    image.height = 30;
+    image.pixels.assign(40 * 30, 0xFF3060C0u);
+    const std::filesystem::path dir = std::filesystem::temp_directory_path();
+    auto bytesOf = [](const std::filesystem::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+
+    const std::filesystem::path png = dir / "jitnodes_export_test.png", jpg = dir / "jitnodes_export_test.JPG", bad = dir / "jitnodes_export_test.gif";
+    CHECK(exportImage(image, png.string()).empty());
+    const std::string pngBytes = bytesOf(png);
+    CHECK(pngBytes.size() > 40 && pngBytes.compare(1, 3, "PNG") == 0);
+    CHECK(exportImage(image, jpg.string()).empty());
+    const std::string jpgBytes = bytesOf(jpg);
+    CHECK(jpgBytes.size() > 100 && static_cast<unsigned char>(jpgBytes[0]) == 0xFF && static_cast<unsigned char>(jpgBytes[1]) == 0xD8);
+    CHECK(!exportImage(image, bad.string()).empty() && !std::filesystem::exists(bad));
+    CHECK(!exportImage(Image{}, png.string()).empty());
+    CHECK(!exportImage(image, (dir / "jitnodes_no_such_folder" / "x.png").string()).empty());
+    std::filesystem::remove(png);
+    std::filesystem::remove(jpg);
 }
 
 }  // namespace

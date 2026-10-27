@@ -23,6 +23,10 @@ out/build/x64-release/kernelBench.exe        # prints the tables below as markdo
 out/build/x64-release/jitnodesCli.exe examples/graphs/wobble.json --profile --isa avx512
 ```
 
+`--trace FILE` writes the cook as a timeline: open it in `chrome://tracing` or <https://ui.perfetto.dev>. Each row is a thread,
+each bar one node (a fused chain is one bar named after its last node). Gaps between bars on a row show where a level waited
+for its slowest branch. The `--profile` table reports the same times as sums.
+
 Run it from an otherwise idle machine, in Release (the program prints a warning if it was built without
 optimisation). `JITNODES_JIT_LOG=1` dumps the generated assembly.
 
@@ -43,11 +47,12 @@ optimisation). `JITNODES_JIT_LOG=1` dumps the generated assembly.
 
 | | |
 |---|---|
-| CPU | AMD Ryzen 9 7900X (12 cores / 24 threads), AVX2 and AVX-512 (Zen 4) |
-| OS / compiler | Windows 11, MSVC (Visual Studio 2026), Release `/O2` |
+| CPU | AMD Ryzen 9 7900X (Zen 4), 12 cores / 24 threads, 4.7 GHz max, 64 MB L3, AVX2 and AVX-512 |
+| Memory | 64 GB DDR5-4800 (2 x 32 GB) |
+| OS / compiler | Windows 11 Pro (10.0.26100), MSVC (Visual Studio 2026), Release `/O2` |
 | asmjit | 1.21, static |
-| Date | 2026-10-16 |
-| Multi-threaded rows | 4 threads total (caller + 3 workers) |
+| Date | kernel and network tables 2026-10-16, rerun 2026-10-26; fx table 2026-10-26 |
+| Multi-threaded rows | 4 threads total (caller + 3 workers); fx table "all threads" = 8 (the default pool) |
 
 Only this one machine was measured. Other CPUs (in particular Intel parts that lower their clock under AVX-512),
 ARM and Debug builds were not.
@@ -55,6 +60,11 @@ ARM and Debug builds were not.
 ## Results
 
 ### Kernels, 4M points (ms per run)
+
+Rerun on 2026-10-26 (three more `kernelBench` runs): all rows reproduced within the ranges above (for example
+JIT off 65 - 68 / 97 - 100 / 194 - 196 / 71 - 72 / 121 ms, avx2 0.53 - 0.77 / 0.79 - 0.86 / 0.80 - 0.94 / 4.3 - 4.4 /
+13.0 - 13.3 ms) and the network rows too (fusion + JIT 1.90 - 1.94 ms, 8 branches JIT on 20.7 - 21.3 ms on one thread,
+16.3 - 20.0 ms on 4); the tables keep the original ranges.
 
 | kernel | JIT off | native C++ | sse2 | avx2 | avx512 | best, 4 threads | best vs off |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -104,6 +114,186 @@ kernels compiled: 1 (0.077 ms), threads: 4
 ```
 (transform and line rows omitted: the transforms are fused into the wranglers, the lines were cached. The kernel
 column now includes cloning the channels the kernel writes, which used to be a separate full-geometry copy.)
+
+### Load and cold cook (2026-10-26, release, 24 hardware threads; median of 3 runs in one process)
+Measured for step 0 of "Binary geometry files" in `design.md`: `loadNetwork` from text, then `setTime`, then one cook of the display node.
+
+| Graph | File size | `loadNetwork` (ms) | Cold cook (ms) | Points |
+|---|---|---|---|---|
+| stress chains, 64 x 16 (1110 nodes) | 396 KB | 12.7 | 10.5 | 640k |
+| stress chains, default 64 x 40 (2646 nodes) | 966 KB | 31 | 17.6 | 640k |
+| `examples/graphs/nebula.json` | 6.6 KB | 0.4 | 177 | 646k |
+| `reactionDiffusion` 512 x 512, t = 30 | 0.2 KB | 0.0 | 3480 | 262k |
+| `boids` 900, t = 14 | 0.4 KB | 0.1 | 239 | 900 |
+| `generate` 2M points | 0.1 KB | 0.0 | 6 | 2M |
+
+Parsing is about 12 us per node (30 MB/s), so even the 2646-node graph loads in 31 ms, less than one cook of it; a binary graph
+format would save at most a few tens of milliseconds and is not worth the loss of diffable text. The expensive cooks are
+the stateful simulations (`reactionDiffusion` 3.5 s, `boids` 0.24 s): those are what a geometry cache would save at every load.
+`generate` of 2M points costs 6 ms, so caching it would be slower than recooking (reading 2M x several floats from disk is
+not free), and `nebula` at 0.18 s is borderline.
+
+### Whole-graph costs at 10k nodes (2026-10-26, release)
+
+100 chains of 100 `transform` nodes (an expression on every tenth) merged into one display node: 10104 nodes, 1000 animated.
+Per edit the editor commits to the history, and the title bar asks `modified()` on every refresh; both snapshot the whole graph.
+`setTime` runs on every playhead move.
+
+| Operation | Before (ms) | After (ms) |
+|---|---|---|
+| `History::commit` after one edit | 62 | 7.8 |
+| `History::commit` with no change (and `EditorModel::modified()`) | 63 | 3.3 |
+| `setTime` (1000 animated nodes) | 4.5 | 1.1 |
+| `setTime` right after a plain value edit | 6.1 | 1.1 |
+
+A snapshot used to write every node as JSON and compare it with the previous text. Nodes now carry a `revision()` taken from a
+process-wide counter on every change to what they save (parameters, expressions, keys, strings, geometry, spare parameters,
+position, name), so `snapshotNetwork(net, &previous)` reuses the previous text of a node whose revision it still sees. Subnet and
+asset nodes are always rewritten, because their text includes a child graph that can change without touching them. What is left is
+building the 10k-entry map. `setTime` keeps the list of nodes that depend on time between calls and drops it only after an edit that
+can change that list (an expression, keys or a string parameter, a node added, removed or renamed, an edit inside a subnet); a plain
+value edit (`setFloat` on a parameter with no expression) keeps it. The remaining 1.1 ms is marking the 10k nodes downstream of the
+animated ones dirty, which a cook needs anyway; one cook of the display node is 12 ms.
+
+The same graph through `EditorModel` (what the editor does per interaction), 10104 nodes, best of 3:
+
+| Operation | ms |
+|---|---|
+| `setParameter` (one undo step) | 3.3 |
+| move one node + commit | 3.7 |
+| add a node wired to the selection | 5.0 |
+| undo or redo one edit, with the cook | 4-5 |
+| rename a node | 14 |
+| `modified()` with the graph differing from the saved one in many nodes | 65 -> 3 |
+| select all + nudge all (every node's text is rewritten) | 72 |
+| undo / redo of that nudge | 42 / 105 |
+| copy the whole graph | 69 |
+
+`modified()` is asked on every refresh for the title bar; it used to seed the snapshot from the saved graph, so every node that
+differed was written out again each time. It now seeds from its own previous probe. What remains is whole-graph work that has to
+touch every node (rewriting 10k node texts, 6 us each), and the 10k-entry map a snapshot builds (3 ms).
+
+### Fused chains and edits near their end (2026-10-26)
+
+A fused chain runs as one kernel and gives up the cached results of its inner nodes, so editing the last node of a 40-node chain
+reran all 40. Now an edit by hand (or a time-driven change, when at most 16 nodes are animated) marks the *input* of the edited
+point-wise node as a cache boundary, provided the node carries at least `Network::anchorMinPoints` (1024) points: the chain
+above the edit stays cooked as its own task. At most 16 boundaries exist per network, oldest dropped first. One chain of 40
+`transform` nodes, no merge, best of 200:
+
+| Points | Edit | Before (ms) | After (ms) | Unfused (ms) |
+|---|---|---|---|---|
+| 10,000 | last node | 0.128 | 0.005 | 0.005 |
+| 10,000 | middle | 0.121 | 0.099 | 0.097 |
+| 100,000 | last node | 0.235 | 0.024 | - |
+| 100,000 | middle | 0.227 | 0.314 | - |
+
+Editing the last node now costs what the unfused graph costs, while a cold cook still fuses (421 nodes, 10k points each: 1.0 ms
+fused against 8.9 ms unfused). The price is that an edit in the middle of a chain that already has boundaries above and below
+it reruns two tasks and copies the geometry twice, which at 100k points is 30% slower than one fused run; repeated edits of one
+node (a slider drag) only ever touch the part after it.
+
+### Scrubbing simulations (2026-10-26)
+
+`particles`, `boids`, `springs`, `reactionDiffusion`, `gasField`, `fluid`, `grow` and `solver` kept only the state of their latest
+cook, so any step back restarted from the input. They now also keep copies of the state at every 16th step (`StateCheckpoints`
+in `src/graph/nodeUtil.h`; the interval doubles and every other copy is dropped when a node holds more than 64 copies or 64 MB).
+Time to cook after the playhead goes from t = 2 s (240 steps at the default rate) to the time shown, release build, 8 threads,
+without / with the copies. The last column is a jump forward from 0.1 s to 1.2 s, which uses the copies from the earlier run:
+
+| Simulation | Back to 1.9 s | 1.0 s | 0.5 s | 0.1 s to 1.2 s |
+|---|---|---|---|---|
+| `particles`, 100k points | 30 / 0.9 ms | 20 / 1.7 | 12 / 2.0 | 16 / 0.3 |
+| `reactionDiffusion`, 256 x 256 | 18 / 0.7 | 9.7 / 0.9 | 5.0 / 1.4 | 11 / 0.4 |
+| `boids`, 20k points | 1894 / 45 | 846 / 192 | 376 / 185 | 977 / 142 |
+| `gasField` | 52 / 0.9 | 26 / 5.2 | 13 / 6.4 | 29 / 3.5 |
+
+`boids` steps cost 8 ms each, so even the at most 16 replayed steps are visible there. Memory is bounded per node by the budget;
+a copy of `particles` with 100k points is 3.6 MB. The copies are exact, so a result resumed from one equals a run from the start
+(test `simulationsResumeFromSavedStatesWhenScrubbedBack` checks seven of the nodes bit for bit; the solver test checks the
+eighth).
+
+### fx nodes, cold cook of the example graphs (2026-10-26)
+
+Median of 3 cold cooks (fresh `Network`, load, `setTime`, one cook of the display node), at the time each graph is
+documented for in `fx.md`. Measured with a small driver like the load test above; the same hardware as in
+"Environment".
+
+The first measurement found that `parallelChunks` split work into chunks of 16,384 points, so any node with fewer
+points than that (or a few times that) ran on one or two threads however heavy its per-point work. It now picks about
+four chunks per thread, between 256 and 16,384 points (`src/graph/nodeUtil.h`). The "before" column is the first
+measurement with the old rule; the other columns are after the change.
+
+| graph (time) | points | 1 thread | all threads | before (all threads) | JIT off, before (all threads) | heaviest node, before |
+|---|---:|---:|---:|---:|---:|---|
+| `fxBlur` | 60k | 790 | 137 | 623 | 615 | `attribBlur` 4 passes 624 ms |
+| `fxReaction` (30) | 24k | 1014 | 270 | 477 | 551 | `reactionDiffusion` 529 / 486 ms |
+| `fxGas` (4) | 7.9k | 469 | 462 | 469 | 468 | `particles` 259, `gasField` 213 |
+| `fxFluid` (2.5) | 1.1k | 272 | 122 | 269 | 271 | `fluid` 272 |
+| `fxBoids` (14) | 1.8k | 1356 | 297 | 296 | 293 | `boids` 294 + 153 |
+| `fxBoidsRocks` (4.8) | 0.9k | 277 | 87 | 88 | - | `boids` |
+| `fxGrow` (2.5) | 16k | 179 | 43 | 175 | - | `grow` 176 |
+| `fxParticles` (6) | 26k | 124 | 56 | 123 | - | `particles` |
+| `fxAttractor` | 1.6M | 871 | 137 | 148 | 146 | `attractor` 128 / 115 / 95 / 49 |
+| `fxFlow` | 972k | 234 | 48 | 179 | 184 | (not profiled) |
+| `nebula` | 646k | 982 | 162 | 186 | 190 | `warp` 76 / 61 / 26, `noise` 30 / 26 |
+| `fxWarp` | 240k | 72 | 15 | 19 | 18 | |
+| `fxNoise` | 180k | 46 | 9.1 | 11 | 11 | |
+| `fxTrails` (3) | 18k | 81 | 35 | 35 | 35 | |
+| `fxStreamlines` | 12k | 12.0 | 11.9 | 11.4 | - | |
+| `fxColonize` | 4.4k | 25 | 25.5 | 26 | - | |
+| `fxSprings` (3) | 7.7k | 30 | 30 | 30 | - | |
+| `fxVoronoi` | 75k | 4.8 | 2.3 | 2.4 | - | |
+| `fxLloyd` | 40k | 3.6 | 2.4 | 2.8 | - | |
+| `fxWave` | 130k | 8.1 | 2.6 | 2.9 | - | |
+
+All times in ms. Run-to-run spread was under about 5 % except `fxReaction`, `fxWarp` and `fxBlur` (up to 10 - 20 %,
+one slow run). The loop graphs (`loopsForeach`, `loopsSolver`) cook in under 1 ms. The 1-thread column did not change.
+The tests (176) pass with the new rule. The "JIT off" column was only measured before the change.
+
+What this shows:
+
+- **The JIT is irrelevant here.** The expensive fx nodes are native C++ operators, not kernels; the only kernel in
+  these graphs is the final `look` wrangle (0.1 ms to compile, 0.1 - 3 ms to run). JIT on and off were within noise.
+- **The chunk rule was the main inefficiency.** `fxBlur` 4.5x faster, `fxFluid` 2.2x, `fxGrow` 4.1x, `fxParticles` 2.2x,
+  `fxFlow` 3.7x, `nebula` 1.1x; the nodes that were already above 16k points gained little.
+- **`reactionDiffusion` stencil.** Its 110 x 110 grid was split into 3 chunks and every cell went through a branching
+  wrap function. The interior of each row now runs without wrapping (`__restrict` pointers, min/max instead of clamp)
+  with chunks of about `rows / (4 x threads)`: `fxReaction` went from 1474 to 1014 ms on one thread and from 483 to
+  270 ms on all threads, with identical output (the tests pass). It is still about 3.5 ns per cell, so the loop is
+  probably not fully vectorised; that was not investigated.
+- **Gas solver, red-black ordering (`redBlack` on `gasField`, `gasRedBlack` on `particles`, default off).** The
+  row-by-row Gauss-Seidel sweep has a dependency from each cell to the previous one; the two-colour sweep has none
+  inside a colour. Measured on `fxGas` copies at t = 1 (whole graph, ms, median of 3):
+
+  | `resolution` | off, 1 thread | on, 1 thread | on, all threads |
+  |---:|---:|---:|---:|
+  | 64 | 119 | 86 | 84 |
+  | 128 | 294 | 143 | 141 |
+  | 256 | 1017 | 375 | 351 |
+
+  So it is 1.4 - 2.7x faster even on one thread, and threads add little (7 % at 256, none below 16,384 cells where the
+  solver does not use the pool) because each sweep is too short to pay for waking the pool. The results differ slightly
+  from the row-by-row sweep (a test checks the smoke stays within 0.1 units), and are identical for any thread count.
+- **Still serial:** `gasField` and the gas coupling of `particles` (about 210 and 250 ms in
+  `fxGas` with `redBlack` off), `springs` (23 ms), `streamlines` (10 ms) and `colonize` (26 ms). The gas grids of
+  the example are only about 2,400 cells, so threads would add synchronisation cost; the time is the number of steps
+  (about 1,000 for 4 s) at roughly 0.2 ms each.
+- **Stateful simulations dominate.** `reactionDiffusion` (two 512 x 512 grids to t = 30), `gasField`, `boids`, `fluid`
+  and `particles` replay from t = 0 on a cold cook, 0.05 - 0.5 s each. These are the nodes a geometry cache would
+  help.
+- **Single-thread cost is unchanged.** `attribBlur` still costs about 3.8 ns per neighbour visit on one thread
+  (random memory access). Sorting the points by grid cell before blurring was tried and dropped: radius 3, 4 iterations,
+  `generate` input, median of 5 cooks of the blur node alone.
+
+  | Points | Threads | Unsorted (ms) | Cell-sorted (ms) |
+  |---|---|---|---|
+  | 200k | 1 | 313 | 313 |
+  | 200k | 8 | 53 | 69 |
+  | 1M | 1 | 1,681 | 1,606 |
+  | 1M | 8 | 373 | 358 |
+
+  The gain is at most 4 % at 1M points, and the extra grid build and copies make 200k points on 8 threads 30 % slower.
 
 ## What the numbers show
 

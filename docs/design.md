@@ -195,6 +195,314 @@ Network -> Node::cook(CookContext, inputs) -> GeometryHandle (immutable, shared)
   (`--svg`, `--points`), re-saves the graph (`--save`), prints the profile (`--profile`) and lists node types
   (`--types`).
 
+## Binary geometry files and other follow-ups from the format research
+Source: `best binary format for storing a node graph.docx` (a chat transcript, `D:\code\curvy\docs`). It compares FlatBuffers,
+Protocol Buffers, MessagePack and a custom memory-mapped layout, and concludes that for a C++ SIMD engine a custom flat
+layout wins: a header, offset tables instead of pointers, string interning, one contiguous float pool per attribute, 64-byte
+alignment and an XXHash64 checksum. The rest of the transcript drifts into a runtime arena, a stage scheduler, a profiler and
+AVX-512 masks. Its sample code has the same kind of mistakes as the earlier `jit-node-exec.docx` (camelCase asmjit calls, an
+invented "XXHash style" function), so the ideas are used and the code is not.
+
+### What the research gives us, and what it does not
+| Idea in the research | Verdict | Why |
+|---|---|---|
+| Custom flat binary layout (header, offset tables, aligned float blocks) | **Adopt, for geometry** | Cooked geometry is the only large float data and it is never saved today, so every slow simulation (boids, reactionDiffusion, a 2M-point `generate`) is recooked at every load. |
+| Binary format for the *graph* itself | **Measure first, probably skip** | A graph file holds parameters, not points. It is a few KB to a few hundred KB, hand-editable and diffable as JSON5, and `saveNetwork` is byte-stable. A binary graph would lose all that for no measurable gain unless the 1000-node stress graph shows parse time that matters (step 0). |
+| FlatBuffers / Protobuf / MessagePack | **Skip** | New third-party dependency (the project vendors only asmjit and json5), a schema compiler in the build, and none of them gives 64-byte-aligned padded SoA blocks, which is what `AttribArray` already is. The research itself ends with the custom layout. |
+| String table, offsets instead of pointers, per-section sizes | **Adopt** | Needed for a relocatable file anyway. |
+| XXHash64 checksum and bounds-checked header | **Adopt** | A truncated or corrupt cache must be rejected before any array is trusted. |
+| mmap zero-copy loading | **Later, only if measured** | Copying 100M floats takes tens of milliseconds, and zero-copy needs a non-owning `AlignedArray` and a copy-on-write detach. Not worth it before the plain loader exists and is measured. |
+| Append-only runtime arena and thread-local arenas | **Skip** | Already decided above ("Scratch-arena temporaries were dropped"): no cook path allocates large temporaries, and attributes are copy-on-write. |
+| Kahn-layered parallel cooking | **Already done** (`Network::cook`, level by level) | A refinement is in step 5. |
+| Chrome-tracing profiler, per-thread timelines | **Adopt (small)** | We keep per-node totals only; a timeline shows idle gaps in uneven graphs. Step 4. |
+| Parameter block, branchless `vcmpps` masks, AVX-512 opmask merge | **Already done** | `Kernel` parameter block; `select` is `vblendvps` on AVX2 and a k-register blend on AVX-512 (`vecEmitter.cpp`). |
+| Interned string ids (hashed strings) for string attributes | **Adopt later** | String attribute types are still open under "Attributes"; a per-geometry string table of int ids fits the file format's string table. Step 6. |
+
+### Implementation plan
+**Step 0, measure (before any code).** Time `loadNetwork` on the stress graph and on `nebula.json`, and time a cold cook of
+`reactionDiffusion` 512 x 512 at t=30, `boids` (900, 14 s) and `generate` 2M points. This decides how much a cache saves and
+whether a binary graph is worth discussing; record the numbers in `docs/performance.md`.
+*Done 2026-10-26* ("Load and cook" table there): a 2646-node graph loads in 31 ms, so no binary graph format; cold cooks are
+`reactionDiffusion` 3.5 s, `boids` 0.24 s, `nebula` 0.18 s, `generate` 2M only 6 ms, so the cache only pays for the simulations.
+
+**Step 1, the file format (`include/jitnodes/geo/geoFile.h`, `src/geo/geoFile.cpp`).** One little-endian file per geometry,
+extension `.jngeo`, no dependency:
+```
+Header (64 bytes): magic "JNGEO1\0\0", u32 formatVersion, u32 endianMarker 0x01020304, u32 flags, u32 sectionCount,
+                   u64 fileSize, u64 xxh64 of everything after the header, u64 reserved
+Section table:     {u32 id, u32 flags, u64 offset (64-byte aligned), u64 byteSize} per section
+Sections:          1 strings   u32 count, then u32 offsets + UTF-8 bytes
+                   2 counts    u64 pointCount, u64 primitiveCount
+                   3 prims     {u32 start, u32 count, u8 closed, u8 kind, pad} per primitive
+                   4 attribs   directory {u32 nameIndex, u8 class, u8 type, u64 count, u64 dataOffset, u64 dataBytes}
+                   5 details   {u32 nameIndex, f32 value}
+                   6 payload   each attribute exactly as stored in memory: padToLanes(count) elements, zero padded, 64-byte aligned
+```
+*Done 2026-10-26* as written, with one payload section (directory offsets relative to it); exact layout and checks in
+`geometryFiles.md`. `xxh64` is the public header `core/xxhash.h` so tests can recompute the checksum.
+Rules: every offset and size is checked against `fileSize` (and against hard caps for counts) before use; unknown section ids are
+skipped, an unknown `formatVersion` major is an error with a clear message; floats are copied bit for bit (NaN payloads and
+-0 included). `saveGeometry(const Geometry&) -> std::vector<uint8_t>` and `loadGeometry(const uint8_t*, size_t) -> Geometry`,
+plus `...File` variants. The loader fills `AlignedArray` storage with one `memcpy` per attribute, so attribute loading runs at
+memory bandwidth. XXH64 is implemented in `src/core/xxhash.h` (about 60 lines, checked against the published test vectors).
+Tests: round trip of attributes of both classes and types, details, closed and cubic primitives and an empty geometry; the
+result must be bit-identical (`sameGeometry`); a corpus of mutated files (flipped bytes, truncations, huge counts, offsets past
+the end) must all throw `std::runtime_error` and never read out of bounds.
+
+**Step 2, nodes and tools.** *Done 2026-10-26* (see `geometryFiles.md`), with two deviations: `--geo-in FILE` renders a file without a graph
+(`--svg`/`--png`) instead of replacing a node's input, and the node skips its input through a new `Node::needsInputs()` hook that
+`buildTask` consults. `fileCache` also accepts `$F` (it shares the expansion with `fileRead`), which step 3 builds on. GUI tests
+for the two new palette buttons are in the every-palette-button test; the "Save geometry..." menu item opens a native file dialog and
+has no GUI test.
+- `fileRead` (no input): `path`; loads the file. A `$F` / `$F4` token in the path is replaced by the frame number
+  (`round(time * fps)`), so a baked sequence plays back. It depends on the playhead only when the path has a token. A missing
+  or corrupt file is a cook error naming the path.
+- `fileCache` (one input): `path`, `mode` = `write` (cook the input and write it), `read` (ignore the input and read) or `auto`
+  (read when the file exists and is valid, else cook the input and write it). Passes the geometry through unchanged. In `read`
+  mode the input is not cooked at all, which is the point: an expensive simulation upstream is skipped. The file does not record
+  what produced it, so a stale cache is the user's to delete or re-write; the docs say so plainly.
+- `jitnodesCli --geo-out FILE` writes the cooked display node as `.jngeo`, and `--geo-in FILE` replaces the input of a named
+  node for testing. The editor's viewport context menu (today "Export..." for images, which picks PNG or JPEG by extension) gets a
+  "Save geometry..." item.
+- Palette buttons (the mockup, the converter, `editorWindow.cpp`, one GUI test entry each) and a docs section in `fx.md` or a new
+  `geometryFiles.md`.
+
+**Step 3, baked sequences and trail history.** `fileCache` in `record` mode writes `$F` frames as the playhead visits them, and a
+`fileRead` of earlier frames gives any node a history without cooking inputs at other times. A `trail` that reads frames
+`t - k * step` from a sequence is then a real recorded trail. This is the cheap alternative to "cook obstacle inputs at other
+times" for boids obstacles and trails; it needs the sequence to be baked once, so it suits finished sims, not interactive ones.
+*Done, with deviations:* no `record` mode, because `fileCache` with `$F` in the path already writes (`write`) or fills in (`auto`)
+each frame the playhead visits. The history is one new node, `fileTrail` (`path` with `$F`, `frames`, `step`, `fade`), which reads
+the earlier frames itself instead of wiring one `fileRead` per frame into `trail`. Boids obstacles still do not read history; they
+drift with `vx`/`vy`. No palette button yet (the palette is full), so `fileTrail` is added by name. Test:
+`fileTrailFollowsPointsThroughRecordedFrames`.
+
+**Step 4, trace export.** Record `{node, thread, start, end}` for each task in a pre-sized per-thread buffer (no lock on the
+hot path), `Network::writeTrace(path)` emits Chrome trace JSON (`chrome://tracing`, Perfetto), and `jitnodesCli --trace FILE`
+writes it. The profile table in the editor stays as it is. Test: the trace parses as JSON, every task appears once, and
+recording does not change any result.
+*Done, with one deviation:* events go into one vector behind a mutex, taken once per task (a task is a whole node cook, so the cost
+is negligible), not per-thread buffers. `Network::setTraceEnabled`, `traceJson`, `writeTrace`, `clearTrace`; a subnet records into
+its root network. Each event is a complete (`ph:"X"`) event with `args.chain` (fused chain length). Fused intermediate nodes get no
+event, only the task. Test: `traceRecordsEveryCookedTaskOnceAndChangesNothing`.
+
+**Step 5, scheduler refinement (only if step 4 shows barrier gaps).** `Network::cook` runs the tasks one level at a time, so a
+slow node in a level holds back unrelated branches in the next. Replace the level barriers by a dependency counter per task: a
+task becomes runnable when its last input finishes. Results do not depend on scheduling, so the existing thread-count tests
+keep working; compare traces before and after on an uneven graph (one slow `reactionDiffusion` branch next to many cheap nodes).
+*Measured before changing anything:* a graph with a 160 x 160 `reactionDiffusion` at 30 s (528 ms) next to two cheap
+`generate` -> `noise` -> `warp` -> `noise` -> `colorRamp` chains (200,000 points each, 8 threads) cooks in 576 ms. The trace shows
+`n1` and `n3`, the second level of the cheap chains, starting at 527 ms, the moment the slow node ends, and the rest of the
+chains running one level after another behind it. With a dependency counter they would overlap the slow node, so the cook would
+take about 530 ms: the gain is the length of the cheap critical path (here 48 ms, 8%), and it grows only when the cheap branches
+are long. Worth doing when a real graph has a slow node beside long branches; not urgent.
+
+**Step 6, string attributes (separate project, planned, not started).**
+
+*Representation.* `AttribType::string`: the data are `int32` ids into a string table that belongs to the attribute (a
+`shared_ptr<const std::vector<std::string>>` inside `AttribArray`, copied with it, so sharing and copy on write keep working).
+Id 0 is always the empty string. `ints()` accepts both `int32` and `string`, so the many `if float32 ... else ints()` copy sites
+keep working on the ids; what they must add is the table. Each table holds at most 2^24 - 1 strings, so an id is exact as the
+float a kernel converts it to.
+
+*Kernels need no new machinery for reading.* A kernel loads and stores a string channel exactly like an `int32` one (the type
+digit in `KernelSpec::signature()` already separates types, so the cache key needs only the new value `2`). Three rules keep it
+safe:
+- **Read-only in wrangles.** A store to a string channel is a compile error ("string attribute 'label' cannot be assigned"),
+  checked in `compileFor` where channel types become known. That closes the one way an id could leave its table.
+- **Comparison with a literal.** The wrangle lexer accepts a string literal only as an operand of `==` / `!=` whose other
+  operand is an attribute name: `if (label == "tree") ...`. It lowers to a comparison with a *parameter*, so the kernel is the
+  same for every geometry. `KernelSpec` gets `stringParams {paramIndex, channel, text}`; when a kernel is about to run, the id
+  of `text` in that channel's table (`-1`, never equal, when it is absent; `0` for `""`) is written into `params`.
+  `appendKernel` rebases `paramIndex` like it rebases the other params, so fused chains work, and the one helper that resolves
+  them is called from both the fused path in `Network::runTask` and the wrangle node's own cook.
+- **Other expressions treat the id as an integer** (it is one), so `label` in arithmetic is allowed and meaningless but harmless.
+
+*Where the table must travel* (the real cost, and a silent failure if one site is missed):
+- `Geometry::append` / `concat`: when the tables are the same object, copy as now; otherwise build the union table (new strings
+  appended in part order) and remap each part's ids while copying, on the pool like the other copies.
+- Sites that create an attribute from another's with `dst.attrib(cls, name, array.type())`: `topology.cpp` (two gathers),
+  `curveNodes.cpp` (`gatherPointAttribs`, ribbon/trail replication), `patternNodes.cpp` (`replicateAttributes`), `fileNodes.cpp`
+  (`fileTrail`), `scatter`/`copyToPoints` and the particle nodes that carry attributes. They switch to a new
+  `Geometry::attribLike(cls, name, src)` that creates the array with the same type and table. A `grep` for `array.type()` finds them.
+- A debug invariant, `Geometry::checkStrings()`: every id is below its table size. The stress test calls it on every node's
+  result, and a new test runs every registered node type over a geometry with a string attribute, so a missed site fails loudly.
+- `sameGeometry` compares string attributes by text, not by id (two geometries whose tables are ordered differently are the same
+  geometry), and the stress digests hash the text.
+
+*Producers and consumers.*
+- `attribCreate` gets `type = string` and a `text` parameter (constant fill, like `value`). Table: `["", text]`.
+- New node `attribString` (point or primitive class): sets a string attribute from a group, from the value of an int attribute
+  (`names = "rock, tree, bush"`, id i selects the i-th name), or from a pattern with `$P` (the point index): `"pt$P"`. These are
+  the cases a graph author needs; arbitrary text processing is out of scope.
+- `groupByString`: puts elements whose string equals, starts with or contains a text into a group (the wrangle comparison covers
+  equality, groups cover the rest).
+- SVG export writes a string attribute named `id` or `class` on a primitive as the element's attribute (escaped), which is the
+  first visible use and the reason to do this at all. The CLI attribute listing prints `string`.
+
+*Persistence.*
+- `.jngeo`: the attribute entry's `type` byte becomes 2, and a new section 7 (`stringTables`) holds, per string attribute, the
+  attribute entry index, a count, `u32 offsets[count + 1]` and the UTF-8 bytes. The loader checks that the first string is empty,
+  offsets ascend inside the section, the text is valid UTF-8, the count is below 2^24, and every id in the payload is below its
+  count (so a checksum-valid mutation cannot give an out-of-range id; the mutation test already covers this class). Version
+  becomes 1.1; an old reader rejects type 2 with its existing "bad attribute class or type", which is the right answer for data it
+  cannot represent. A file without string attributes is byte-identical to a 1.0 file except the minor version.
+- Inline geometry in graph JSON (`writeGeometry`): a `"strings"` / `"primStrings"` list of `{name, values: ["..."]}` with the text
+  itself, rebuilt into a table on load (first-use order, so the round trip is stable).
+
+*Order of work (about two days, mostly the sites and tests).*
+1. `AttribType::string`, the table in `AttribArray`, `attribLike`, `append`/`concat` remap, `checkStrings`, `sameGeometry`.
+   Tests: copy-on-write keeps the table, union and remap of unlike tables, a table-less string attribute is rejected.
+   *Done* (the open questions were taken as planned: one table per attribute, wrangles compare with literals only). Details: `StringTable`
+   (strings plus a hash index) is shared like the data and cloned before it changes; `AttribArray::mergeTable` returns the id remap and
+   `copyIds` applies it, so `concat` merges the tables sequentially and copies in parallel; kernels treat `string` as `int32` through
+   `isIntegerStorage`, and `compileFor` rejects a store to a string channel. Until steps 4 and 5, saving a string attribute to `.jngeo`
+   or graph JSON throws instead of dropping it silently. Tests: `stringAttributeTablesCopyOnWriteAndStartWithTheEmptyString`,
+   `stringAttributesKeepTheirTextWhenGeometriesAreMerged`, `stringAttributesAreReadOnlyInKernels`,
+   `stringAttributesAreNotSavedUntilTheFormatsKnowThem`.
+2. Update every site in the list above; stress test calls `checkStrings`; the every-node-type test.
+   *Done, with one deviation:* the seven sites (`gatherPoints` and `transferPrimAttribs` in `topology.cpp`, two in `curveNodes.cpp`,
+   `replicateAttributes`, springs output, `fileTrail`) use `attribLike`; the other nodes copy whole geometries, which keep their
+   tables. `everyNodeTypeKeepsStringAttributesConsistent` feeds a geometry with a point and a primitive string attribute through
+   every registered node type (default parameters; nodes that cannot cook that way are skipped) and checks `checkStrings` plus that
+   every text is one of the input's. Putting one site back to `attrib(..., array.type())` makes it fail. The stress test only gained
+   string support in its digest: its graphs have no string source yet, so it calls `checkStrings` once step 5 adds `attribCreate string`.
+   A node that reads a string attribute as a float (for example `colorRamp` on `label`) fails with the generic "attribute type mismatch".
+3. *Done* (140 tests, ASan clean): `KernelSpec::stringParams`, `resolveStringParams` (kernel.h) called from `KernelNode::cook` and the fused path
+   in `Network::runTask`, `appendKernel`/`composeKernels` rebase them, `WrangleNode` pads its params to `paramCount`. Documented in
+   `wrangle.md` ("String attributes", grammar, limits). One deviation: `stringParams` is not in `signature()` because the code is the same
+   whatever the text, and the test checks that changing a literal does not compile again. Original plan text:
+   Wrangle: literal comparison, `stringParams`, read-only check, fusion rebasing, interpreter parity. Tests in the style of
+   `docs/wrangle.md` (fused and unfused agree; a literal missing from the table matches nothing; `""` matches id 0).
+4. *Done* (145 tests, ASan clean): `.jngeo` 1.1 with section 7 and type byte 2, graph JSON `"strings"`/`"primStrings"`, strict UTF-8 check
+   (`core/utf8.h`) on save and load. The whole table is stored, so a loaded geometry saves to the same bytes; JSON keeps only the text and
+   rebuilds the table in first-use order. Tests: `geoFileKeepsStringAttributesWithTheirTables`, `geoFileRejectsStringDataThatDoesNotFitItsTable`
+   (patches single table fields and ids), the truncation/byte-flip/valid-checksum tests repeated on a string file, `stringTextThatIsNotUtf8IsNotSaved`,
+   `graphJsonKeepsStringAttributesOfInlineGeometry`. Format described in `geometryFiles.md`. Original plan text:
+   `.jngeo` section 7 and JSON, with the truncation, byte-flip and valid-checksum mutation tests extended to string files.
+5. *Done* (147 tests, ASan clean, stress `dag`/`dagmath`/`edits`/`subnets` pass): `attribCreate type=string` with `text`, `attribString`
+   (`pattern`/`ints`/`group` sources) and `groupByString` in `src/graph/stringNodes.cpp`, SVG `id`/`class` from primitive string attributes,
+   no palette button (by name only), docs in the new `strings.md`. The stress DAG gives every source a `label` string attribute (own table, so
+   merges remap) and mixes `attribString` (ints source, bounded table) and `groupByString` in; `leafDigests` calls `checkStrings`. Tests:
+   `stringNodesCreateSetAndGroupAttributes`, `svgExportWritesStringAttributesAsIdAndClass`. Original plan text:
+   `attribCreate string`, `attribString`, `groupByString`, SVG `id`/`class`, palette (full: by name only), docs (`wrangle.md`,
+   `geometryFiles.md`, `fx.md` or a new `strings.md`).
+
+*Decisions for the user:*
+- Is the SVG `id`/`class` use enough to justify it, or is there another consumer (labels in the viewport, group names from files)?
+- Wrangle may only compare with literals, never assign or concatenate. Is that the right limit? (Assignment would need a table
+  that can grow while a kernel runs, which breaks the "kernel is the same for every geometry" property.)
+- Keep the table per attribute (above) or one table per geometry shared by all string attributes? Per attribute is simpler to
+  copy and remap; per geometry saves memory only when several attributes repeat the same strings.
+
+**Order and effort.** 0 and 1 first (a day, mostly tests), then 2 (a day with palette and docs), 4 (half a day), 3 (half a day on
+top of 2), 5 and 6 only on evidence. Nothing here changes the JSON graph format, existing graphs or existing node behaviour.
+
+**Risks.** A cache that does not know its input changed gives stale pictures (mitigation: `auto` is opt-in, the node shows the
+file's age in its status text, and the docs warn); files from a newer build are rejected, never half-read; `.jngeo` carries no
+asset or node information, so it is a data file, not a replacement for graph files.
+
+## Next batch (planned 2026-10-26, nothing started)
+Four items asked for after the format work, plus a research pass for more nodes. Each is one commit; order below is the recommended one.
+
+**A. Mirror / symmetry node (`mirror`, half a day, no engine change).** *Done (149 tests, ASan clean, uncommitted):* `symmetry()` in `topology.cpp`,
+node in `topologyNodes.cpp`, tests `symmetryMirrorsRotatesAndKeepsAttributes` and `mirrorNodeReadsItsParametersAndRejectsABadMode`. Deviations: no
+`weld`, because a primitive owns a contiguous point range, so two primitives cannot share a point; angles are in degrees (the mirror line's direction, 90 =
+vertical through the origin); `folds` is 1..64; with `keepOriginal` off and one fold the result is empty. Parameters: `mode`, `originX/Y`, `angle`,
+`folds`, `keepOriginal`, `vectors`. No palette button yet (item B). Original plan: Reflection or rotation copies of the input in one node.
+- `mode = mirror | rotate | kaleidoscope`. `mirror`: reflect across a line through (`originX`, `originY`) at `angle` degrees, keep the
+  original (`keepOriginal`) and append the reflected copy. `rotate`: `folds` copies at 360/folds degrees (n-fold symmetry). `kaleidoscope`:
+  `folds` wedges, each rotated copy followed by its mirror (dihedral symmetry D_n, what mandala tools do).
+- Built on the existing gather/concat path (`Geometry::concat`), so every attribute, string table and group is carried; only vector pairs
+  change: `vectors = "v"` lists base names whose `.x/.y` (and the `vx`/`vy` pair) are reflected or rotated with the points (default `vx/vy`).
+  Primitives keep their point order (a reflection is affine, cubic segments stay valid); `weld` (tolerance, default 0) merges the points
+  that land on the axis so a mirrored open curve becomes one closed outline when its end points sit on the axis.
+- Tests: reflecting twice gives the input back; `rotate` with folds 1 is the identity; point and primitive counts; `vx`/`vy` reflected;
+  string attributes survive; a symmetric result is invariant under its own mirror (sorted point set).
+
+**B. Palette room for the new nodes.** *Done (uncommitted; editor builds, `--check` 94 views, editor model tests 52, library tests 150; the GUI tests were
+NOT run):* rows are 16 px (20 rows of 16 + 1 = 340 px, the same height as 18 rows of 18 + 1), four buttons added (`attribString`, `groupByString` labelled
+`groupByStr`, `mirror`, `fileTrail`), so 39 buttons end at y = 486 instead of 488 and everything below moved up 2 px. The search idea became a small
+toolbar field `addByName` (Enter adds the type named exactly, or by a unique prefix or substring; ambiguity and misses go to the status line) because a
+results list has no vertical room in the palette; it also reaches types without a button and assets. GUI test additions (not run): the four buttons in
+`test_every_fx_palette_button_adds_its_node`, `test_add_node_by_name_takes_exact_names_and_unique_prefixes`. Original analysis: 35 buttons in 18 rows of 18 px, the last
+ends at y = 623 of 640. Options: (1) a third column (costs width of the side panel, buttons need shorter labels); (2) 16 px rows (about 9% more
+rows, still readable, gives 2 rows); (3) a scrolling list (newui has scroll view classes, to be checked against the palette's `FlexLayout`);
+(4) a type-to-search "Add node" box (Tab or a field above the list) that lists every registered type, so the palette no longer has to be
+complete. Recommendation: (4) plus the four buttons squeezed in with option (2); (4) also makes the asset library and future nodes reachable
+without a layout change. Steps: edit `editor/mockups/mainWindow.html`, reconvert with `html-mockup-to-newui`, extend the palette table in
+`editorWindow.cpp`, add the buttons to the every-palette-button GUI test. GUI tests need the user's go-ahead (they send input).
+
+**C. Boids obstacles cooked at other times.** *Done (150 tests, ASan clean, uncommitted):* both parts. The restart check now compares obstacle
+*content* (`obstacleContent`: x, y, radius, vx, vy) instead of geometry handles, so re-cooks that give the same obstacles no longer restart the flock;
+`obstacleTime = sampled` is option 1 (private copy of the graph made with `saveNetwork`/`loadNetwork`, upstream chain cooked at each step time,
+fingerprint = `copyNode` text of the upstream nodes). Details and limits in `fx.md`. Test `boidsSampledObstaclesFollowAMovingInputAsAPureFunctionOfTime`
+(jump = playing up to it = going back and forward; an edit upstream changes the run; checked to fail with `start`). Not done: sampling every k-th step
+with interpolation (cost control), a check that the copy agrees with the real input at the current time. Original analysis: the real defect today: an obstacle input that depends on the playhead gets a new
+`GeometryHandle` every frame, `BoidsNode::cook` compares handles (`st.obstacleSources != obstacleSources`), so the whole flock re-simulates
+from `startTime` each frame, and all earlier steps see the obstacle at the *current* time. Obstacles that move through `vx`/`vy` attributes work
+(`placeObstacles`) because their input is static. Options:
+1. *Sampler clone* (pure function of time, what the node promises): the boids node keeps a private `Network` built from the upstream
+   sub-graph of its obstacle inputs (copied through the snapshot machinery of `history.cpp`), set to the step's time and cooked per step (or per
+   few steps with interpolation). Needs `Network::cookAt`-style isolation; cost is the upstream cook per sampled step. Risks: subnet external
+   inputs, assets, dirty tracking when the upstream is edited; about 1.5 days.
+2. *Recorded snapshots* (cheap, not pure): remember `{time, obstacle positions}` each time the node cooks and interpolate between them for the steps
+   in between. Exact when the playhead advances frame by frame, approximate on jumps, and the result depends on the visit history, which breaks
+   "same time, same picture". Only acceptable as an opt-in.
+3. *Bake it* (already available, `fileCache` with `$F` and `fileRead`): documented in step 3 above; no engine change.
+Recommendation: first fix the restart-every-frame defect by comparing obstacle *content* (point count, radii) instead of handle identity when the
+obstacles depend on time, then implement option 1 behind a parameter `obstacleTime = start | sampled` so existing graphs do not change. Ask the user before
+choosing option 2.
+
+**D. Research pass: further nodes** (web, standard search, 2026-10-26; sources listed at the end). Existing coverage is generate, scatter, noise,
+warp, colorRamp, relax, attribBlur, wave, attractor, flow, voronoi, lloyd, particles (gravity, drag, noise, attract, swirl, repel), boids, springs,
+reactionDiffusion, lsystem, curveSample, ribbon, trail, file nodes, string nodes. Candidates, ranked by value for the effort, with the missing piece:
+1. **Gas / velocity field (`gasField`)** (*done with 2, 156 tests, ASan clean, uncommitted:* `src/graph/gasSolver.{h,cpp}` (Stam + vorticity confinement + buoyancy, serial, deterministic), node
+   `gasField` in `gasNodes.cpp` (sources from input points or a built-in nozzle, grid output with `density`, `temperature`, `vx`, `vy`, `speed`), palette button, `Node::inputsOptional()`
+   so a variable-input node can cook with nothing connected; example `fxGas.json`; details in `fx.md`. Not done: obstacles inside the grid, moving sources (needs the
+   sampling of item C), a separate "field only" output mode, 3D). Original: the "blow gas into a particle sim" request. A 2D grid solver after Stam's *Stable Fluids* with
+   Fedkiw's vorticity confinement: semi-Lagrangian advection, implicit diffusion, pressure projection (Jacobi or red-black Gauss-Seidel, 20-40
+   iterations), sources from input points (`density`, `temperature`, velocity from `vx/vy`), buoyancy from temperature, vorticity confinement strength
+   to restore the curl that semi-Lagrangian damping removes, dissipation, optional obstacle points. Stateful and cached like `reactionDiffusion`
+   (a pure function of time via stepping). Outputs: a point grid with `density`, `temperature`, `vx`, `vy` (so `colorRamp`/`render` show smoke),
+   and a second mode that outputs nothing but the field for the next node. Houdini's equivalent is the gas microsolver family (Gas External Forces,
+   Gas Advect, Gas Turbulence, Gas Vortex Confinement, Gas Disturb).
+2. **Field force on particles** (*done as the single-node version the text below recommends as the first one:* `particles` with `gas = 1` runs its own gas in the same stepped
+   state: `gasInfluence` drag to the gas velocity, `gasEmit`/`gasPush` for the reverse coupling, `gas` output attribute; `boids` has no gas coupling yet, and a gas shared between a
+   `gasField` node and `particles` needs the time-sampling answer of item C). Original: **`fieldForce`, or an optional second input on `particles` and `boids`**: samples the gas grid's velocity at each
+   particle (bilinear) and applies it as a force or drag-to-velocity (`influence`, `drag`), which is how Houdini couples POP and gas (Field Force,
+   Advect by Volume). The reverse coupling (particles inject velocity into the grid) as an option `emit`. This is the piece that makes "blow gas into
+   a particle sim" work; it needs the same time-sampling answer as item C for a grid that is itself time-stepped, so do C's sampler or let `particles`
+   and `gasField` share one stepped state (a single `gasParticles` node is the simpler first version).
+3. **More forces on `particles`** (*done, 152 tests, ASan clean, uncommitted:* `vortex*`, `jet*` (a fan rectangle), `windX/Y` + `windDrag` (drag towards a wind velocity, no
+   turbulence: `noiseForce` already adds that), `follow`/`followPull` along guide curves and `collide` against them; the guides are extra inputs (`particles` now has
+   variable inputs), brute force over segments, content-compared so a re-cook does not restart the run; tests `particleVortexJetAndWindForcesMoveParticlesAsDescribed`,
+   `particlesFollowAndCollideWithGuideCurves`; moving guides and a spatial grid for many segments are not done; details in `fx.md`). Original: vortex (point vortex with falloff), directional wind with turbulence, drag relative to a fan/jet region (Houdini's Fan,
+   Magnet and Drag forces), a curve-following force (flow along a polyline using `curveSample`), a "collide with polylines" boundary. Small parameters
+   on the existing node, each testable by analytic motion.
+4. **Position-based fluid (`fluid`)** (*done, uncommitted:* `src/graph/fluidNodes.cpp`; Jacobi solver over fixed neighbour lists, `tension` lets under-density through instead of the paper's artificial pressure (which pushes at rest too once C is clamped), per-iteration displacement limit; test `fluidStaysAtRestSettlesInTheBoxAndIsDeterministic`; example `fxFluid.json`; details in `fx.md`). Original: particles with a density constraint (Macklin and Müller-Fischer, *Position Based Fluids*): neighbour grid (the
+   `PointGrid` of boids), iterative lambda solve, artificial pressure for surface tension, XSPH viscosity, vorticity confinement as a velocity
+   post-process. Reuses the stepping and boundary code of `particles`. About 2 days; gives splashes and a "liquid" look nothing else here has.
+5. **Differential growth (`grow`)** (*done, uncommitted:* `src/graph/generativeNodes.cpp`; repel/attract/smooth/split as below, Jacobi update so thread-count independent, stepped and cached like `particles`; outputs `age`, `u`, `chain`; input attributes are not carried; test `growSplitsLongSegmentsAndPushesNodesApart`; example `fxGrow.json`; details in `fx.md`). Original: polylines whose nodes repel neighbours, attract their chain neighbours and midpoint, and split long
+   segments (the Spaghetti Bones / Blender geometry-nodes setups use exactly these three forces); stepped like `springs`. Strong generative-art
+   payoff, reuses `PointGrid` and the polyline subdivision of `resample`.
+6. **Space colonization (`colonize`)** (*done, uncommitted:* `generativeNodes.cpp`, test `colonizeGrowsBranchesToEveryAttractor`, example `fxColonize.json`, `fx.md`; no tropism, not time dependent). Original: grows branching curves towards attractor points (leaf venation, trees); output polylines with a `depth`
+   attribute for `ribbon` widths. Complements `lsystem`.
+7. **Flow-field lines (`streamlines`)** (*done, uncommitted:* the same file; `flow` already existed for fixed-length curl/angle trails, so this node is the spaced, variable-length version: Jobard-Lefer spacing (`separation`, `endRatio`), bounds, `minSpeed`, and a second input that is a grid with `vx`/`vy` (the `gasField` output); serial; test `streamlinesFollowTheFieldKeepTheirSpacingAndReadAGasGrid`; example `fxStreamlines.json`; moving fields are sampled at the cooked time only). Original: integrates polylines through a vector field (`noise` curl, or the gas field), Tyler Hobbs's flow-field
+   technique with spacing control so lines do not crowd. `trail` is a straight streak; this is the curved, field-driven version.
+8. Smaller: *`smooth` (Laplacian/Taubin; Chaikin is `subdivide`), `offset` (`ribbon` is the stroke), `sort`, `join`, `bevel` and `polar` are done,
+   uncommitted: `src/graph/shapeNodes.cpp`, `shapes.md`, six tests; no palette buttons (use `addByName`).* `twist`, `lattice`, `peak` and `switch` are done too (`switch` through the new `Node::selectsInput()` hook, so unselected inputs are never cooked). `foreach` (pieces by primitive, attribute, point; copies; feedback) and `solver` (state carried from step to step, restarts like `particles`) are done too, uncommitted: both are `SubnetNode`s (`src/graph/loopNodes.cpp`, shared `SubnetNode::cookInner`, `Node::publishFloat` for `parent.iteration` / `parent.step`), `extractPrimitives` / `extractPoints` in `topology.cpp`, `loops.md`, five tests; they cook serially and have no palette buttons (use `addByName`, then enter the node to build the child graph). Item 8 is complete.
+Suggested order after A to C: 3 (cheap), then 1 with 2 together as one project (the gas and the coupling), then 5 and 7, then 4.
+
+Sources: SideFX Houdini documentation on [Gas External Forces](https://sidefx.com/docs/houdini/nodes/dop/gasexternalforces.html) and
+[directing particle fluids](https://sidefx.com/docs/houdini/fluid/directingparticlefluid.html); Macklin and Müller-Fischer,
+[Position Based Fluids](https://history.siggraph.org/?p=108378); the Cornell [CS 5643 PBF assignment](https://www.cs.cornell.edu/courses/cs5643/2014sp/a1PositionBasedFluids/index.html)
+and Northwestern [assignment 3](https://users.cs.northwestern.edu/~sco590/cs140/assignment3.html) (vorticity confinement after Fedkiw et al.);
+[differential growth in Geometry Nodes](https://www.blendernation.com/2023/07/25/differential-growth-in-geometry-nodes/) and the
+[JavaScript walkthrough](https://medium.com/@jason.webb/exploring-2d-differential-growth-with-javascript-1843fd51b0ce); Tyler Hobbs on
+[flow fields](https://www.tylerxhobbs.com/words/flow-fields). Stam's *Stable Fluids* (1999) was not in the results and is cited from memory.
+The search did not return a full list of POP force nodes or an SPH node-graph reference, so items 3 and 4 follow general knowledge of Houdini and the PBF paper.
+
 ## Threading and profiling
 - `ThreadPool::parallelFor(count, fn)`: the caller takes part and idle workers help, so it can be called from inside a
   pool task (nested parallelism) and with zero workers (runs inline). The first exception is rethrown once all indices
@@ -323,6 +631,11 @@ Remaining 3D work: indexed polygon/triangle primitives (vertex indirection), mat
 8. **Persistence and tooling (first slice done)**: see "Persistence and tooling" below. Subnets and assets: see "Subnets and
    assets". Done: diff-based undo, asset versions, `updateAssetInstances` and migration hooks. Still open: a loadable
    plugin ABI, the editor front end (newui, see "Editor UI"), Blend2D output.
+9. **Binary geometry files (planned)**: see "Binary geometry files and other follow-ups from the format research" above:
+   measure, `.jngeo` format with checksum, `fileRead` / `fileCache` nodes and CLI, baked sequences, trace export, then a
+   dependency-counting scheduler and string attributes if the evidence asks for them. *Done except the scheduler (measured, 8%,
+   deferred).* The follow-on batch (mirror node, palette room, boids obstacles at other times, further nodes such as a gas solver and
+   particle coupling) is planned in "Next batch" above.
 
 ## Editor UI
 - Decision: the editor is built on [newui](https://github.com/jimcrafton/newui) (checkout `D:\code\newui`; Win32,
