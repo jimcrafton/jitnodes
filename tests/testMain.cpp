@@ -599,6 +599,28 @@ TEST(geometryParametersSaveSnapshotAndPaste) {
     CHECK(pasted.size() == 1 && sameGeometry(*net.cook(pasted[0]), *authoredCurve(0.0f)));
 }
 
+TEST(geometryNodeOutputsItsStoredGeometryAndFollowsEdits) {
+    Network net;
+    NodeId src = net.addNode("geometry");
+    NodeId flat = net.addNode("flatten");
+    net.connect(src, flat);
+    CHECK(net.cook(src)->pointCount() == 0);
+    net.node(src).setGeometryParam("geometry", authoredCurve(0.0f));
+    CHECK(sameGeometry(*net.cook(src), *authoredCurve(0.0f)));
+    const GeometryHandle flatBefore = net.cook(flat);
+    CHECK(flatBefore->pointCount() > authoredCurve(0.0f)->pointCount());
+
+    net.node(src).setGeometryParam("geometry", authoredCurve(2.0f));
+    CHECK(sameGeometry(*net.cook(src), *authoredCurve(2.0f)));
+    CHECK(!sameGeometry(*flatBefore, *net.cook(flat)));
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    NodeId again = loaded.nodeIds()[0];
+    for (NodeId id : loaded.nodeIds()) if (loaded.node(id).typeName() == "geometry") again = id;
+    CHECK(sameGeometry(*loaded.cook(again), *authoredCurve(2.0f)));
+}
+
 TEST(flattenNodeAndSvgExportOfCurves) {
     Network net;
     NodeId circle = net.addNode("circle");
