@@ -119,7 +119,7 @@ json5::value writeAssets(json5::builder& b, const std::set<std::string>& types) 
     return b.pop();
 }
 
-json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs = true);
+json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs = true, bool withGraph = true);
 
 // {"points": n, "prims": [[start, count, closed, kind]], "attribs"/"primAttribs": [{"name": n, "values": [floats]}], "ints"/"primInts": the same
 // with integers, "detail": {name: value}}; empty sections are left out. Attribute names are values, not keys: the JSON5 reader rejects keys
@@ -207,7 +207,7 @@ const Node* defaultNode(const std::string& type) {
     return it->second.get();
 }
 
-json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs) {
+json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs, bool withGraph) {
     const Node& n = net.node(id);
     b.push_object();
     b["id"] = json5::value(static_cast<double>(id));
@@ -288,7 +288,7 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         b["inputs"] = b.pop();
     }
 
-    if (const Network* child = n.childNetwork(); child && !n.isAssetInstance()) {
+    if (const Network* child = n.childNetwork(); withGraph && child && !n.isAssetInstance()) {
         b.push_object();
         writeGraphFields(b, *child, false);
         b["graph"] = b.pop();
@@ -785,18 +785,21 @@ GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous)
             auto it = previous->nodes.find(id);
             if (it != previous->nodes.end()) old = &it->second;
         }
-        // A subnet's text includes its child graph, whose edits do not touch the container node.
-        s.revision = n.childNetwork() == nullptr ? n.revision() : 0;
+        // Edits inside a subnet do not touch the container node, so its contents are snapshotted separately (and are not part of its text).
+        const Network* child = n.childNetwork();
+        const bool ownsChild = child != nullptr && !n.isAssetInstance();
+        s.revision = child != nullptr && !ownsChild ? 0 : n.revision();
         if (old && s.revision != 0 && old->revision == s.revision) {
             s.text = old->text;
         } else {
             json5::document doc;
             json5::builder b(doc);
-            writeNode(b, net, id, false);
+            writeNode(b, net, id, false, !ownsChild);
             std::string text = dump(doc);
             if (old && *old->text == text) s.text = old->text;
             else s.text = std::make_shared<const std::string>(std::move(text));
         }
+        if (ownsChild) s.child = std::make_shared<const GraphSnapshot>(snapshotNetwork(*child, old ? old->child.get() : nullptr));
         snap.nodes.emplace(id, std::move(s));
     }
     return snap;
@@ -905,10 +908,22 @@ bool sameMeta(const NodeSnapshot& a, const NodeSnapshot& b) { return a.type == b
 
 }  // namespace
 
+bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b);
+
+namespace {
+
+bool sameChild(const NodeSnapshot& a, const NodeSnapshot& b) {
+    if (a.child == b.child) return true;
+    return a.child && b.child && sameGraph(*a.child, *b.child);
+}
+
+}  // namespace
+
 bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b) {
     if (a.display != b.display || a.fps != b.fps || a.nodes.size() != b.nodes.size()) return false;
     for (auto ia = a.nodes.begin(), ib = b.nodes.begin(); ia != a.nodes.end(); ++ia, ++ib) {
-        if (ia->first != ib->first || !sameMeta(ia->second, ib->second) || ia->second.inputs != ib->second.inputs || !sameText(ia->second, ib->second))
+        if (ia->first != ib->first || !sameMeta(ia->second, ib->second) || ia->second.inputs != ib->second.inputs || !sameText(ia->second, ib->second) ||
+            !sameChild(ia->second, ib->second))
             return false;
     }
     return true;
@@ -931,7 +946,7 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
             net.removeNode(id);
             toAdd.push_back(id);
             ++stats.rebuilt;
-        } else if (!sameText(c, it->second)) {
+        } else if (!sameText(c, it->second) || !sameChild(c, it->second)) {
             toUpdate.push_back(id);
         }
     }
@@ -951,13 +966,18 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
         parse(t, doc);
         net.addNodeWithId(id, t.type, t.name);
         applyNodeBody(net.node(id), doc, true);
+        if (t.child) restoreSnapshot(*net.node(id).childNetwork(), *t.child);
     }
     for (NodeId id : toUpdate) {
-        json5::document doc;
-        parse(target.nodes.at(id), doc);
+        const NodeSnapshot& t = target.nodes.at(id);
         Node& n = net.node(id);
-        for (const std::string& name : n.floatNames()) n.clearAnimation(name);
-        applyNodeBody(n, doc, false);
+        if (!sameText(current->nodes.at(id), t)) {
+            json5::document doc;
+            parse(t, doc);
+            for (const std::string& name : n.floatNames()) n.clearAnimation(name);
+            applyNodeBody(n, doc, false);
+        }
+        if (t.child) restoreSnapshot(*n.childNetwork(), *t.child, current->nodes.at(id).child.get());
         ++stats.updated;
     }
 

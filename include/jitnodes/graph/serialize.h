@@ -52,9 +52,12 @@ void unlockAssetInstance(Network& net, NodeId id);
 // Structural snapshots of a graph's root level for undo: unchanged nodes share their serialized text with the
 // previous snapshot, and restoring only touches the nodes that differ, so caches of the others survive. Subnet
 // contents are part of the subnet node's text and are reloaded when it changes.
+struct GraphSnapshot;
+
 struct NodeSnapshot {
-    std::shared_ptr<const std::string> text;  // the node's JSON without its wiring
-    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (container nodes)
+    std::shared_ptr<const std::string> text;  // the node's JSON without its wiring (and without a subnet's child graph, see child)
+    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (asset instances)
+    std::shared_ptr<const GraphSnapshot> child;  // a subnet's contents, snapshotted the same way so an edit inside costs what an edit at the root does
     std::string type;
     std::string name;
     std::vector<std::string> spare;

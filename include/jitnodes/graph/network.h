@@ -137,6 +137,7 @@ public:
     void replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs = nullptr);
     Node& node(NodeId id);
     const Node& node(NodeId id) const;
+    bool hasNode(NodeId id) const { return slots_.count(id) != 0; }
     NodeId findNode(const std::string& name) const;
     // A name no node of this network has: `base` itself, or its letters followed by the smallest free number.
     std::string uniqueName(const std::string& base) const;

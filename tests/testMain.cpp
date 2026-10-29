@@ -1,5 +1,6 @@
 ﻿#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -1665,6 +1666,73 @@ TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
     const uint64_t revision = net.node(other).revision();
     net.node(other).setPosition(12.0f, 34.0f);
     CHECK(net.node(other).revision() == revision);
+}
+
+TEST(snapshotsOfSubnetsRestoreThemInPlace) {
+    SubnetRig rig;
+    Network& net = rig.net;
+    Network& inner = rig.inner();
+    const NodeId nestedId = inner.addNode("subnet", "nested");
+    Network& nested = subnetOf(inner, nestedId).network();
+    const NodeId deep = nested.addNode("transform", "deep");
+
+    const GraphSnapshot start = snapshotNetwork(net);
+    const GraphSnapshot fresh = snapshotNetwork(net);
+    CHECK(sameGraph(start, fresh));
+
+    inner.node(rig.xf).setFloat("ty", 3.0f);
+    nested.node(deep).setFloat("tx", 8.0f);
+    const NodeId extra = inner.addNode("transform", "extra");
+    inner.connect(rig.in, extra);
+    const GraphSnapshot edited = snapshotNetwork(net, &start);
+    CHECK(!sameGraph(edited, start));
+    CHECK(sameGraph(edited, snapshotNetwork(net)));
+
+    const uint64_t xfRevision = inner.node(rig.xf).revision();
+    restoreSnapshot(net, start, &edited);
+    CHECK(sameGraph(snapshotNetwork(net), start));
+    CHECK(inner.nodeIds().size() == 3 && nested.node(deep).baseFloat("tx") == 0.0f);
+    CHECK(&subnetOf(net, rig.sub).network() == &inner);  // the child network object survives, only the differing nodes change
+    CHECK(inner.node(rig.xf).revision() != xfRevision);
+
+    restoreSnapshot(net, edited, &start);
+    CHECK(sameGraph(snapshotNetwork(net), edited));
+    CHECK(inner.node(rig.xf).baseFloat("ty") == 3.0f && nested.node(deep).baseFloat("tx") == 8.0f && inner.nodeIds().size() == 4);
+
+    // A subnet that is deleted and brought back by undo returns with its contents.
+    const GraphSnapshot withSub = snapshotNetwork(net);
+    net.removeNode(rig.sub);
+    const GraphSnapshot without = snapshotNetwork(net, &withSub);
+    restoreSnapshot(net, withSub, &without);
+    CHECK(sameGraph(snapshotNetwork(net), withSub));
+    CHECK(subnetOf(net, rig.sub).network().nodeIds().size() == 4);
+}
+
+TEST(snapshotsOfBigSubnetsCostAboutAsMuchAsFlatOnes) {
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point s) { return std::chrono::duration<double, std::milli>(Clock::now() - s).count(); };
+    for (int mode = 0; mode < 2; ++mode) {
+        Network net;
+        Network* target = &net;
+        if (mode == 1) target = &subnetOf(net, net.addNode("subnet", "group")).network();
+        std::vector<NodeId> ids;
+        for (int i = 0; i < 2000; ++i) ids.push_back(target->addNode("transform"));
+        for (int i = 0; i < 2000; ++i) net.addNode("transform");
+        const GraphSnapshot base = snapshotNetwork(net);
+        const GraphSnapshot before = snapshotNetwork(net, &base);
+        auto t = Clock::now();
+        target->node(ids[1000]).setFloat("tx", 5.0f);
+        const GraphSnapshot after = snapshotNetwork(net, &before);
+        const double edit = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, before, &after);
+        const double undo = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, after, &before);
+        const double redo = since(t);
+        CHECK(target->node(ids[1000]).baseFloat("tx") == 5.0f);
+        std::printf("  snapshot cost, 2000 nodes %s: edit+snapshot %.2f ms, undo %.2f ms, redo %.2f ms\n", mode ? "in a subnet" : "flat", edit, undo, redo);
+    }
 }
 
 TEST(subnetsRoundTripThroughFiles) {
