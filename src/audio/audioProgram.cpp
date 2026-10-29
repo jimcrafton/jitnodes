@@ -1,10 +1,14 @@
 #include "jitnodes/audio/audioProgram.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 
+#include "jitnodes/audio/audioStep.h"
 #include "jitnodes/jit/fuse.h"
 
 namespace jitnodes {
@@ -37,13 +41,63 @@ struct AudioProgram::Branch {
     SourcePrefixes sources;
 };
 
+// Everything one kernel stage needs at run time.
+struct AudioProgram::Stage {
+    std::shared_ptr<const Kernel> kernel;
+    Geometry work;                     // owns the channel buffers the kernel runs on
+    std::vector<Geometry> sources;     // never written after compile; a step's source is overwritten through its buffer instead
+    std::vector<void*> channels;
+    std::vector<const void*> restore;  // per channel: copy restored each block, null = zeroed
+    std::vector<const float*> outputs;
+    std::vector<ParamRange> ranges;
+    std::vector<float> params;
+    size_t paddedBytes = 0;
+
+    void run(size_t blockSize) {
+        for (size_t c = 0; c < channels.size(); ++c) {
+            if (restore[c]) std::memcpy(channels[c], restore[c], paddedBytes);
+            else std::memset(channels[c], 0, paddedBytes);
+        }
+        kernel->run(channels.data(), params.data(), blockSize);
+    }
+};
+
+struct AudioProgram::StepRun {
+    NodeId node;
+    std::unique_ptr<AudioStep> step;
+    std::vector<float> params;
+    StateBlock* state = nullptr;
+    const float* src = nullptr;
+    float* dst = nullptr;
+    size_t count = 0;
+    float* tap = nullptr;  // fbSink: the block is also copied here
+
+    void run() {
+        std::memcpy(dst, src, count * sizeof(float));
+        step->process(dst, count, params.data(), state->data());
+        if (tap) std::memcpy(tap, dst, count * sizeof(float));
+    }
+};
+
+// `next` is written by the sink during a block and becomes `current`, which the sources read, only when the block ends.
+struct AudioProgram::Feedback {
+    explicit Feedback(size_t bytes) : current(bytes), next(bytes) {}
+    StateBlock current;
+    StateBlock next;
+    bool hasSource = false;
+    bool hasSink = false;
+};
+
 struct AudioProgram::BuildState {
+    AudioProgram& program;
+    std::set<NodeId>& claimed;  // point-wise, mix and step nodes: their parameters live in one place, so each is used once
     size_t blockSize;
-    std::set<NodeId> claimed;  // point-wise and mix nodes: their parameters live in one place, so each is used once
     std::map<NodeId, size_t> sourceIndex;
+    std::map<size_t, const float*> stepData;  // source index -> the buffer its step writes, which is what the stage restores x from
     std::vector<Geometry> sources;
 };
 
+AudioProgram::AudioProgram() = default;
 AudioProgram::~AudioProgram() = default;
 
 AudioProgram::Branch AudioProgram::build(Network& net, NodeId id, BuildState& state) {
@@ -67,10 +121,17 @@ AudioProgram::Branch AudioProgram::build(Network& net, NodeId id, BuildState& st
     if (mixed) {
         claim(cursor);
         branch = buildMix(net, cursor, state);
+    } else if (std::vector<float> probe; net.node(cursor).audioStep(probe)) {
+        claim(cursor);
+        sourceIndex = makeStepSource(net, cursor, state);
+        branch.sources.push_back({"", sourceIndex});
     } else {
         auto known = state.sourceIndex.find(cursor);
         if (known != state.sourceIndex.end()) sourceIndex = known->second;
-        else {
+        else if (net.node(cursor).typeName() == "fbSource") {
+            sourceIndex = makeFeedbackSource(net, cursor, state);
+            state.sourceIndex[cursor] = sourceIndex;
+        } else {
             Geometry source = *net.cook(cursor);
             if (source.pointCount() != state.blockSize)
                 throw std::runtime_error("audio program: source " + net.node(cursor).name() + " has " + std::to_string(source.pointCount()) +
@@ -128,63 +189,211 @@ std::unique_ptr<AudioProgram> AudioProgram::compile(Network& net, NodeId output,
     if (!net.node(output).isPointwise() && !isMix(net.node(output)))
         throw std::runtime_error("audio program: " + net.node(output).name() + " is not a point-wise node");
 
-    BuildState state{options.blockSize, {}, {}, {}};
-    Branch root = build(net, output, state);
-
     std::unique_ptr<AudioProgram> p(new AudioProgram());
     p->blockSize_ = options.blockSize;
-    p->sources_ = std::move(state.sources);
-    p->work_ = p->sources_.front();
+    std::set<NodeId> claimed;
+    BuildState state{*p, claimed, options.blockSize, {}, {}, {}};
+    Branch root = build(net, output, state);
+    p->outputs_ = makeStage(net, root, state, options.outputs)->outputs;
+    for (const auto& [name, fb] : p->feedback_)
+        if (!fb->hasSource || !fb->hasSink) throw std::runtime_error("audio program: feedback '" + name + "' needs both an fbSink and an fbSource");
+    return p;
+}
+
+AudioProgram::Feedback& AudioProgram::feedback(const std::string& name, size_t blockSize) {
+    if (name.empty()) throw std::runtime_error("audio program: feedback node without a name");
+    auto it = feedback_.find(name);
+    if (it == feedback_.end()) it = feedback_.emplace(name, std::make_unique<Feedback>(padToLanes(blockSize) * sizeof(float))).first;
+    return *it->second;
+}
+
+size_t AudioProgram::makeFeedbackSource(Network& net, NodeId id, BuildState& state) {
+    Feedback& fb = state.program.feedback(net.node(id).getString("name"), state.blockSize);
+    fb.hasSource = true;
+    Geometry placeholder;
+    placeholder.resizePoints(state.blockSize);
+    state.sources.push_back(std::move(placeholder));
+    state.stepData[state.sources.size() - 1] = fb.current.as<float>();
+    return state.sources.size() - 1;
+}
+
+// Compiles `root` (whose sources are in state.sources) into the next stage of the program.
+AudioProgram::Stage* AudioProgram::makeStage(Network& net, Branch& root, BuildState& state, const std::vector<std::string>& outputs) {
+    auto stage = std::make_unique<Stage>();
+    stage->sources = std::move(state.sources);
+    stage->work = stage->sources.front();
 
     auto sourceAttrib = [&](const std::string& channel) -> const AttribArray* {
         size_t index;
         std::string attrib;
-        return splitChannel(root.sources, channel, index, attrib) ? p->sources_[index].findAttrib(AttribClass::point, attrib) : nullptr;
+        return splitChannel(root.sources, channel, index, attrib) ? stage->sources[index].findAttrib(AttribClass::point, attrib) : nullptr;
+    };
+    // A step's source reads its x from the step's buffer, which the step rewrites every block; any other channel is the placeholder's.
+    auto restoreOf = [&](const std::string& channel) -> const void* {
+        size_t index;
+        std::string attrib;
+        if (!splitChannel(root.sources, channel, index, attrib)) return nullptr;
+        const auto step = state.stepData.find(index);
+        if (step != state.stepData.end() && attrib == "x") return step->second;
+        const AttribArray* a = stage->sources[index].findAttrib(AttribClass::point, attrib);
+        return a ? a->data() : nullptr;
     };
 
     // A branch channel such as "1.x" is a copy of its source's x; it has to exist, with the source's type, before the kernel is typed.
     for (const std::string& channel : root.spec.channels)
-        if (const AttribArray* a = sourceAttrib(channel)) p->work_.attrib(AttribClass::point, channel, a->type());
+        if (const AttribArray* a = sourceAttrib(channel)) stage->work.attrib(AttribClass::point, channel, a->type());
 
-    p->kernel_ = net.compiler().compileFor(root.spec, p->work_, AttribClass::point);
-    resolveStringParams(root.spec, p->work_, AttribClass::point, root.params);
-    p->params_ = std::move(root.params);
-    p->paramRanges_ = std::move(root.ranges);
+    stage->kernel = net.compiler().compileFor(root.spec, stage->work, AttribClass::point);
+    resolveStringParams(root.spec, stage->work, AttribClass::point, root.params);
+    stage->params = std::move(root.params);
+    stage->ranges = std::move(root.ranges);
 
     // Every attribute is created and detached from the sources here, so the pointers stay valid and process() never allocates.
-    const KernelSpec& spec = p->kernel_->spec();
+    const KernelSpec& spec = stage->kernel->spec();
     for (size_t c = 0; c < spec.channels.size(); ++c) {
-        AttribArray& a = p->work_.attrib(AttribClass::point, spec.channels[c], spec.channelTypes[c]);
-        p->channels_.push_back(a.data());
-        const AttribArray* src = sourceAttrib(spec.channels[c]);
-        p->restore_.push_back(src ? src->data() : nullptr);
+        AttribArray& a = stage->work.attrib(AttribClass::point, spec.channels[c], spec.channelTypes[c]);
+        stage->channels.push_back(a.data());
+        stage->restore.push_back(restoreOf(spec.channels[c]));
     }
-    p->paddedBytes_ = padToLanes(options.blockSize) * sizeof(float);
+    stage->paddedBytes = padToLanes(state.blockSize) * sizeof(float);
 
-    for (const std::string& name : options.outputs) {
-        const AttribArray* a = p->work_.findAttrib(AttribClass::point, name);
+    for (const std::string& name : outputs) {
+        const AttribArray* a = stage->work.findAttrib(AttribClass::point, name);
         if (!a || a->type() != AttribType::float32)
             throw std::runtime_error("audio program: output channel '" + name + "' is not a float channel of the program");
-        p->outputs_.push_back(static_cast<const float*>(a->data()));
+        stage->outputs.push_back(static_cast<const float*>(a->data()));
     }
-    return p;
+
+    Stage* raw = stage.get();
+    state.program.stages_.push_back(std::move(stage));
+    state.program.order_.push_back({raw, nullptr});
+    return raw;
+}
+
+// Builds everything above a step node as its own stage, schedules the step after it, and returns the index (in `state`) of the placeholder
+// source the stage below the step reads the step's output through.
+size_t AudioProgram::makeStepSource(Network& net, NodeId id, BuildState& state) {
+    AudioProgram& program = state.program;
+    const NodeId up = net.inputOf(id, 0);
+    if (up == invalidNodeId) throw std::runtime_error("audio program: " + net.node(id).name() + " has no input connected");
+
+    auto run = std::make_unique<StepRun>();
+    run->node = id;
+    run->step = net.node(id).audioStep(run->params);
+    run->count = state.blockSize;
+    run->state = &program.state(id, run->step->stateBytes());
+    program.buffers_.push_back(std::make_unique<StateBlock>(padToLanes(state.blockSize) * sizeof(float)));
+    run->dst = program.buffers_.back()->as<float>();
+    if (net.node(id).typeName() == "fbSink") {
+        Feedback& fb = program.feedback(net.node(id).getString("name"), state.blockSize);
+        if (fb.hasSink) throw std::runtime_error("audio program: feedback '" + net.node(id).getString("name") + "' has more than one fbSink");
+        fb.hasSink = true;
+        run->tap = fb.next.as<float>();
+    }
+
+    BuildState inner{program, state.claimed, state.blockSize, {}, {}, {}};
+    Branch branch = build(net, up, inner);
+    const bool bareSource = branch.sources.size() == 1 && branch.sources[0].first.empty() && branch.ranges.empty() && branch.spec.channels.empty();
+    if (bareSource) {
+        const auto upstream = inner.stepData.find(0);
+        if (upstream != inner.stepData.end()) run->src = upstream->second;
+        else {
+            program.inputs_.push_back(std::move(inner.sources.front()));
+            run->src = static_cast<const float*>(program.inputs_.back().findAttrib(AttribClass::point, "x")->data());
+        }
+    } else {
+        run->src = makeStage(net, branch, inner, {"x"})->outputs[0];
+    }
+
+    Geometry placeholder;
+    placeholder.resizePoints(state.blockSize);
+    state.sources.push_back(std::move(placeholder));
+    state.stepData[state.sources.size() - 1] = run->dst;
+
+    program.order_.push_back({nullptr, run.get()});
+    program.steps_.push_back(std::move(run));
+    return state.sources.size() - 1;
+}
+
+float* AudioProgram::tryParam(NodeId node, size_t index) noexcept {
+    for (const auto& stage : stages_)
+        for (const ParamRange& r : stage->ranges)
+            if (r.node == node) return index < r.count ? &stage->params[r.first + index] : nullptr;
+    for (const auto& step : steps_)
+        if (step->node == node) return index < step->params.size() ? &step->params[index] : nullptr;
+    return nullptr;
 }
 
 float& AudioProgram::param(NodeId node, size_t index) {
-    for (const ParamRange& r : paramRanges_)
-        if (r.node == node) {
-            if (index >= r.count) throw std::out_of_range("audio program: parameter index out of range");
-            return params_[r.first + index];
-        }
+    if (float* p = tryParam(node, index)) return *p;
+    for (const auto& stage : stages_)
+        for (const ParamRange& r : stage->ranges)
+            if (r.node == node) throw std::out_of_range("audio program: parameter index out of range");
+    for (const auto& step : steps_)
+        if (step->node == node) throw std::out_of_range("audio program: parameter index out of range");
     throw std::runtime_error("audio program: node is not part of the compiled chain");
 }
 
-void AudioProgram::process(float* const* out) {
-    for (size_t c = 0; c < channels_.size(); ++c) {
-        if (restore_[c]) std::memcpy(channels_[c], restore_[c], paddedBytes_);
-        else std::memset(channels_[c], 0, paddedBytes_);
+StateBlock::StateBlock(size_t bytes) : size_(bytes) {
+    data_ = ::operator new(bytes ? bytes : 1, std::align_val_t(64));
+    clear();
+}
+
+StateBlock::~StateBlock() { ::operator delete(data_, std::align_val_t(64)); }
+
+void StateBlock::clear() { std::memset(data_, 0, size_ ? size_ : 1); }
+
+StateBlock& AudioProgram::state(NodeId node, size_t bytes) {
+    auto it = states_.find(node);
+    if (it == states_.end()) it = states_.emplace(node, std::make_unique<StateBlock>(bytes)).first;
+    else if (it->second->size() != bytes) throw std::runtime_error("audio program: state of " + std::to_string(node) + " already exists with another size");
+    return *it->second;
+}
+
+void AudioProgram::addPhase(NodeId node, size_t phaseParam, size_t incParam) {
+    float* phaseAt = &param(node, phaseParam);
+    const float* incAt = &param(node, incParam);
+    if (phaseAt == incAt) throw std::runtime_error("audio program: phase and increment must be different parameters");
+    phases_.push_back({phaseAt, incAt, state(node, sizeof(double)).as<double>()});
+}
+
+void AudioProgram::resetState() {
+    for (auto& [node, block] : states_) block->clear();
+    for (auto& [name, fb] : feedback_) {
+        fb->current.clear();
+        fb->next.clear();
     }
-    kernel_->run(channels_.data(), params_.data(), blockSize_);
+}
+
+void AudioProgram::migrateState(const AudioProgram& previous) {
+    for (auto& [node, block] : states_) {
+        const auto old = previous.states_.find(node);
+        if (old == previous.states_.end()) continue;
+        const StateBlock& from = *old->second;
+        const auto step = std::find_if(steps_.begin(), steps_.end(), [&](const auto& s) { return s->node == node; });
+        if (step != steps_.end()) (*step)->step->migrate(block->data(), block->size(), from.data(), from.size());
+        else if (from.size() == block->size()) std::memcpy(block->data(), from.data(), block->size());
+    }
+    if (previous.blockSize_ != blockSize_) return;
+    for (auto& [name, fb] : feedback_) {
+        const auto old = previous.feedback_.find(name);
+        if (old == previous.feedback_.end()) continue;
+        std::memcpy(fb->current.data(), old->second->current.data(), fb->current.size());
+        std::memcpy(fb->next.data(), old->second->next.data(), fb->next.size());
+    }
+}
+
+void AudioProgram::process(float* const* out) {
+    for (const Phase& p : phases_) *p.phaseParam = static_cast<float>(*p.phase);
+    for (const auto& [stage, step] : order_) {
+        if (stage) stage->run(blockSize_);
+        else step->run();
+    }
+    for (auto& [name, fb] : feedback_) std::memcpy(fb->current.data(), fb->next.data(), blockSize_ * sizeof(float));
+    for (const Phase& p : phases_) {
+        double next = *p.phase + static_cast<double>(*p.incParam) * static_cast<double>(blockSize_);
+        *p.phase = next - std::floor(next);
+    }
     if (!out) return;
     for (size_t i = 0; i < outputs_.size(); ++i)
         if (out[i]) std::memcpy(out[i], outputs_[i], blockSize_ * sizeof(float));

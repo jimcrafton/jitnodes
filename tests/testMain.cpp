@@ -323,6 +323,148 @@ TEST(audioProgramMixRejectsSharedNodesAndEmptyMixes) {
     CHECK(threw);
 }
 
+namespace {
+
+// line(count) -> osc (a = phase, b = step) -> delay -> biquad -> fir -> gain, with `count` either one block or the whole signal.
+struct StepChain {
+    Network net;
+    NodeId osc, delay, biquad, fir, gain;
+
+    explicit StepChain(size_t count) {
+        NodeId line = net.addNode("line");
+        net.node(line).setFloat("count", static_cast<float>(count));
+        osc = net.addNode("wrangle");
+        net.node(osc).setString("code", "x = sin(6.28318530718 * (a + sampleIndex * b));");
+        net.connect(line, osc);
+        delay = net.addNode("delay");
+        net.node(delay).setFloat("samples", 37.0f);
+        net.node(delay).setFloat("maxSamples", 128.0f);
+        net.connect(osc, delay);
+        biquad = net.addNode("biquad");
+        const float coeffs[5] = {0.2f, 0.4f, 0.2f, -0.3f, 0.1f};
+        const char* names[5] = {"b0", "b1", "b2", "a1", "a2"};
+        for (int k = 0; k < 5; ++k) net.node(biquad).setFloat(names[k], coeffs[k]);
+        net.connect(delay, biquad);
+        fir = net.addNode("fir");
+        net.node(fir).setString("coeffs", "0.5, 0.25, 0.125, -0.0625");
+        net.connect(biquad, fir);
+        gain = net.addNode("wrangle");
+        net.node(gain).setString("code", "x = x * a;");
+        net.connect(fir, gain);
+    }
+};
+
+}  // namespace
+
+TEST(audioProgramStepsMatchTheInterpreterAcrossBlocks) {
+    constexpr size_t block = 64, blocks = 10;
+    StepChain g(block);
+    auto program = AudioProgram::compile(g.net, g.gain, {block, {"x"}});
+    const float step = 440.0f / 48000.0f;
+    program->param(g.osc, 1) = step;
+    program->param(g.delay, 0) = 37.0f;
+    const float coeffs[5] = {0.2f, 0.4f, 0.2f, -0.3f, 0.1f};
+    for (size_t k = 0; k < 5; ++k) program->param(g.biquad, k) = coeffs[k];
+    program->param(g.gain, 0) = 0.5f;
+    program->addPhase(g.osc, 0, 1);
+    program->warm();
+    program->resetState();
+
+    StepChain ref(block * blocks);
+    ref.net.node(ref.osc).setFloat("b", step);
+    ref.net.node(ref.gain).setFloat("a", 0.5f);
+    const auto expected = ref.net.cook(ref.gain);
+
+    std::vector<float> out(block);
+    for (size_t b = 0; b < blocks; ++b) {
+        float* channels[] = {out.data()};
+        program->process(channels);
+        for (size_t i = 0; i < block; ++i) CHECK(std::fabs(out[i] - expected->x()[b * block + i]) < 2e-3f);
+    }
+    CHECK(std::fabs(out[block - 1]) > 0.0f);
+}
+
+TEST(audioProgramFeedbackEchoesWithOneBlockOfLatency) {
+    constexpr size_t block = 32, blocks = 8;
+    constexpr float feedback = 0.5f;
+    Network net;
+    NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", static_cast<float>(block));
+    net.node(line).setFloat("length", static_cast<float>(block - 1));  // x[i] = i
+    NodeId source = net.addNode("fbSource");
+    net.node(source).setString("name", "echo");
+    NodeId tail = net.addNode("wrangle");
+    net.node(tail).setString("code", "x = x * a;");
+    net.connect(source, tail);
+    NodeId mix = net.addNode("mix");
+    net.connect(line, mix, 0);
+    net.connect(tail, mix, 1);
+    NodeId sink = net.addNode("fbSink");
+    net.node(sink).setString("name", "echo");
+    net.connect(mix, sink);
+    NodeId master = net.addNode("wrangle");
+    net.node(master).setString("code", "x = x * a;");
+    net.connect(sink, master);
+
+    auto program = AudioProgram::compile(net, master, {block, {"x"}});
+    program->param(tail, 0) = feedback;
+    program->param(master, 0) = 1.0f;
+    std::vector<float> out(block), previous(block, 0.0f);
+    for (size_t b = 0; b < blocks; ++b) {
+        float* channels[] = {out.data()};
+        program->process(channels);
+        for (size_t i = 0; i < block; ++i) CHECK_NEAR(out[i], static_cast<float>(i) + feedback * previous[i]);
+        previous = out;
+    }
+}
+
+TEST(audioProgramMigratedStateContinuesInARecompiledProgram) {
+    constexpr size_t block = 64;
+    const float step = 440.0f / 48000.0f;
+    auto build = [&](StepChain& g) {
+        auto program = AudioProgram::compile(g.net, g.gain, {block, {"x"}});
+        program->param(g.osc, 1) = step;
+        program->param(g.delay, 0) = 37.0f;
+        const float coeffs[5] = {0.2f, 0.4f, 0.2f, -0.3f, 0.1f};
+        for (size_t k = 0; k < 5; ++k) program->param(g.biquad, k) = coeffs[k];
+        program->param(g.gain, 0) = 0.5f;
+        program->addPhase(g.osc, 0, 1);
+        return program;
+    };
+    StepChain a(block), b(block);
+    auto first = build(a);
+    std::vector<float> out(block), whole;
+    for (int n = 0; n < 4; ++n) {
+        float* channels[] = {out.data()};
+        first->process(channels);
+        whole.insert(whole.end(), out.begin(), out.end());
+    }
+    auto second = build(b);
+    second->migrateState(*first);
+    for (int n = 0; n < 4; ++n) {
+        float* channels[] = {out.data()};
+        second->process(channels);
+        whole.insert(whole.end(), out.begin(), out.end());
+    }
+
+    StepChain ref(block * 8);
+    ref.net.node(ref.osc).setFloat("b", step);
+    ref.net.node(ref.gain).setFloat("a", 0.5f);
+    const auto expected = ref.net.cook(ref.gain);
+    for (size_t i = 0; i < whole.size(); ++i) CHECK(std::fabs(whole[i] - expected->x()[i]) < 2e-3f);
+}
+
+TEST(audioProgramStepsRejectBadGraphsAndCoefficients) {
+    StepChain g(32);
+    bool threw = false;
+    try { AudioProgram::compile(g.net, g.delay, {32, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);  // a step cannot be the output node
+    g.net.node(g.fir).setString("coeffs", "1,abc");
+    threw = false;
+    try { AudioProgram::compile(g.net, g.gain, {32, {"x"}}); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+}
+
 TEST(kernelCacheIgnoresParameterValues) {
     KernelCompiler compiler;
     KernelSpec spec = parseWrangle("x = x * s;", {"s"});

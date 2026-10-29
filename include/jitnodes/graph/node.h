@@ -2,10 +2,12 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "jitnodes/audio/audioStep.h"
 #include "jitnodes/geo/geometry.h"
 #include "jitnodes/graph/animation.h"
 #include "jitnodes/jit/kernel.h"
@@ -116,6 +118,10 @@ public:
     virtual bool isPointwise() const { return false; }
     virtual AttribClass attribClass() const { return AttribClass::point; }
     virtual bool pointKernel(PointKernel&) { return false; }
+
+    // Sequential audio nodes (delay, biquad) have one input and are neither point-wise nor fusable: an AudioProgram runs the returned
+    // step between kernel stages. `params` receives the values the step reads each block. cook() runs the same step over the whole input.
+    virtual std::unique_ptr<AudioStep> audioStep(std::vector<float>&) { return nullptr; }
 
     // Merge nodes accept any number of inputs in cook, so the network flattens trees of them into one task.
     virtual bool isMerge() const { return false; }

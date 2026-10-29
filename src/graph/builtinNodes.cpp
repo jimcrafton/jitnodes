@@ -232,6 +232,7 @@ void registerBuiltinNodes() {
     registerStringNodes();
     registerLoopNodes();
     registerSubnetNodes();
+    registerAudioNodes();
 }
 
 }  // namespace jitnodes

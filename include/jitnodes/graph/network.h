@@ -114,6 +114,7 @@ void registerFileNodes();
 void registerStringNodes();
 void registerLoopNodes();
 void registerSubnetNodes();
+void registerAudioNodes();
 
 class Network {
 public:
