@@ -79,6 +79,9 @@ name = expression;
   member accesses.
 - **Numbers** are decimal floats: `3`, `0.5`, `.5`, `5.`, `1e3`, `2.5e-1`. There is no suffix (`1.5f` is an error),
   no hex, and no special constants: `pi` is *not* defined in a wrangle (write `3.14159265`).
+- **`sampleIndex`** is the element's position in the run (0, 1, 2, ...) as a float, exact below 2^24. It is reserved: an attribute
+  with that name cannot be read. A kernel that uses it always runs in one piece, never split across threads. Embedders can also
+  pass named constants to `parseWrangle` (the audio compiler uses `sr`); they compile to literals.
 - **Parentheses** group; **function calls** are `name(arg, arg, ...)`.
 - Case matters (`X` is not `x`).
 

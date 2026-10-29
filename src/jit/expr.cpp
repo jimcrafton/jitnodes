@@ -36,6 +36,12 @@ int ExprGraph::load(int channel) {
     return intern(n);
 }
 
+int ExprGraph::index() {
+    ExprNode n;
+    n.op = Op::index;
+    return intern(n);
+}
+
 int ExprGraph::unary(Op op, int a) {
     ExprNode n;
     n.op = op;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -18,9 +19,11 @@ namespace jitnodes {
 // A string attribute can be compared with a literal on either side of == and !=: `label == "tree"`, `"rock" != kind`. Nothing else
 // takes a string (see KernelSpec::StringParam, and docs/wrangle.md).
 //
-// Identifiers listed in paramNames read the runtime parameter block; every other identifier is
-// an attribute channel (x, y, N.x, group.top, ...). Statements run in order, so later statements
-// see earlier assignments. Throws std::runtime_error with a message on syntax errors.
-KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames);
+// Identifiers listed in paramNames read the runtime parameter block; identifiers listed in constants
+// compile to that value (the kernel is specific to it); `sampleIndex` is the element's position in the
+// run; every other identifier is an attribute channel (x, y, N.x, group.top, ...). Statements run in
+// order, so later statements see earlier assignments. Throws std::runtime_error with a message on syntax errors.
+KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames,
+                        const std::map<std::string, float>& constants = {});
 
 }  // namespace jitnodes

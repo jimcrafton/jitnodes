@@ -279,6 +279,21 @@ x86::Vec VecEmitter::sincos(const Vec& xIn, bool cosine) {
     return vxor(blend(useCos, yc, ys), signXor);
 }
 
+x86::Vec VecEmitter::laneIndices() {
+    const size_t slot = pool_.size();
+    for (size_t i = 0; i < lanes(); ++i) pool_.push_back(static_cast<float>(i));
+    Vec d = newVec("lane");
+    const x86::Mem mem = x86::ptr(poolBase_, static_cast<int32_t>(slot * sizeof(float)));
+    if (vex()) cc_.vmovups(d, mem);
+    else cc_.movups(d, mem);
+    return d;
+}
+
+void VecEmitter::advance(const Vec& v, const Vec& step) {
+    if (vex()) cc_.vaddps(v, v, step);
+    else cc_.addps(v, step);
+}
+
 x86::Vec VecEmitter::op(Op o, const Vec& a, const Vec& b, const Vec& c) {
     switch (o) {
         case Op::add: return add(a, b);

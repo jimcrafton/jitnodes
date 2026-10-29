@@ -13,7 +13,8 @@ namespace {
 
 class Parser {
 public:
-    Parser(const std::string& src, const std::vector<std::string>& paramNames) : src_(src), paramNames_(paramNames) {
+    Parser(const std::string& src, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants)
+        : src_(src), paramNames_(paramNames), constants_(constants) {
         spec_.paramCount = static_cast<int>(paramNames.size());
     }
 
@@ -241,6 +242,9 @@ private:
         if (accept("(")) return call(name);
         for (size_t i = 0; i < paramNames_.size(); ++i)
             if (paramNames_[i] == name) return spec_.graph.param(static_cast<int>(i));
+        const auto constant = constants_.find(name);
+        if (constant != constants_.end()) return spec_.graph.constant(constant->second);
+        if (name == "sampleIndex") return spec_.graph.index();
         int channel = spec_.channelIndex(name);
         auto it = current_.find(channel);
         return it != current_.end() ? it->second : spec_.graph.load(channel);
@@ -288,6 +292,7 @@ private:
 
     const std::string& src_;
     const std::vector<std::string>& paramNames_;
+    const std::map<std::string, float>& constants_;
     int depth_ = 0;
     size_t pos_ = 0;
     KernelSpec spec_;
@@ -296,8 +301,8 @@ private:
 
 }  // namespace
 
-KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames) {
-    return Parser(source, paramNames).run();
+KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants) {
+    return Parser(source, paramNames, constants).run();
 }
 
 }  // namespace jitnodes

@@ -21,6 +21,7 @@ std::vector<int> copyGraph(ExprGraph& dst, const KernelSpec& src, const std::vec
                 map[i] = it != loadOverride.end() ? it->second : dst.load(channelMap[static_cast<size_t>(n.index)]);
                 break;
             }
+            case Op::index: map[i] = dst.index(); break;
             case Op::select: map[i] = dst.select(m(n.a), m(n.b), m(n.c)); break;
             case Op::neg:
             case Op::abs:

@@ -153,6 +153,86 @@ TEST(docExampleMaskThreshold) {
     }
 }
 
+TEST(sampleIndexCountsElementsOnEveryIsa) {
+    KernelCompiler probe;
+    for (Isa isa : probe.supportedIsas()) {
+        KernelCompiler compiler;
+        compiler.setIsa(isa);
+        Geometry g = makeRamp(37);
+        compiler.compile(parseWrangle("x = sampleIndex * k + s;", {"s"}, {{"k", 0.5f}}))->run(g, {1.0f});
+        for (size_t i = 0; i < 37; ++i) CHECK_NEAR(g.x()[i], static_cast<float>(i) * 0.5f + 1.0f);
+    }
+}
+
+TEST(sampleIndexJitMatchesInterpreter) {
+    expectJitMatchesInterpreter("x = sin(sampleIndex * 0.1) * s; y = sampleIndex > 20 ? y : -y;", {"s"}, {3.0f});
+}
+
+namespace {
+
+// line(count = block) -> wrangle osc (a = phase, b = phase step) -> wrangle gain (a = gain), as the editor would build it.
+struct OscGain {
+    Network net;
+    NodeId osc, gain;
+    explicit OscGain(size_t block) {
+        NodeId line = net.addNode("line");
+        net.node(line).setFloat("count", static_cast<float>(block));
+        osc = net.addNode("wrangle");
+        net.node(osc).setString("code", "x = sin(6.28318530718 * (a + sampleIndex * b));");
+        gain = net.addNode("wrangle");
+        net.node(gain).setString("code", "x = x * a;");
+        net.connect(line, osc);
+        net.connect(osc, gain);
+    }
+};
+
+}  // namespace
+
+TEST(audioProgramMatchesInterpreterAcrossBlocks) {
+    constexpr size_t block = 64;
+    OscGain g(block);
+    auto program = AudioProgram::compile(g.net, g.gain, {block, {"x"}});
+    program->warm();
+
+    OscGain ref(block);
+    ref.net.compiler().setJitEnabled(false);
+
+    const float step = 440.0f / 48000.0f;
+    float phase = 0.0f;
+    std::vector<float> out(block);
+    for (int b = 0; b < 8; ++b) {
+        program->param(g.osc, 0) = phase;
+        program->param(g.osc, 1) = step;
+        program->param(g.gain, 0) = 0.25f;
+        float* channels[] = {out.data()};
+        program->process(channels);
+
+        ref.net.node(ref.osc).setFloat("a", phase);
+        ref.net.node(ref.osc).setFloat("b", step);
+        ref.net.node(ref.gain).setFloat("a", 0.25f);
+        const auto expected = ref.net.cook(ref.gain);
+        for (size_t i = 0; i < block; ++i) CHECK(std::fabs(out[i] - expected->x()[i]) < 1e-4f);
+        phase = std::fmod(phase + step * static_cast<float>(block), 1.0f);
+    }
+    CHECK(std::fabs(out[block - 1]) > 0.0f);
+}
+
+TEST(audioProgramRejectsBadGraphs) {
+    OscGain g(48);
+    bool threw = false;
+    try { AudioProgram::compile(g.net, g.gain, {48, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(!threw);  // 48 is a multiple of 16
+    threw = false;
+    try { AudioProgram::compile(g.net, g.gain, {50, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    threw = false;
+    try { AudioProgram::compile(g.net, g.gain, {64, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);  // the source has 48 points
+    threw = false;
+    try { AudioProgram::compile(g.net, g.gain, {48, {"nope"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
 TEST(kernelCacheIgnoresParameterValues) {
     KernelCompiler compiler;
     KernelSpec spec = parseWrangle("x = x * s;", {"s"});
