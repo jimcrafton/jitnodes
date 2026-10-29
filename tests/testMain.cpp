@@ -233,6 +233,96 @@ TEST(audioProgramRejectsBadGraphs) {
     CHECK(threw);
 }
 
+namespace {
+
+// Osc nodes read from `line`s of `block` points: oscillators 0 and 1 share the first line, 2 has its own. mixAB = osc0 * g0 + osc1,
+// outer = mixAB + osc2, master = outer * gain.
+struct MixGraph {
+    Network net;
+    NodeId osc[3], gain0, mixAB, outer, master;
+
+    explicit MixGraph(size_t block) {
+        NodeId lines[2];
+        for (NodeId& line : lines) {
+            line = net.addNode("line");
+            net.node(line).setFloat("count", static_cast<float>(block));
+        }
+        for (int i = 0; i < 3; ++i) {
+            osc[i] = net.addNode("wrangle");
+            net.node(osc[i]).setString("code", "x = sin(6.28318530718 * (a + sampleIndex * b));");
+            net.connect(lines[i == 2 ? 1 : 0], osc[i]);
+        }
+        gain0 = net.addNode("wrangle");
+        net.node(gain0).setString("code", "x = x * a;");
+        net.connect(osc[0], gain0);
+        mixAB = net.addNode("mix");
+        net.connect(gain0, mixAB, 0);
+        net.connect(osc[1], mixAB, 1);
+        outer = net.addNode("mix");
+        net.connect(mixAB, outer, 0);
+        net.connect(osc[2], outer, 1);
+        master = net.addNode("wrangle");
+        net.node(master).setString("code", "x = x * a;");
+        net.connect(outer, master);
+    }
+};
+
+}  // namespace
+
+TEST(audioProgramMixSumsBranchesLikeTheInterpreter) {
+    constexpr size_t block = 64;
+    MixGraph g(block);
+    auto program = AudioProgram::compile(g.net, g.master, {block, {"x"}});
+    program->warm();
+
+    MixGraph ref(block);
+    ref.net.compiler().setJitEnabled(false);
+
+    const float steps[3] = {220.0f / 48000.0f, 330.0f / 48000.0f, 550.0f / 48000.0f};
+    float phase[3] = {0.0f, 0.1f, 0.2f};
+    std::vector<float> out(block);
+    for (int b = 0; b < 6; ++b) {
+        for (int i = 0; i < 3; ++i) {
+            for (auto set : {std::pair<MixGraph*, bool>{&g, true}, std::pair<MixGraph*, bool>{&ref, false}}) {
+                MixGraph& m = *set.first;
+                if (set.second) {
+                    program->param(m.osc[i], 0) = phase[i];
+                    program->param(m.osc[i], 1) = steps[i];
+                } else {
+                    m.net.node(m.osc[i]).setFloat("a", phase[i]);
+                    m.net.node(m.osc[i]).setFloat("b", steps[i]);
+                }
+            }
+            phase[i] = std::fmod(phase[i] + steps[i] * static_cast<float>(block), 1.0f);
+        }
+        program->param(g.gain0, 0) = 0.5f;
+        program->param(g.master, 0) = 0.25f;
+        ref.net.node(ref.gain0).setFloat("a", 0.5f);
+        ref.net.node(ref.master).setFloat("a", 0.25f);
+
+        float* channels[] = {out.data()};
+        program->process(channels);
+        const auto expected = ref.net.cook(ref.master);
+        for (size_t i = 0; i < block; ++i) CHECK(std::fabs(out[i] - expected->x()[i]) < 1e-4f);
+    }
+    CHECK(std::fabs(out[block - 1]) > 0.0f);
+}
+
+TEST(audioProgramMixRejectsSharedNodesAndEmptyMixes) {
+    MixGraph g(32);
+    Network& net = g.net;
+    bool threw = false;
+    NodeId shared = net.addNode("mix");
+    net.connect(g.osc[2], shared, 0);
+    net.connect(g.osc[2], shared, 1);
+    try { AudioProgram::compile(net, shared, {32, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);  // one oscillator on both inputs would leave its parameters ambiguous
+    threw = false;
+    NodeId empty = net.addNode("mix");
+    try { AudioProgram::compile(net, empty, {32, {"x"}}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
 TEST(kernelCacheIgnoresParameterValues) {
     KernelCompiler compiler;
     KernelSpec spec = parseWrangle("x = x * s;", {"s"});

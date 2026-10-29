@@ -18,12 +18,14 @@ struct AudioProgramOptions {
 
 // An immutable-structure, preallocated program compiled from a Network on the main thread and run on the audio thread.
 //
-// The chain of point-wise nodes that ends at `output` is fused into one kernel and runs over a block of `blockSize` points. The
-// node below the chain (a source such as `line`, cooked once at compile time) supplies the initial channels, restored at the start
-// of every block. process() allocates nothing, locks nothing and never touches a thread pool.
+// The point-wise nodes that end at `output` are fused into one kernel and run over a block of `blockSize` points. A `mix` node
+// joins any number of such chains (and nested mixes) into the sum of their x channels, and the chain above it continues from that
+// sum. Each chain ends in a source (such as `line`, cooked once at compile time) that supplies its initial channels, restored at the
+// start of every block. process() allocates nothing, locks nothing and never touches a thread pool.
 class AudioProgram {
 public:
-    // Throws std::runtime_error when the graph is not a chain of point-wise nodes over a source with blockSize points.
+    // Throws std::runtime_error when the graph is not point-wise chains and mixes over sources with blockSize points, or when a
+    // node is reachable twice.
     static std::unique_ptr<AudioProgram> compile(Network& net, NodeId output, const AudioProgramOptions& options = {});
 
     ~AudioProgram();
@@ -33,7 +35,7 @@ public:
     size_t blockSize() const { return blockSize_; }
     size_t outputCount() const { return outputs_.size(); }
 
-    // Block-rate parameter of a node of the chain: the index-th value of that node's PointKernel params (for a wrangle, a b c d).
+    // Block-rate parameter of a node of the program: the index-th value of that node's PointKernel params (for a wrangle, a b c d).
     // Written by the audio thread (or before streaming starts) and read at the start of the next block.
     float& param(NodeId node, size_t index);
 
@@ -51,12 +53,16 @@ private:
         size_t first;
         size_t count;
     };
+    struct Branch;
+    struct BuildState;
+    static Branch build(Network& net, NodeId id, BuildState& state);
+    static Branch buildMix(Network& net, NodeId id, BuildState& state);
 
     size_t blockSize_ = 0;
     size_t paddedBytes_ = 0;
     std::shared_ptr<const Kernel> kernel_;
-    Geometry work_;    // owns the channel buffers the kernel runs on
-    Geometry source_;  // the cooked source node, never written after compile
+    Geometry work_;                   // owns the channel buffers the kernel runs on
+    std::vector<Geometry> sources_;   // the cooked source nodes, never written after compile
     std::vector<void*> channels_;
     std::vector<const void*> restore_;  // per channel: pristine copy restored each block, null = zeroed
     std::vector<const float*> outputs_;

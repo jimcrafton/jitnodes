@@ -130,6 +130,26 @@ public:
     }
 };
 
+// Sums the x channel of its inputs point by point and keeps the rest of the first input; the audio program compiler fuses it with its
+// branches into one kernel.
+class MixNode : public Node {
+public:
+    MixNode() : Node("mix", 2) {}
+
+    bool hasVariableInputs() const override { return true; }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        float* x = geo->x();
+        for (size_t k = 1; k < in.size(); ++k) {
+            if (in[k]->pointCount() != geo->pointCount()) throw std::runtime_error("mix: inputs have different point counts");
+            const float* other = in[k]->x();
+            for (size_t i = 0; i < geo->pointCount(); ++i) x[i] += other[i];
+        }
+        return geo;
+    }
+};
+
 // Passes one of its inputs through. Only the selected input is cooked, so a branch that is switched off costs nothing; `index` is clamped
 // to the connected inputs, and the selected input must be connected.
 class SwitchNode : public Node {
@@ -193,6 +213,7 @@ void registerBuiltinNodes() {
     add<TransformNode>("transform");
     add<WrangleNode>("wrangle");
     add<MergeNode>("merge");
+    add<MixNode>("mix");
     add<SwitchNode>("switch");
     add<AttribCreateNode>("attribCreate");
     add<NullNode>("null");

@@ -1,6 +1,7 @@
 #include "jitnodes/jit/fuse.h"
 
 #include <map>
+#include <stdexcept>
 
 namespace jitnodes {
 
@@ -96,6 +97,40 @@ KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second, con
     for (const KernelSpec::StringParam& sp : first.stringParams)
         out.stringParams.push_back({sp.paramIndex, firstChannels[static_cast<size_t>(sp.channel)], sp.text});
     appendKernel(out, second, channelType);
+    return out;
+}
+
+KernelSpec mixKernels(const std::vector<KernelSpec>& branches, const std::string& channel) {
+    if (branches.empty()) throw std::invalid_argument("mixKernels: no branches");
+    KernelSpec out;
+    int sum = -1;
+    for (size_t i = 0; i < branches.size(); ++i) {
+        const KernelSpec& branch = branches[i];
+        const std::string prefix = std::to_string(i) + ".";
+        const int paramOffset = out.paramCount;
+        out.paramCount += branch.paramCount;
+
+        std::vector<int> channels;
+        int own = -1;
+        for (size_t c = 0; c < branch.channels.size(); ++c) {
+            const int mapped = out.channelIndex(prefix + branch.channels[c]);
+            if (branch.channelTypes[c] != AttribType::float32) out.channelTypes[static_cast<size_t>(mapped)] = branch.channelTypes[c];
+            channels.push_back(mapped);
+            if (branch.channels[c] == channel) own = static_cast<int>(c);
+        }
+        const std::vector<int> map = copyGraph(out.graph, branch, channels, paramOffset, {});
+
+        int value = -1;
+        if (own >= 0)
+            for (const auto& [stored, expr] : branch.stores)
+                if (stored == own) value = map[static_cast<size_t>(expr)];
+        if (value < 0) value = out.graph.load(own >= 0 ? channels[static_cast<size_t>(own)] : out.channelIndex(prefix + channel));
+        sum = sum < 0 ? value : out.graph.binary(Op::add, sum, value);
+
+        for (const KernelSpec::StringParam& sp : branch.stringParams)
+            out.stringParams.push_back({sp.paramIndex + paramOffset, channels[static_cast<size_t>(sp.channel)], sp.text});
+    }
+    out.stores.emplace_back(out.channelIndex(channel), sum);
     return out;
 }
 

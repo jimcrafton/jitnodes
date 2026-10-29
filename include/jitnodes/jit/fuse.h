@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "jitnodes/jit/expr.h"
 
@@ -21,5 +22,10 @@ KernelSpec composeKernels(const KernelSpec& first, const KernelSpec& second,
 // k nodes is composed in O(k) rather than O(k^2).
 void appendKernel(KernelSpec& acc, const KernelSpec& next,
                   const std::function<AttribType(const std::string&)>& channelType = {});
+
+// Parallel composition: every branch runs on its own copy of the channels (branch i's channel `n` becomes `i.n`, a name no wrangle
+// can produce), and the result stores the sum of the branches' final `channel` into `channel`. Parameters are concatenated in branch
+// order. A branch that never writes `channel` contributes the value it loads.
+KernelSpec mixKernels(const std::vector<KernelSpec>& branches, const std::string& channel);
 
 }  // namespace jitnodes
