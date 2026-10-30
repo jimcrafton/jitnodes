@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "jitnodes/audio/eventBuffer.h"
 #include "jitnodes/geo/geometry.h"
 #include "jitnodes/graph/network.h"
 #include "jitnodes/jit/kernel.h"
@@ -90,8 +91,9 @@ public:
     // are carried only when the block sizes match; nodes only in one program start from zero.
     void migrateState(const AudioProgram& previous);
 
-    // Runs one block. out[i] receives blockSize floats for options.outputs[i]; null skips the copy.
-    void process(float* const* out);
+    // Runs one block. out[i] receives blockSize floats for options.outputs[i]; null skips the copy. `events` (offsets below blockSize) go
+    // to every step that handles them (adsr, voices); null means none.
+    void process(float* const* out, const EventBuffer* events = nullptr);
 
     // Runs one block into the internal buffers: commits the JIT stack and faults in the pages before streaming starts.
     void warm() { process(nullptr); }

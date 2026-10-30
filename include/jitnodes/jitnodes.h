@@ -1,6 +1,8 @@
 #pragma once
 
 #include "jitnodes/audio/audioProgram.h"
+#include "jitnodes/audio/eventBuffer.h"
+#include "jitnodes/audio/sampleBank.h"
 #include "jitnodes/core/alignedArray.h"
 #include "jitnodes/core/arena.h"
 #include "jitnodes/core/threadPool.h"

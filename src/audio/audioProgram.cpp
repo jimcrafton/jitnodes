@@ -72,9 +72,9 @@ struct AudioProgram::StepRun {
     size_t count = 0;
     float* tap = nullptr;  // fbSink: the block is also copied here
 
-    void run() {
+    void run(const EventBuffer& events) {
         std::memcpy(dst, src, count * sizeof(float));
-        step->process(dst, count, params.data(), state->data());
+        step->processEvents(dst, count, params.data(), state->data(), events);
         if (tap) std::memcpy(tap, dst, count * sizeof(float));
     }
 };
@@ -383,11 +383,13 @@ void AudioProgram::migrateState(const AudioProgram& previous) {
     }
 }
 
-void AudioProgram::process(float* const* out) {
+void AudioProgram::process(float* const* out, const EventBuffer* events) {
+    static const EventBuffer none;
+    const EventBuffer& block = events ? *events : none;
     for (const Phase& p : phases_) *p.phaseParam = static_cast<float>(*p.phase);
     for (const auto& [stage, step] : order_) {
         if (stage) stage->run(blockSize_);
-        else step->run();
+        else step->run(block);
     }
     for (auto& [name, fb] : feedback_) std::memcpy(fb->current.data(), fb->next.data(), blockSize_ * sizeof(float));
     for (const Phase& p : phases_) {
