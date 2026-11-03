@@ -44,6 +44,9 @@ The saving is real only because skipping is real: `Node::needsInputs()` (asked w
 `fileCache` that will read, so upstream nodes are never planned, cooked or required to be wired. The file does not record what
 produced it. If you change the upstream graph, delete the file or switch to `write` for one cook; `auto` cannot tell it is stale.
 
+A node's **freeze** flag ([freezeAndBypass.md](freezeAndBypass.md)) does the same skipping for any node type but keeps the geometry inline in the graph file as text
+(about 75 bytes a point), so use `fileCache` for large results and freeze for small, hand-edited ones.
+
 ## Tools
 - `jitnodesCli graph.json --geo-out sim.jngeo [--node NAME] [--time T]` writes the cooked geometry.
 - `--svg-color` (with `--svg`) strokes each primitive with its first point's `Cd`/`alpha` and fills closed shapes when `render.fill` is on

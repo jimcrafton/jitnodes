@@ -170,6 +170,9 @@ public:
     bool indexesConsistent() const;
 
     GeometryHandle cook(NodeId id);
+    // Cooks the node (what is upstream of it too) and keeps the result as its frozen geometry; throws for a bypassed node.
+    // Node::setFrozenGeometry(nullptr) unfreezes.
+    void freezeNode(NodeId id);
     void setDisplayNode(NodeId id) {
         displayNode_ = id;
         notifyOwner();

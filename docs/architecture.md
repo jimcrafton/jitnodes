@@ -103,6 +103,16 @@ it may do with the node:
 | `hasVariableInputs()` | the network keeps exactly one free input slot after the last connected one (`merge`) |
 | `childNetwork()` | container (subnet, asset instance) that owns a nested `Network` |
 
+Two flags on every node, set from outside rather than by the type, and saved with the node (in snapshots, undo and paste too; full description,
+usage and the file-size cost of freeze in [freezeAndBypass.md](freezeAndBypass.md)):
+
+* **Bypass** (`Node::setBypassed`): the node is skipped. Planning gives it its first input only, and its result is that input as it is, or an empty geometry when
+  the input is not connected. A bypassed node is never fused into a chain or absorbed into a merge. It wins over freeze.
+* **Freeze** (`Network::freezeNode`, `Node::setFrozenGeometry`): the node's result is kept and returned, and it is planned with no inputs, so nothing upstream is
+  cooked for it. An edit upstream stops at a frozen node (it and what follows keep their caches), a frozen node is not time-dependent, and it is not fused or
+  absorbed either. The geometry is saved inline in the file (`"frozen"`), so a large one makes a large file; `fileCache` is the way to put such data in a file.
+  `setFrozenGeometry(nullptr)` unfreezes.
+
 **`NodeRegistry`** maps type names to creators. The built-in types are `line`, `circle`, `transform`, `wrangle`,
 `merge`, `attribCreate`, `null`, `resample`, `subdivide`, `flatten`, `copyToPoints`, `blast`, `mirror` (reflections and n-fold copies, `symmetry()` in `src/geo/topology.cpp`), `attribString` and `groupByString` ([strings.md](strings.md)), the point and image nodes
 `generate`, `scatter`, `noise`, `warp`, `colorRamp`, `relax`, `attribBlur`, `wave`, `attractor`, `flow`, `voronoi`, `lloyd`, `particles`, `gasField`, `boids`, `springs`, `grow`, `streamlines`, `fluid`, `colonize`, `reactionDiffusion`, `lsystem`, `curveSample`, `ribbon`, `trail`, the curve and layout nodes `smooth`, `offset`, `sort`, `join`, `bevel`, `polar`, `twist`, `peak`, `lattice` and `switch` ([shapes.md](shapes.md)) and `render` (see
