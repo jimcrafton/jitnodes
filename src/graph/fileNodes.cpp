@@ -216,7 +216,16 @@ void add(const char* typeName) {
 
 }  // namespace
 
+// Outputs the geometry stored in its `geometry` parameter: the way an application hands authored data (a pen path) to a graph.
+class GeometryNode : public Node {
+public:
+    GeometryNode() : Node("geometry", 0) { declareGeometry("geometry"); }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return geometryParam("geometry"); }
+};
+
 void registerFileNodes() {
+    add<GeometryNode>("geometry");
     add<FileReadNode>("fileRead");
     add<FileCacheNode>("fileCache");
     add<FileTrailNode>("fileTrail");

@@ -117,9 +117,9 @@ natural-media stroke. The examples above are the starting point; what changes wh
   used to design them. Brush settings (size, colour, dryness) are graph parameters: put them on a wrangle's `a`..`d` or on node
   parameters and change them with `setFloat`; a change to a wrangle's `a`..`d` never recompiles it.
 - **The guide is data.** Authored geometry can be stored in a node's geometry parameter (`Node::setGeometryParam`), which is saved
-  with the graph and takes part in undo. The library has no source node that reads such a parameter yet, so an input node (or a
-  `fileRead` of a `.jngeo`, see [geometryFiles.md](geometryFiles.md)) is the way to get the pen path in; adding a small node that
-  outputs a geometry parameter is the clean route. Per-point pen data (pressure, tilt, speed, time) goes in as point attributes of
+  with the graph and takes part in undo. The `geometry` node has no inputs and outputs the geometry in its `geometry` parameter, so
+  `net.node(id).setGeometryParam("geometry", penPath)` is the way to get the pen path in (a `fileRead` of a `.jngeo`, see
+  [geometryFiles.md](geometryFiles.md), is the file-based alternative). Per-point pen data (pressure, tilt, speed, time) goes in as point attributes of
   the guide; `resample`, `smooth` and `subdivide` carry attributes along, and `ribbon` can use any of them through `widthAttrib`.
 - **The stroke is a set of dots.** The examples output points with `radius`, `Cd`, `alpha`, `softness` (and optionally `aspect`,
   `shape`), the sprite contract of `renderSplats`; `render` composites them in index order, so a later dot covers an earlier one, and
