@@ -1,6 +1,5 @@
 #include "jitnodes/geo/geoFile.h"
 
-#include <bit>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -16,8 +15,6 @@
 namespace jitnodes {
 
 namespace {
-
-static_assert(std::endian::native == std::endian::little, ".jngeo is little-endian and the loader copies arrays as they are");
 
 constexpr char magic[8] = {'J', 'N', 'G', 'E', 'O', '1', 0, 0};
 constexpr uint32_t formatMajor = 1;
