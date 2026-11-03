@@ -41,6 +41,7 @@ enum class Op : uint8_t {
     pow,
     floor,
     ceil,
+    index,  // element position within the run, as a float (exact below 2^24)
 };
 
 struct ExprNode {
@@ -59,6 +60,7 @@ public:
     int constant(float v);
     int param(int index);
     int load(int channel);
+    int index();
     int unary(Op op, int a);
     int binary(Op op, int a, int b);
     int select(int mask, int whenTrue, int whenFalse);

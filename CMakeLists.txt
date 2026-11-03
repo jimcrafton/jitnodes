@@ -45,6 +45,8 @@ add_library(jitnodes STATIC
   src/jit/kernel.cpp
   src/jit/vecEmitter.cpp
   src/jit/scalarEval.cpp
+  src/audio/audioProgram.cpp
+  src/audio/audioNodes.cpp
   src/graph/animation.cpp
   src/graph/node.cpp
   src/graph/network.cpp
