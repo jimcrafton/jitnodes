@@ -221,6 +221,9 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         b["pos"] = b.pop();
     }
 
+    if (n.bypassed()) b["bypass"] = json5::value(1.0);
+    if (n.frozen()) b["frozen"] = writeGeometry(b, *n.frozenGeometry());
+
     if (!n.spareNames().empty()) {
         b.push_array();
         for (const std::string& name : n.spareNames()) b += b.new_string(name);
@@ -409,6 +412,10 @@ void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
             if (!xy.is_valid() || xy.size() != 2) fail("pos must be an array of two numbers");
             n.setPosition(static_cast<float>(requireNumber(xy[0], "pos x")), static_cast<float>(requireNumber(xy[1], "pos y")));
         }
+        // Absent means off, so a snapshot restored over a node that has since been bypassed or frozen switches them off again.
+        json5::value flag;
+        n.setBypassed(member(nv, "bypass", flag) && requireNumber(flag, "bypass") != 0.0);
+        n.setFrozenGeometry(member(nv, "frozen", flag) ? readGeometry(flag, "frozen") : GeometryHandle());
         json5::value spare;
         if (declareSpare && member(nv, "spare", spare)) {
             const json5::array_view names(spare);

@@ -90,6 +90,17 @@ public:
     bool hasGeometryParam(const std::string& name) const { return geometries_.count(name) != 0; }
     std::vector<std::string> geometryNames() const;
 
+    // Bypass: the node is skipped. It returns its first input as it is (an empty geometry when that input is not connected) and does no work of
+    // its own. Wins over freeze. Saved with the node.
+    void setBypassed(bool bypassed);
+    bool bypassed() const { return bypassed_; }
+
+    // Freeze: the node returns this geometry and nothing upstream of it is planned or cooked for it, and an edit upstream does not dirty it or
+    // what follows it. A null handle unfreezes. The geometry is saved inline with the node. Network::freezeNode cooks the node and freezes the result.
+    void setFrozenGeometry(GeometryHandle geometry);
+    bool frozen() const { return frozen_ != nullptr; }
+    const GeometryHandle& frozenGeometry() const { return frozen_; }
+
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
         if (hasPosition_ && posX_ == x && posY_ == y) return;
@@ -182,7 +193,9 @@ private:
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
     bool dirty_ = true;
-    bool anchor_ = false;     // a fused chain stops below this node (see Network::noteEdited)
+    bool bypassed_ = false;
+    GeometryHandle frozen_;
+    bool anchor_ = false;    // a fused chain stops below this node (see Network::noteEdited)
     size_t lastPoints_ = 0;   // points in the latest cook of the node, or of the fused chain it was part of
     float posX_ = 0.0f;
     float posY_ = 0.0f;

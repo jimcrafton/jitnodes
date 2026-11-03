@@ -338,6 +338,8 @@ void Network::markDownstream(NodeId id, std::unordered_set<NodeId>& seen) {
         pending.pop_back();
         if (!seen.insert(current).second) continue;
         Node& n = *slot(current).node;
+        // A frozen node's output does not depend on anything upstream, so an edit there stops here and what follows keeps its cache.
+        if (current != id && n.frozen_ && !n.bypassed_) continue;
         n.dirty_ = true;
         n.cooked_.reset();
         if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
@@ -414,6 +416,7 @@ bool Network::setTime(double t) {
         timeAffected_.clear();
         for (const auto& entry : slots_) {
             const Node& n = *entry.second.node;
+            if (n.frozen_ && !n.bypassed_) continue;
             bool candidate = n.childNetwork() != nullptr || n.dependsOnPlayhead();
             for (auto it = n.floats_.begin(); !candidate && it != n.floats_.end(); ++it) candidate = it->second.animated();
             if (candidate && dependsOnTime(entry.first)) timeAffected_.push_back(entry.first);
@@ -502,6 +505,7 @@ bool Network::paramDependsOnTime(NodeId id, const std::string& name, std::set<st
 bool Network::dependsOnTime(NodeId id) const {
     std::set<std::pair<NodeId, std::string>> visiting;
     const Node& n = node(id);
+    if (n.frozen_ && !n.bypassed_) return false;
     for (const auto& entry : n.floats_)
         // A plain number cannot depend on time; skipping it avoids the lookups by name, which dominate when a graph has thousands of nodes.
         if (entry.second.animated() && paramDependsOnTime(id, entry.first, visiting)) return true;
@@ -560,7 +564,8 @@ void Network::collectMergeInputs(NodeId id, CookTask& task) {
         const NodeId up = s.inputs[top.next++];
         if (up == invalidNodeId) continue;
         const Node& upNode = node(up);
-        const bool absorbable = upNode.isMerge() && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
+        const bool absorbable = upNode.isMerge() && !upNode.bypassed_ && !upNode.frozen_ && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ &&
+                                consumerCount(up) == 1;
         if (absorbable) {
             task.absorbed.push_back(up);
             stack.push_back({up, 0});
@@ -574,6 +579,12 @@ Network::CookTask Network::buildTask(NodeId id) {
     Node& n = node(id);
     CookTask task;
     task.tail = id;
+    if (n.bypassed_) {
+        const Slot& s = slot(id);
+        if (!s.inputs.empty() && s.inputs[0] != invalidNodeId) task.inputs.push_back(s.inputs[0]);
+        return task;
+    }
+    if (n.frozen_) return task;
     if (fusionEnabled() && n.isPointwise()) {
         task.cls = n.attribClass();
         task.chain.push_back(id);
@@ -581,7 +592,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             const NodeId up = slot(task.chain.back()).inputs[0];
             if (up == invalidNodeId) break;
             const Node& upNode = *slot(up).node;
-            const bool fusable = upNode.isPointwise() && !upNode.anchor_ && upNode.attribClass() == task.cls &&
+            const bool fusable = upNode.isPointwise() && !upNode.bypassed_ && !upNode.frozen_ && !upNode.anchor_ && upNode.attribClass() == task.cls &&
                                  (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
             if (!fusable) break;
             task.chain.push_back(up);
@@ -692,8 +703,14 @@ void Network::runTask(const CookTask& task) {
         std::vector<GeometryHandle> inputs;
         inputs.reserve(task.inputs.size());
         for (NodeId in : task.inputs) inputs.push_back(node(in).cooked_);
-        CookContext ctx{compiler(), time_, pool(), &timings, this};
-        result = tail.cook(ctx, inputs);
+        if (tail.bypassed_) {
+            result = inputs.empty() ? std::make_shared<const Geometry>() : inputs.front();
+        } else if (tail.frozen_) {
+            result = tail.frozen_;
+        } else {
+            CookContext ctx{compiler(), time_, pool(), &timings, this};
+            result = tail.cook(ctx, inputs);
+        }
         for (NodeId a : task.absorbed) node(a).stats_.fusedInto = task.tail;
     }
 
@@ -776,6 +793,13 @@ void Network::writeTrace(const std::string& path) const {
     if (!file) throw std::runtime_error("cannot open '" + path + "' for writing");
     const bool ok = std::fwrite(json.data(), 1, json.size(), file) == json.size();
     if (std::fclose(file) != 0 || !ok) throw std::runtime_error("cannot write '" + path + "'");
+}
+
+void Network::freezeNode(NodeId id) {
+    Node& n = node(id);
+    if (n.bypassed_) throw std::runtime_error(n.name() + " is bypassed, so there is nothing to freeze");
+    GeometryHandle result = cook(id);
+    n.setFrozenGeometry(result ? result : std::make_shared<const Geometry>());
 }
 
 GeometryHandle Network::cook(NodeId id) {

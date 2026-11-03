@@ -164,6 +164,18 @@ std::vector<std::string> Node::geometryNames() const {
     return names;
 }
 
+void Node::setBypassed(bool bypassed) {
+    if (bypassed_ == bypassed) return;
+    bypassed_ = bypassed;
+    markChanged();
+}
+
+void Node::setFrozenGeometry(GeometryHandle geometry) {
+    if (geometry == frozen_ || (geometry && frozen_ && sameGeometry(*geometry, *frozen_))) return;
+    frozen_ = std::move(geometry);
+    markChanged();
+}
+
 void Node::touch() { revision_ = ++revisionCounter; }
 
 void Node::markChanged(bool structural) {
