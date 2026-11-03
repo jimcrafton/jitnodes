@@ -31,6 +31,10 @@ public:
     void loadInt(const asmjit::x86::Vec& dst, const asmjit::x86::Mem& mem);  // int32 lanes -> float
     void storeInt(const asmjit::x86::Mem& mem, const asmjit::x86::Vec& v);   // float -> int32 (truncating)
 
+    // Lane positions 0..lanes-1 as floats, and the in-place step that moves them on to the next iteration.
+    asmjit::x86::Vec laneIndices();
+    void advance(const asmjit::x86::Vec& v, const asmjit::x86::Vec& step);
+
     // Computational IR ops (everything except constant/param/load).
     asmjit::x86::Vec op(Op op, const asmjit::x86::Vec& a, const asmjit::x86::Vec& b, const asmjit::x86::Vec& c);
 

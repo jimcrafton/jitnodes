@@ -156,6 +156,14 @@ void Kernel::compileJit() {
         if (n.op == Op::constant || n.op == Op::param) value[i] = emitInvariant(n);
     }
 
+    bool usesIndex = false;
+    for (size_t i = 0; i < nodes.size(); ++i) usesIndex = usesIndex || (live[i] && nodes[i].op == Op::index);
+    x86::Vec lane, laneStep;
+    if (usesIndex) {
+        lane = em.laneIndices();
+        laneStep = em.konst(static_cast<float>(em.lanes()));
+    }
+
     x86::Gp index = cc.new_gp_ptr("i");
     cc.xor_(index, index);
     cc.bind(loop);
@@ -175,6 +183,10 @@ void Kernel::compileJit() {
             value[i] = d;
             continue;
         }
+        if (n.op == Op::index) {
+            value[i] = lane;
+            continue;
+        }
         auto operand = [&](int idx) { return idx >= 0 ? value[static_cast<size_t>(idx)] : x86::Vec(); };
         value[i] = em.op(n.op, operand(n.a), operand(n.b), operand(n.c));
     }
@@ -185,6 +197,7 @@ void Kernel::compileJit() {
         else em.store(dst, value[static_cast<size_t>(expr)]);
     }
 
+    if (usesIndex) em.advance(lane, laneStep);
     cc.add(index, static_cast<int>(em.lanes()));
     cc.cmp(index, count);
     cc.jb(loop);
@@ -210,6 +223,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
             switch (n.op) {
                 case Op::constant: v[i] = n.value; break;
                 case Op::param: v[i] = params[n.index]; break;
+                case Op::index: v[i] = static_cast<float>(e); break;
                 case Op::load:
                     v[i] = isIntegerStorage(spec_.channelTypes[static_cast<size_t>(n.index)])
                                ? static_cast<float>(static_cast<const int32_t*>(channels[n.index])[e])
@@ -237,7 +251,11 @@ void Kernel::runSerial(void* const* channels, const float* params, size_t padded
 
 void Kernel::run(void* const* channels, const float* params, size_t paddedCount, ThreadPool* pool) const {
     constexpr size_t grain = size_t(1) << 15;
-    const size_t chunks = pool ? std::min(pool->concurrency(), paddedCount / grain) : 1;
+    size_t chunks = pool ? std::min(pool->concurrency(), paddedCount / grain) : 1;
+    // Chunks restart their element count at zero, so a kernel that reads its own position has to run in one piece.
+    if (chunks > 1)
+        for (const ExprNode& n : spec_.graph.nodes())
+            if (n.op == Op::index) chunks = 1;
     if (chunks <= 1) {
         runSerial(channels, params, paddedCount);
         return;
