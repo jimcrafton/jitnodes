@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "jitnodes/core/alignedArray.h"
+#include "jitnodes/core/data.h"
 #include "jitnodes/core/threadPool.h"
 #include "jitnodes/geo/attribute.h"
 
@@ -33,9 +34,10 @@ inline uint32_t cubicSegments(const Primitive& p) {
     return p.count >= 4 && p.count % 3 == 1 ? (p.count - 1) / 3 : 0;
 }
 
-class Geometry {
+class Geometry : public Data {
 public:
     Geometry();
+    DataKind kind() const override { return DataKind::geometry; }
 
     size_t pointCount() const { return pointCount_; }
     size_t paddedPointCount() const { return padToLanes(pointCount_); }
@@ -97,6 +99,11 @@ private:
 };
 
 using GeometryHandle = std::shared_ptr<const Geometry>;
+
+// Null when the handle is empty or holds another kind of data.
+inline GeometryHandle asGeometry(const DataHandle& data) {
+    return data && data->kind() == DataKind::geometry ? std::static_pointer_cast<const Geometry>(data) : nullptr;
+}
 
 // Same points, primitives, attributes (names, types and values) and detail values.
 bool sameGeometry(const Geometry& a, const Geometry& b);

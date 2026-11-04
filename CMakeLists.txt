@@ -39,6 +39,9 @@ add_library(jitnodes STATIC
   src/geo/svgExport.cpp
   src/geo/raster.cpp
   src/geo/geoFile.cpp
+  src/image/imageData.cpp
+  src/image/imageNode.cpp
+  src/image/cpuTileProvider.cpp
   src/jit/expr.cpp
   src/jit/exprParser.cpp
   src/jit/fuse.cpp

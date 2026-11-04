@@ -55,7 +55,7 @@ command line tool and your own program are all front ends over the same `Network
 
 | Directory | Files | Responsibility |
 |---|---|---|
-| `include/jitnodes/core`, `src/core` | `alignedArray.h`, `threadPool.*`, `arena.*`, `bitCast.h` | 64-byte aligned, lane-padded arrays; a fixed thread pool with nested `parallelFor`; a scratch arena (kept, but no cook path needs it any more) |
+| `include/jitnodes/core`, `src/core` | `data.h`, `alignedArray.h`, `threadPool.*`, `arena.*`, `bitCast.h` | 64-byte aligned, lane-padded arrays; a fixed thread pool with nested `parallelFor`; a scratch arena (kept, but no cook path needs it any more) |
 | `geo/` | `geometry.*`, `attribute.h`, `topology.*`, `svgExport.*` | `Geometry` (points, primitives, attributes, detail values), copy-on-write `AttribArray`, resample / subdivide / copy-to-points / blast algorithms, SVG output for debugging |
 | `jit/` | `expr.*`, `exprParser.*`, `fuse.*`, `kernel.*`, `vecEmitter.*`, `scalarEval.*`, `opEval.h`, `isa.h` | the expression IR (`ExprGraph`, `KernelSpec`), the wrangle parser, kernel composition for fusion, `KernelCompiler` / `Kernel` (asmjit), the SIMD emitter, and the scalar interpreter that defines the reference semantics |
 | `graph/` | `node.*`, `network.*`, `builtinNodes.cpp`, `topologyNodes.cpp`, `subnet.*`, `animation.*`, `serialize.*`, `history.*` | `Node` and `NodeRegistry`, the `Network` (wiring, dirty flags, cook planner, fusion, threads, time), built-in node types, subnets and assets, keyframes, JSON5 persistence, undo/redo |
@@ -67,6 +67,8 @@ command line tool and your own program are all front ends over the same `Network
 `include/jitnodes/jitnodes.h` pulls in the public headers an application needs.
 
 ## The data: Geometry and attributes
+
+`Geometry` is one kind of `Data`: it derives from the immutable base `Data` (`jitnodes/core/data.h`), which has a `kind()`, and results are passed around as `GeometryHandle` (or `DataHandle` where the kind is not known). Wires are typed by `DataKind`; see [dataAndPorts.md](dataAndPorts.md).
 
 ![Geometry storage](img/geometry.svg)
 
@@ -101,6 +103,7 @@ it may do with the node:
 | `selectsInput()` / `selectedInput()` | a selector (`switch`): planning keeps only the input slot `selectedInput()` returns, after the node's parameters are evaluated for the current time |
 | `needsInputs()` | false when `cook` will not use its inputs: they are not planned, cooked or required (`fileCache` in read mode) |
 | `hasVariableInputs()` | the network keeps exactly one free input slot after the last connected one (`merge`) |
+| `inputType(i)` / `outputType()` | the `DataKind` each input accepts and the output produces (default `geometry`); `connect` and `replaceNode` enforce them and `setBypassed` needs the first input and the output to match ([dataAndPorts.md](dataAndPorts.md)) |
 | `childNetwork()` | container (subnet, asset instance) that owns a nested `Network` |
 
 Two flags on every node, set from outside rather than by the type, and saved with the node (in snapshots, undo and paste too; full description,

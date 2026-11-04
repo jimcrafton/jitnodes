@@ -169,7 +169,9 @@ public:
     // True when the reverse indexes agree with a scan of the graph (for tests).
     bool indexesConsistent() const;
 
-    GeometryHandle cook(NodeId id);
+    // Geometry of the node, or null if the node's output is not geometry. cookData() returns any kind.
+    GeometryHandle cook(NodeId id) { return asGeometry(cookData(id)); }
+    DataHandle cookData(NodeId id);
     // Cooks the node (what is upstream of it too) and keeps the result as its frozen geometry; throws for a bypassed node.
     // Node::setFrozenGeometry(nullptr) unfreezes.
     void freezeNode(NodeId id);
@@ -256,6 +258,8 @@ private:
     Slot& slot(NodeId id);
     const Slot& slot(NodeId id) const;
     bool reaches(NodeId from, NodeId target) const;
+    static void checkPortTypes(const std::string& fromName, DataKind outputKind, const Node& to, int inputIndex);
+    void checkReplacement(NodeId id, const Node& fresh, const std::vector<NodeId>& newInputs) const;
     void fitInputs(Slot& s);
     size_t consumerCount(NodeId id) const;
     void addEdge(NodeId from, NodeId to) { consumers_[from].push_back(to); }

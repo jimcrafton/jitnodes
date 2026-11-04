@@ -72,7 +72,7 @@ The window title shows the file name, with `*` when there are unsaved changes.
 
 **Building.** Palette buttons add nodes; drag from a node's output port (bottom centre) to another node or input port
 (top) to connect; drag a connected input port away to detach and re-drop the wire. A connection that would create a
-cycle is refused and the message shown. `merge` has an unlimited number of inputs: there is always one free slot after
+cycle or a port type mismatch ([dataAndPorts.md](dataAndPorts.md)) is refused and the message shown. `merge` has an unlimited number of inputs: there is always one free slot after
 the last connected one.
 
 **Selecting.** Click selects a node; Shift- or Ctrl-click toggles; dragging on empty space draws a selection box

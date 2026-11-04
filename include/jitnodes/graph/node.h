@@ -123,6 +123,14 @@ public:
     const NodeStats& stats() const { return stats_; }
 
     virtual GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) = 0;
+    // What the network actually calls. The default adapts cook() (inputs that are not geometry arrive as null); nodes of other kinds
+    // (ImageNode) override this instead and leave cook() unused.
+    virtual DataHandle cookData(CookContext& ctx, const std::vector<DataHandle>& inputs);
+
+    // Port types: Network::connect only accepts an output whose kind equals the kind of the input it is wired to. Defaults keep every
+    // existing node a geometry-to-geometry node. Port types come from the node type, so they are not saved in graph files.
+    virtual DataKind inputType(int /*index*/) const { return DataKind::geometry; }
+    virtual DataKind outputType() const { return DataKind::geometry; }
 
     // Point-wise nodes have one input, keep topology, and only rewrite point channels; the
     // network can fuse chains of them into a single kernel.
@@ -166,6 +174,8 @@ protected:
     // For container nodes that hand a value to the graph inside them (the loop counter, read there as `parent.name`): sets a declared
     // parameter during a cook without marking the node dirty.
     void publishFloat(const std::string& name, float value);
+    // Hash of the resolved float and string parameters (not position, name or flags): equal hashes, equal parameters.
+    uint64_t paramsHash() const;
 
 private:
     friend class Network;
@@ -208,7 +218,7 @@ private:
     bool hasPosition_ = false;
     size_t cookCount_ = 0;
     NodeStats stats_;
-    GeometryHandle cooked_;
+    DataHandle cooked_;
 };
 
 }  // namespace jitnodes

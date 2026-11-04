@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "jitnodes/core/stackGuard.h"
+#include "jitnodes/image/imageData.h"
 #include "jitnodes/jit/fuse.h"
 #include "jitnodes/jit/scalarEval.h"
 
@@ -134,8 +135,31 @@ void Network::removeNode(NodeId id) {
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
 
+void Network::checkPortTypes(const std::string& fromName, DataKind outputKind, const Node& to, int inputIndex) {
+    const DataKind wanted = to.inputType(inputIndex);
+    if (wanted != outputKind)
+        throw std::runtime_error("type mismatch: " + fromName + " outputs " + dataKindName(outputKind) + " but input " + std::to_string(inputIndex) +
+                                 " of " + to.name() + " takes " + dataKindName(wanted));
+}
+
+// Checks, before anything changes, that `fresh` accepts the wiring it would inherit and still feeds its consumers.
+void Network::checkReplacement(NodeId id, const Node& fresh, const std::vector<NodeId>& newInputs) const {
+    for (size_t i = 0; i < newInputs.size(); ++i)
+        if (newInputs[i] != invalidNodeId) {
+            const Node& up = *slot(newInputs[i]).node;
+            if (i < static_cast<size_t>(fresh.inputCount()) || fresh.hasVariableInputs()) checkPortTypes(up.name(), up.outputType(), fresh, static_cast<int>(i));
+        }
+    if (auto it = consumers_.find(id); it != consumers_.end())
+        for (NodeId c : it->second) {
+            const Slot& cs = slot(c);
+            for (size_t i = 0; i < cs.inputs.size(); ++i)
+                if (cs.inputs[i] == id) checkPortTypes(slot(id).node->name(), fresh.outputType(), *cs.node, static_cast<int>(i));
+        }
+}
+
 void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs) {
     Slot& s = slot(id);
+    checkReplacement(id, *fresh, inputs ? *inputs : s.inputs);
     if (inputs) {
         for (NodeId in : *inputs) {
             if (in == invalidNodeId) continue;
@@ -267,6 +291,7 @@ void Network::connect(NodeId from, NodeId to, int inputIndex) {
     Slot& dst = slot(to);
     if (inputIndex < 0 || (static_cast<size_t>(inputIndex) >= dst.inputs.size() && !dst.node->hasVariableInputs()))
         throw std::runtime_error("input index out of range on " + dst.node->name());
+    checkPortTypes(slot(from).node->name(), slot(from).node->outputType(), *dst.node, inputIndex);
     if (reaches(from, to)) throw std::runtime_error("connection would create a cycle");
     if (static_cast<size_t>(inputIndex) >= dst.inputs.size()) dst.inputs.resize(static_cast<size_t>(inputIndex) + 1, invalidNodeId);
     const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
@@ -665,10 +690,10 @@ void Network::runTask(const CookTask& task) {
     const auto start = Clock::now();
     Node& tail = node(task.tail);
     CookTimings timings;
-    GeometryHandle result;
+    DataHandle result;
 
     if (!task.chain.empty()) {
-        GeometryHandle base = node(task.inputs[0]).cooked_;
+        GeometryHandle base = asGeometry(node(task.inputs[0]).cooked_);
         PointKernel fused;
         const AttribClass chainClass = task.cls;
         auto channelType = [&](const std::string& name) {
@@ -700,23 +725,25 @@ void Network::runTask(const CookTask& task) {
         if (task.chain.size() > 1) ++fusedChainCount_;
         for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).stats_.fusedInto = task.tail;
     } else {
-        std::vector<GeometryHandle> inputs;
+        std::vector<DataHandle> inputs;
         inputs.reserve(task.inputs.size());
         for (NodeId in : task.inputs) inputs.push_back(node(in).cooked_);
         if (tail.bypassed_) {
-            result = inputs.empty() ? std::make_shared<const Geometry>() : inputs.front();
+            if (!inputs.empty()) result = inputs.front();
+            else if (tail.outputType() == DataKind::image) result = ImageData::empty();
+            else result = std::make_shared<const Geometry>();
         } else if (tail.frozen_) {
             result = tail.frozen_;
         } else {
             CookContext ctx{compiler(), time_, pool(), &timings, this};
-            result = tail.cook(ctx, inputs);
+            result = tail.cookData(ctx, inputs);
         }
         for (NodeId a : task.absorbed) node(a).stats_.fusedInto = task.tail;
     }
 
     tail.cooked_ = result;
     tail.dirty_ = false;
-    tail.lastPoints_ = result->pointCount();
+    if (const GeometryHandle geo = asGeometry(result)) tail.lastPoints_ = geo->pointCount();
     for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).lastPoints_ = tail.lastPoints_;
     ++tail.cookCount_;
 
@@ -798,11 +825,12 @@ void Network::writeTrace(const std::string& path) const {
 void Network::freezeNode(NodeId id) {
     Node& n = node(id);
     if (n.bypassed_) throw std::runtime_error(n.name() + " is bypassed, so there is nothing to freeze");
+    if (n.outputType() != DataKind::geometry) throw std::runtime_error(n.name() + " outputs " + dataKindName(n.outputType()) + "; only geometry can be frozen");
     GeometryHandle result = cook(id);
     n.setFrozenGeometry(result ? result : std::make_shared<const Geometry>());
 }
 
-GeometryHandle Network::cook(NodeId id) {
+DataHandle Network::cookData(NodeId id) {
     Node& n = node(id);
     if (!n.dirty_ && n.cooked_) return n.cooked_;
     requireStack("the graph");

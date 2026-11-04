@@ -7066,6 +7066,444 @@ TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
 
 }  // namespace
 
+namespace {
+class ImageSourceNode : public Node {
+public:
+    ImageSourceNode() : Node("testImageSource", 0) {}
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return std::make_shared<Geometry>(); }
+    DataKind outputType() const override { return DataKind::image; }
+};
+
+class ImageFilterNode : public Node {
+public:
+    ImageFilterNode() : Node("testImageFilter", 1) {}
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override { return in[0]; }
+    DataKind inputType(int) const override { return DataKind::image; }
+    DataKind outputType() const override { return DataKind::image; }
+};
+
+class ImageToGeometryNode : public Node {
+public:
+    ImageToGeometryNode() : Node("testImageToGeometry", 1) {}
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override { return in[0]; }
+    DataKind inputType(int) const override { return DataKind::image; }
+};
+
+void registerPortTestNodes() {
+    static const bool registered = (NodeRegistry::instance().registerType("testImageSource", [] { return std::make_unique<ImageSourceNode>(); }),
+                                    NodeRegistry::instance().registerType("testImageFilter", [] { return std::make_unique<ImageFilterNode>(); }),
+                                    NodeRegistry::instance().registerType("testImageToGeometry", [] { return std::make_unique<ImageToGeometryNode>(); }), true);
+    (void)registered;
+}
+
+bool connectThrows(Network& net, NodeId from, NodeId to, int input = 0) {
+    try {
+        net.connect(from, to, input);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+}  // namespace
+
+TEST(connectRejectsPortTypeMismatches) {
+    registerPortTestNodes();
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    NodeId src = net.addNode("testImageSource");
+    NodeId filter = net.addNode("testImageFilter");
+    NodeId toGeo = net.addNode("testImageToGeometry");
+    CHECK(!connectThrows(net, line, xf));
+    CHECK(connectThrows(net, line, filter));
+    CHECK(connectThrows(net, src, xf));
+    CHECK(!connectThrows(net, src, filter));
+    CHECK(!connectThrows(net, filter, toGeo));
+    CHECK(!connectThrows(net, toGeo, xf));
+    CHECK(net.inputOf(filter, 0) == src);
+    CHECK(net.inputOf(xf, 0) == toGeo);
+}
+
+TEST(portTypeMismatchMessageNamesTheNodes) {
+    registerPortTestNodes();
+    Network net;
+    NodeId line = net.addNode("line", "myLine");
+    NodeId filter = net.addNode("testImageFilter", "myFilter");
+    std::string msg;
+    try {
+        net.connect(line, filter);
+    } catch (const std::runtime_error& e) {
+        msg = e.what();
+    }
+    CHECK(msg.find("myLine") != std::string::npos && msg.find("myFilter") != std::string::npos && msg.find("image") != std::string::npos);
+}
+
+TEST(loadingAGraphWithMismatchedPortsFailsWithTheNodeName) {
+    registerPortTestNodes();
+    Network net;
+    NodeId src = net.addNode("testImageSource", "pic");
+    NodeId filter = net.addNode("testImageFilter", "flt");
+    net.connect(src, filter);
+    const std::string text = saveNetwork(net, false, false);
+    Network good;
+    loadNetwork(good, text);
+    CHECK(good.inputOf(filter, 0) == src);
+    std::string bad = text;
+    const std::string from = "testImageSource";
+    bad.replace(bad.find(from), from.size(), "circle");
+    Network loaded;
+    std::string msg;
+    try {
+        loadNetwork(loaded, bad);
+    } catch (const std::exception& e) {
+        msg = e.what();
+    }
+    CHECK(msg.find("type mismatch") != std::string::npos && msg.find("flt") != std::string::npos);
+}
+
+TEST(bypassNeedsMatchingInputAndOutputTypes) {
+    registerPortTestNodes();
+    Network net;
+    NodeId filter = net.addNode("testImageFilter");
+    NodeId toGeo = net.addNode("testImageToGeometry");
+    NodeId xf = net.addNode("transform");
+    net.node(filter).setBypassed(true);
+    CHECK(net.node(filter).bypassed());
+    bool threw = false;
+    try {
+        net.node(toGeo).setBypassed(true);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw && !net.node(toGeo).bypassed());
+    net.node(xf).setBypassed(true);
+    CHECK(net.node(xf).bypassed());
+}
+
+TEST(replacingANodeKeepsPortTypesConsistent) {
+    registerPortTestNodes();
+    Network net;
+    NodeId src = net.addNode("testImageSource");
+    NodeId filter = net.addNode("testImageFilter");
+    NodeId toGeo = net.addNode("testImageToGeometry");
+    net.connect(src, filter);
+    net.connect(filter, toGeo);
+    bool threw = false;
+    try {
+        net.replaceNode(filter, NodeRegistry::instance().create("transform"));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(net.inputOf(filter, 0) == src && net.inputOf(toGeo, 0) == filter);
+    net.replaceNode(filter, NodeRegistry::instance().create("testImageFilter"));
+    CHECK(net.inputOf(filter, 0) == src);
+}
+
+namespace {
+struct FuncEval : ImageEvaluator {
+    std::function<IRect(int, const IRect&)> roi;
+    std::function<void(CpuTileContext&)> run;
+    IRect inputRect(int input, const IRect& out) const override { return roi(input, out); }
+    void evaluateCpu(CpuTileContext& ctx) const override { run(ctx); }
+};
+
+class SolidNode : public ImageNode {
+public:
+    SolidNode() : ImageNode("testSolid", 0) {
+        for (const char* n : {"r", "g", "b", "a"}) declareFloat(n, 0.0f);
+        declareFloat("x", 0.0f);
+        declareFloat("y", 0.0f);
+        declareFloat("w", 8.0f);
+        declareFloat("h", 8.0f);
+    }
+
+protected:
+    ImageDesc outputDesc(const std::vector<ImageDesc>&) const override {
+        ImageDesc d;
+        d.bounds = {static_cast<int>(getFloat("x")), static_cast<int>(getFloat("y")), static_cast<int>(getFloat("w")), static_cast<int>(getFloat("h"))};
+        return d;
+    }
+    std::shared_ptr<const ImageEvaluator> makeEvaluator() const override {
+        auto e = std::make_shared<FuncEval>();
+        const float c[4] = {getFloat("r"), getFloat("g"), getFloat("b"), getFloat("a")};
+        e->roi = [](int, const IRect&) { return IRect{}; };
+        e->run = [c](CpuTileContext& ctx) {
+            const IRect r = ctx.outRect();
+            for (int y = r.y; y < r.bottom(); ++y)
+                for (int x = r.x; x < r.right(); ++x) std::copy(c, c + 4, ctx.outputAt(x, y));
+        };
+        return e;
+    }
+};
+
+class GainNode : public ImageNode {
+public:
+    GainNode() : ImageNode("testGain", 1) { declareFloat("gain", 1.0f); }
+
+protected:
+    ImageDesc outputDesc(const std::vector<ImageDesc>& in) const override { return in[0]; }
+    std::shared_ptr<const ImageEvaluator> makeEvaluator() const override {
+        auto e = std::make_shared<FuncEval>();
+        const float gain = getFloat("gain");
+        e->roi = [](int, const IRect& out) { return out; };
+        e->run = [gain](CpuTileContext& ctx) {
+            const IRect r = ctx.outRect();
+            const size_t ch = static_cast<size_t>(ctx.outDesc().channels);
+            std::vector<float> in(static_cast<size_t>(r.w) * static_cast<size_t>(r.h) * ch);
+            ctx.readInput(0, r, in.data());
+            for (int y = 0; y < r.h; ++y)
+                for (int x = 0; x < r.w; ++x)
+                    for (size_t c = 0; c < ch; ++c) ctx.outputAt(r.x + x, r.y + y)[c] = in[(static_cast<size_t>(y) * static_cast<size_t>(r.w) + static_cast<size_t>(x)) * ch + c] * gain;
+        };
+        return e;
+    }
+};
+
+// out(x, y) = in(x - dx, y)
+class ShiftNode : public ImageNode {
+public:
+    ShiftNode() : ImageNode("testShift", 1) { declareFloat("dx", 0.0f); }
+
+protected:
+    ImageDesc outputDesc(const std::vector<ImageDesc>& in) const override {
+        ImageDesc d = in[0];
+        d.bounds.x += static_cast<int>(getFloat("dx"));
+        return d;
+    }
+    std::shared_ptr<const ImageEvaluator> makeEvaluator() const override {
+        auto e = std::make_shared<FuncEval>();
+        const int dx = static_cast<int>(getFloat("dx"));
+        e->roi = [dx](int, const IRect& out) { return IRect{out.x - dx, out.y, out.w, out.h}; };
+        e->run = [dx](CpuTileContext& ctx) {
+            const IRect r = ctx.outRect();
+            const size_t ch = static_cast<size_t>(ctx.outDesc().channels);
+            std::vector<float> in(static_cast<size_t>(r.w) * static_cast<size_t>(r.h) * ch);
+            ctx.readInput(0, IRect{r.x - dx, r.y, r.w, r.h}, in.data());
+            for (int y = 0; y < r.h; ++y)
+                for (int x = 0; x < r.w; ++x)
+                    for (size_t c = 0; c < ch; ++c) ctx.outputAt(r.x + x, r.y + y)[c] = in[(static_cast<size_t>(y) * static_cast<size_t>(r.w) + static_cast<size_t>(x)) * ch + c];
+        };
+        return e;
+    }
+};
+
+class FailingNode : public ImageNode {
+public:
+    FailingNode() : ImageNode("testFailing", 0) {}
+
+protected:
+    ImageDesc outputDesc(const std::vector<ImageDesc>&) const override {
+        ImageDesc d;
+        d.bounds = {0, 0, 4, 4};
+        return d;
+    }
+    std::shared_ptr<const ImageEvaluator> makeEvaluator() const override {
+        auto e = std::make_shared<FuncEval>();
+        e->roi = [](int, const IRect&) { return IRect{}; };
+        e->run = [](CpuTileContext&) { throw std::runtime_error("boom"); };
+        return e;
+    }
+};
+
+// One channel, values from a vector; tile versions are bumped by set().
+class ArrayImage : public ExternalImage {
+public:
+    ArrayImage(IRect bounds, int tileSize) : bounds_(bounds), tileSize_(tileSize), data_(static_cast<size_t>(bounds.w) * static_cast<size_t>(bounds.h), 0.0f) {}
+    ImageDesc desc() const override {
+        ImageDesc d;
+        d.bounds = bounds_;
+        d.channels = 1;
+        return d;
+    }
+    uint64_t tileVersion(TileCoord c, int) const override {
+        auto it = versions_.find(c);
+        return it == versions_.end() ? 0 : it->second;
+    }
+    bool readTile(TileCoord c, int ts, float* out) const override {
+        const IRect r = IRect::intersect(tileRect(c, ts), bounds_);
+        for (int y = r.y; y < r.bottom(); ++y)
+            for (int x = r.x; x < r.right(); ++x) out[(y - c.ty * ts) * ts + (x - c.tx * ts)] = at(x, y);
+        return true;
+    }
+    float& at(int x, int y) { return data_[static_cast<size_t>(y - bounds_.y) * static_cast<size_t>(bounds_.w) + static_cast<size_t>(x - bounds_.x)]; }
+    float at(int x, int y) const { return data_[static_cast<size_t>(y - bounds_.y) * static_cast<size_t>(bounds_.w) + static_cast<size_t>(x - bounds_.x)]; }
+    void set(int x, int y, float v) {
+        at(x, y) = v;
+        ++versions_[TileCoord{floorDiv(x, tileSize_), floorDiv(y, tileSize_)}];
+    }
+
+private:
+    IRect bounds_;
+    int tileSize_;
+    std::vector<float> data_;
+    std::map<TileCoord, uint64_t> versions_;
+};
+
+class ExternalSourceNode : public ImageNode {
+public:
+    ExternalSourceNode() : ImageNode("testExternalSource", 0) {}
+    std::shared_ptr<ExternalImage> source;
+    DataHandle cookData(CookContext&, const std::vector<DataHandle>&) override { return ImageData::fromExternal(source); }
+
+protected:
+    ImageDesc outputDesc(const std::vector<ImageDesc>&) const override { return source->desc(); }
+    std::shared_ptr<const ImageEvaluator> makeEvaluator() const override { return nullptr; }
+};
+
+void registerImageTestNodes() {
+    static const bool registered = (NodeRegistry::instance().registerType("testSolid", [] { return std::make_unique<SolidNode>(); }),
+                                    NodeRegistry::instance().registerType("testGain", [] { return std::make_unique<GainNode>(); }),
+                                    NodeRegistry::instance().registerType("testShift", [] { return std::make_unique<ShiftNode>(); }),
+                                    NodeRegistry::instance().registerType("testFailing", [] { return std::make_unique<FailingNode>(); }),
+                                    NodeRegistry::instance().registerType("testExternalSource", [] { return std::make_unique<ExternalSourceNode>(); }), true);
+    (void)registered;
+}
+
+std::vector<float> readAll(CpuTileProvider& p, const ImageHandle& img, const IRect& rect) {
+    std::vector<float> out(static_cast<size_t>(rect.w) * static_cast<size_t>(rect.h) * static_cast<size_t>(img->desc().channels));
+    CHECK(p.readRect(*img, rect, out.data()));
+    return out;
+}
+}  // namespace
+
+TEST(imageNodesCookToRecipesNotPixels) {
+    registerImageTestNodes();
+    Network net;
+    NodeId solid = net.addNode("testSolid");
+    NodeId gain = net.addNode("testGain");
+    net.connect(solid, gain);
+    CpuTileProvider provider(4);
+    ImageHandle img = asImage(net.cookData(gain));
+    CHECK(img && img->op() && img->op()->type == "testGain" && img->op()->inputs.size() == 1);
+    CHECK(img->desc().bounds == (IRect{0, 0, 8, 8}));
+    CHECK(provider.evaluations() == 0 && provider.cachedTiles() == 0);
+    CHECK(net.cook(gain) == nullptr);  // not geometry
+}
+
+TEST(cpuProviderEvaluatesTilesWithNegativeCoordinatesAndHdrValues) {
+    registerImageTestNodes();
+    Network net;
+    NodeId solid = net.addNode("testSolid");
+    net.node(solid).setFloat("x", -3.0f);
+    net.node(solid).setFloat("y", 2.0f);
+    net.node(solid).setFloat("w", 10.0f);
+    net.node(solid).setFloat("h", 7.0f);
+    net.node(solid).setFloat("r", -2.5f);
+    net.node(solid).setFloat("g", 7.0f);
+    net.node(solid).setFloat("a", 1.0f);
+    NodeId gain = net.addNode("testGain");
+    net.node(gain).setFloat("gain", 2.0f);
+    net.connect(solid, gain);
+    CpuTileProvider provider(4);
+    ImageHandle img = asImage(net.cookData(gain));
+    const IRect rect{-6, 0, 16, 12};
+    const std::vector<float> px = readAll(provider, img, rect);
+    for (int y = 0; y < rect.h; ++y)
+        for (int x = 0; x < rect.w; ++x) {
+            const int dx = rect.x + x, dy = rect.y + y;
+            const bool inside = dx >= -3 && dx < 7 && dy >= 2 && dy < 9;
+            const float* p = &px[(static_cast<size_t>(y) * static_cast<size_t>(rect.w) + static_cast<size_t>(x)) * 4];
+            CHECK(p[0] == (inside ? -5.0f : 0.0f));
+            CHECK(p[1] == (inside ? 14.0f : 0.0f));
+            CHECK(p[3] == (inside ? 2.0f : 0.0f));
+        }
+}
+
+TEST(cpuProviderCachesTilesAndEditsOnlyRecomputeDownstream) {
+    registerImageTestNodes();
+    Network net;
+    NodeId solid = net.addNode("testSolid");
+    net.node(solid).setFloat("r", 1.0f);
+    NodeId gain = net.addNode("testGain");
+    net.connect(solid, gain);
+    CpuTileProvider provider(4);
+    ImageHandle img = asImage(net.cookData(gain));
+    readAll(provider, img, {0, 0, 8, 8});
+    CHECK(provider.evaluations() == 8);  // 4 solid tiles + 4 gain tiles
+    readAll(provider, img, {0, 0, 8, 8});
+    CHECK(provider.evaluations() == 8);
+    net.node(gain).setFloat("gain", 3.0f);
+    img = asImage(net.cookData(gain));
+    const std::vector<float> px = readAll(provider, img, {0, 0, 8, 8});
+    CHECK(provider.evaluations() == 12);  // the solid tiles were reused
+    CHECK(px[0] == 3.0f);
+    net.node(solid).setFloat("r", 2.0f);
+    img = asImage(net.cookData(gain));
+    CHECK(readAll(provider, img, {0, 0, 8, 8})[0] == 6.0f);
+    CHECK(provider.evaluations() == 20);
+}
+
+TEST(externalTileVersionsInvalidateOnlyTilesThatReadThem) {
+    registerImageTestNodes();
+    Network net;
+    NodeId src = net.addNode("testExternalSource");
+    auto array = std::make_shared<ArrayImage>(IRect{0, 0, 12, 4}, 4);  // three tiles in a row
+    for (int x = 0; x < 12; ++x)
+        for (int y = 0; y < 4; ++y) array->set(x, y, static_cast<float>(x));
+    static_cast<ExternalSourceNode&>(net.node(src)).source = array;
+    NodeId shift = net.addNode("testShift");
+    net.node(shift).setFloat("dx", 1.0f);
+    net.connect(src, shift);
+    CpuTileProvider provider(4);
+    ImageHandle img = asImage(net.cookData(shift));
+    CHECK(img->desc().bounds == (IRect{1, 0, 12, 4}));
+    std::vector<float> px = readAll(provider, img, {1, 0, 12, 4});
+    for (int x = 0; x < 12; ++x) CHECK(px[static_cast<size_t>(x)] == static_cast<float>(x));  // out(x) = in(x - 1) = x - 1 at pixel x + 1
+    const size_t first = provider.evaluations();
+    CHECK(first == 4);  // output spans x 1..12: tiles 0..3
+    array->set(9, 1, 100.0f);  // tile 2; output tiles 2 and 3 read it
+    px = readAll(provider, img, {1, 0, 12, 4});
+    CHECK(provider.evaluations() == first + 2);
+    CHECK(px[static_cast<size_t>(1 * 12 + 9)] == 100.0f);
+}
+
+TEST(bypassedImageNodePassesItsInputAndImagesCannotBeFrozen) {
+    registerImageTestNodes();
+    Network net;
+    NodeId solid = net.addNode("testSolid");
+    NodeId gain = net.addNode("testGain");
+    net.connect(solid, gain);
+    DataHandle before = net.cookData(solid);
+    net.node(gain).setBypassed(true);
+    CHECK(net.cookData(gain) == before);
+    net.node(gain).setBypassed(false);
+    bool threw = false;
+    try {
+        net.freezeNode(gain);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(imageEvaluatorFailureIsReportedPerTile) {
+    registerImageTestNodes();
+    Network net;
+    NodeId bad = net.addNode("testFailing");
+    CpuTileProvider provider(4);
+    ImageHandle img = asImage(net.cookData(bad));
+    TileResult r = provider.acquire(*img, {0, 0});
+    CHECK(r.status == TileStatus::failed && r.error.find("boom") != std::string::npos && r.error.find("testFailing") != std::string::npos);
+    std::vector<float> out(4 * 4 * 4);
+    CHECK(!provider.readRect(*img, {0, 0, 4, 4}, out.data()));
+}
+
+TEST(imageNodesAreNeverFusedWithGeometryNodes) {
+    registerImageTestNodes();
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    NodeId solid = net.addNode("testSolid");
+    NodeId gain = net.addNode("testGain");
+    net.connect(line, xf);
+    net.connect(solid, gain);
+    net.setDisplayNode(xf);
+    CHECK(net.cookDisplay() != nullptr);
+    CHECK(asImage(net.cookData(gain)) != nullptr);
+    CHECK(net.indexesConsistent());
+}
+
 int main() {
     int failed = 0;
     for (const auto& t : tests()) {

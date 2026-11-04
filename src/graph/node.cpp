@@ -1,9 +1,11 @@
 #include "jitnodes/graph/node.h"
 
 #include <atomic>
+#include <cstring>
 #include <stdexcept>
 
 #include "jitnodes/graph/network.h"
+#include "jitnodes/core/xxhash.h"
 #include "jitnodes/jit/exprParser.h"
 
 namespace jitnodes {
@@ -166,6 +168,9 @@ std::vector<std::string> Node::geometryNames() const {
 
 void Node::setBypassed(bool bypassed) {
     if (bypassed_ == bypassed) return;
+    if (bypassed && inputCount_ > 0 && inputType(0) != outputType())
+        throw std::runtime_error("cannot bypass " + name_ + ": its input is " + dataKindName(inputType(0)) + " but its output is " +
+                                 dataKindName(outputType()));
     bypassed_ = bypassed;
     markChanged();
 }
@@ -177,6 +182,29 @@ void Node::setFrozenGeometry(GeometryHandle geometry) {
 }
 
 void Node::touch() { revision_ = ++revisionCounter; }
+
+DataHandle Node::cookData(CookContext& ctx, const std::vector<DataHandle>& inputs) {
+    std::vector<GeometryHandle> geo;
+    geo.reserve(inputs.size());
+    for (const DataHandle& in : inputs) geo.push_back(asGeometry(in));
+    return cook(ctx, geo);
+}
+
+uint64_t Node::paramsHash() const {
+    auto mix = [](uint64_t a, uint64_t b) { return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2)); };
+    uint64_t h = 0;
+    for (const auto& [key, p] : floats_) {
+        uint32_t bits;
+        std::memcpy(&bits, &p.resolved, sizeof bits);
+        h = mix(h, xxh64(key.data(), key.size()));
+        h = mix(h, bits);
+    }
+    for (const auto& [key, value] : strings_) {
+        h = mix(h, xxh64(key.data(), key.size()));
+        h = mix(h, xxh64(value.data(), value.size()));
+    }
+    return h;
+}
 
 void Node::markChanged(bool structural) {
     touch();
