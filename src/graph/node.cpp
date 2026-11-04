@@ -176,7 +176,12 @@ void Node::setFrozenGeometry(GeometryHandle geometry) {
     markChanged();
 }
 
-void Node::touch() { revision_ = ++revisionCounter; }
+uint64_t Node::freshRevision() { return ++revisionCounter; }
+
+void Node::touch() {
+    revision_ = ++revisionCounter;
+    if (network_) network_->noteTouched(id_, revision_);
+}
 
 void Node::markChanged(bool structural) {
     touch();

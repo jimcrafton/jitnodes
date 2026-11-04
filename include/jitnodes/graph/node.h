@@ -114,6 +114,8 @@ public:
     // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
     // same id), so a snapshot can reuse the text it wrote for a node whose revision it still sees.
     uint64_t revision() const { return revision_; }
+    // A revision no node has had and none will: for recording a change that is not an edit of one node's own data.
+    static uint64_t freshRevision();
     bool hasPosition() const { return hasPosition_; }
     float posX() const { return posX_; }
     float posY() const { return posY_; }

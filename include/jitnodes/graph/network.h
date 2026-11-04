@@ -131,6 +131,9 @@ public:
     NodeId addNodeWithId(NodeId id, const std::string& typeName, const std::string& name);
     void clear();  // removes every node; the kernel cache and thread pool are kept
     std::vector<NodeId> nodeIds() const;
+    // Changes whenever a node is added, removed or replaced or an input is wired or unwired in this network (not its subnets), and never
+    // otherwise, so a derived table can be kept while it stays the same.
+    std::uint64_t topologyRevision() const { return topologyRevision_; }
     NodeId displayNode() const { return displayNode_; }
     void removeNode(NodeId id);
     // Swaps the node for a fresh one (same id and name), keeping the wiring that still fits unless `inputs` gives
@@ -160,6 +163,22 @@ public:
     void noteEdited(NodeId id);
     static constexpr size_t maxAnchors = 16;
     static inline size_t anchorMinPoints = 1024;  // process-wide tuning knob; SIZE_MAX turns the boundaries off
+
+    // Called by a node whenever its revision changes. The network remembers the last few so a caller that holds a watermark (a revision it
+    // has dealt with) can ask which nodes changed since, instead of looking at all of them.
+    void noteTouched(NodeId id, std::uint64_t revision);
+    // The newest revision any node of this network was touched at (0 when none was).
+    std::uint64_t touchRevision() const { return touchLog_.empty() ? touchedFloor_ : touchLog_.back().first; }
+    // Adds the ids of the nodes touched after `watermark` to `out`; false when the log no longer reaches back that far (look at everything).
+    bool touchedSince(std::uint64_t watermark, std::vector<NodeId>& out) const;
+    // The nodes with an input wired to `id` (one entry per wired input), in no particular order.
+    const std::vector<NodeId>& consumersOf(NodeId id) const {
+        static const std::vector<NodeId> none;
+        const auto it = consumers_.find(id);
+        return it == consumers_.end() ? none : it->second;
+    }
+    // The nodes that depend on any of `from` (they included): through wiring and through expression references.
+    std::unordered_set<NodeId> dependentsOf(const std::vector<NodeId>& from) const;
 
     // structural = false is for an edit that cannot change which nodes depend on time (a plain parameter value), so setTime keeps its cache.
     void markDirty(NodeId id, bool structural = true);
@@ -309,6 +328,11 @@ private:
     // A subnet's `parent.x` expressions follow the owner's parameters, so its cache goes stale with the owner's.
     void invalidateTimeCache();
     NodeId nextId_ = 1;
+    std::uint64_t topologyRevision_ = 0;
+    static constexpr size_t maxTouchLog = 8192;
+    std::deque<std::pair<std::uint64_t, NodeId>> touchLog_;
+    std::uint64_t touchedFloor_ = 0;   // the newest revision dropped from the log
+    void bumpTopology(NodeId affected = invalidNodeId);   // also logs `affected` as touched; takes a number from a process-wide counter, so no two networks ever share a revision
     NodeId displayNode_ = invalidNodeId;
     KernelCompiler ownCompiler_;
     void notifyOwner(bool structural = true) {

@@ -1,6 +1,7 @@
 #include "jitnodes/graph/network.h"
 
 #include <algorithm>
+#include <atomic>
 #include <unordered_set>
 #include <cctype>
 #include <chrono>
@@ -57,6 +58,41 @@ const Network::Slot& Network::slot(NodeId id) const {
     return it->second;
 }
 
+void Network::noteTouched(NodeId id, std::uint64_t revision) {
+    touchLog_.emplace_back(revision, id);
+    while (touchLog_.size() > maxTouchLog) {
+        touchedFloor_ = touchLog_.front().first;
+        touchLog_.pop_front();
+    }
+}
+
+bool Network::touchedSince(std::uint64_t watermark, std::vector<NodeId>& out) const {
+    if (watermark < touchedFloor_) return false;
+    for (auto it = touchLog_.rbegin(); it != touchLog_.rend() && it->first > watermark; ++it) out.push_back(it->second);
+    return true;
+}
+
+std::unordered_set<NodeId> Network::dependentsOf(const std::vector<NodeId>& from) const {
+    std::unordered_set<NodeId> seen;
+    std::vector<NodeId> pending = from;
+    while (!pending.empty()) {
+        const NodeId current = pending.back();
+        pending.pop_back();
+        if (!slots_.count(current) || !seen.insert(current).second) continue;
+        if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
+        if (auto it = referrers_.find(node(current).name()); it != referrers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
+    }
+    return seen;
+}
+
+void Network::bumpTopology(NodeId affected) {
+    static std::atomic<std::uint64_t> counter{0};
+    topologyRevision_ = ++counter;
+    if (affected != invalidNodeId) {
+        noteTouched(affected, Node::freshRevision());
+    }
+}
+
 NodeId Network::addNode(const std::string& typeName, const std::string& name) {
     const NodeId id = nextId_;
     return addNodeWithId(id, typeName, name.empty() ? typeName + std::to_string(id) : name);
@@ -78,6 +114,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     s.node = std::move(n);
     slots_.emplace(id, std::move(s));
     timeAffectedValid_ = false;
+    bumpTopology(id);
     names_[name] = id;
     nextId_ = std::max(nextId_, id + 1);
     slots_.at(id).node->onAttached(*this);
@@ -86,6 +123,9 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 
 void Network::clear() {
     slots_.clear();
+    bumpTopology();
+    touchLog_.clear();
+    touchedFloor_ = Node::freshRevision();   // everything is new: nobody's watermark reaches back past this
     timeAffectedValid_ = false;
     consumers_.clear();
     referrers_.clear();
@@ -124,12 +164,17 @@ void Network::removeNode(NodeId id) {
             if (s.inputs[i] == id) s.inputs[i] = invalidNodeId;
         fitInputs(s);
         markDirty(otherId);
+        noteTouched(otherId, Node::freshRevision());
     }
     for (NodeId in : slot(id).inputs)
-        if (in != invalidNodeId) removeEdge(in, id);
+        if (in != invalidNodeId) {
+            removeEdge(in, id);
+            noteTouched(in, Node::freshRevision());
+        }
     indexReferences(*slot(id).node, false);
     forgetName(slot(id).node->name());
     slots_.erase(id);
+    bumpTopology(id);
     timeAffectedValid_ = false;
     if (displayNode_ == id) displayNode_ = invalidNodeId;
 }
@@ -143,10 +188,16 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
             if (reaches(in, id)) throw std::runtime_error("new inputs of " + s.node->name() + " would create a cycle");
         }
         for (NodeId in : s.inputs)
-            if (in != invalidNodeId) removeEdge(in, id);
+            if (in != invalidNodeId) {
+                removeEdge(in, id);
+                noteTouched(in, Node::freshRevision());
+            }
         s.inputs = *inputs;
         for (NodeId in : s.inputs)
-            if (in != invalidNodeId) addEdge(in, id);
+            if (in != invalidNodeId) {
+                addEdge(in, id);
+                noteTouched(in, Node::freshRevision());
+            }
     }
     indexReferences(*s.node, false);
     fresh->id_ = id;
@@ -156,6 +207,7 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
     if (fresh->hasVariableInputs()) fresh->setInputCount(static_cast<int>(std::max<size_t>(s.inputs.size(), 2)));
     s.inputs.resize(static_cast<size_t>(fresh->inputCount()), invalidNodeId);
     s.node = std::move(fresh);
+    bumpTopology(id);
     indexReferences(*s.node, true);
     fitInputs(s);
     s.node->onAttached(*this);
@@ -272,6 +324,9 @@ void Network::connect(NodeId from, NodeId to, int inputIndex) {
     const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
     if (previous != invalidNodeId) removeEdge(previous, to);
     dst.inputs[static_cast<size_t>(inputIndex)] = from;
+    bumpTopology(to);
+    noteTouched(from, Node::freshRevision());
+    if (previous != invalidNodeId) noteTouched(previous, Node::freshRevision());
     addEdge(from, to);
     fitInputs(dst);
     markDirty(to);
@@ -284,6 +339,8 @@ void Network::disconnect(NodeId to, int inputIndex) {
     const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
     if (previous != invalidNodeId) removeEdge(previous, to);
     dst.inputs[static_cast<size_t>(inputIndex)] = invalidNodeId;
+    bumpTopology(to);
+    if (previous != invalidNodeId) noteTouched(previous, Node::freshRevision());
     fitInputs(dst);
     markDirty(to);
 }
