@@ -81,8 +81,10 @@ the node types it knows; it can read the node type and the evaluator from `Image
 ### Cache correctness
 
 A tile's cache key is a 64-bit hash of its image description, the tile size and coordinate, the recipe hash and the
-versions of every input tile it reads (through `inputRect`). A hash collision would return wrong pixels; the chance is
-negligible at 64 bits but it is not checked.
+versions of every input tile it reads (through `inputRect`), computed by `tileVersionOf()` (also what a GPU provider should
+use). Hashes are combined with `hashCombine()` (xxh64 of the pair): an earlier shift/xor combiner produced real key
+collisions between distinct tiles, so write new hash code with `hashCombine`, not ad-hoc mixing. A 64-bit collision would
+still return wrong pixels; it is not checked.
 
 ### Tests
 

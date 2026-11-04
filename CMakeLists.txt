@@ -42,6 +42,7 @@ add_library(jitnodes STATIC
   src/image/imageData.cpp
   src/image/imageNode.cpp
   src/image/cpuTileProvider.cpp
+  src/image/tileProvider.cpp
   src/jit/expr.cpp
   src/jit/exprParser.cpp
   src/jit/fuse.cpp

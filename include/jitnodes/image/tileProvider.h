@@ -22,6 +22,10 @@ struct TileResult {
     std::string error;  // set when failed
 };
 
+// Hash of everything that decides the pixels of one tile: description, tile size and coordinate, the recipe, and the versions of every input
+// tile it reads (through inputRect) or, for an external image, its tileVersion(). Providers use it as their cache key.
+uint64_t tileVersionOf(const ImageData& image, TileCoord coord, int tileSize);
+
 // Turns the recipe in an ImageData into pixels, one evaluation tile at a time, and owns the tile cache. All methods are called
 // from one thread (the host's).
 class TileProvider {

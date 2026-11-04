@@ -7489,6 +7489,19 @@ TEST(imageEvaluatorFailureIsReportedPerTile) {
     CHECK(!provider.readRect(*img, {0, 0, 4, 4}, out.data()));
 }
 
+TEST(hashCombineKeepsStructuredInputsApart) {
+    std::set<uint64_t> seen;
+    size_t count = 0;
+    for (uint64_t a = 0; a < 200; ++a)
+        for (uint64_t b = 0; b < 200; ++b) {
+            seen.insert(hashCombine(hashCombine(a, 0), b));
+            seen.insert(hashCombine(hashCombine(0, a), b << 20));
+            count += 2;
+        }
+    CHECK(seen.size() + 4 >= count);  // the pairs overlap only where the inputs are identical (a = 0 or b = 0 cases)
+    CHECK(hashCombine(1, 2) != hashCombine(2, 1));
+}
+
 TEST(imageNodesAreNeverFusedWithGeometryNodes) {
     registerImageTestNodes();
     Network net;

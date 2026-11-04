@@ -7,7 +7,7 @@
 namespace jitnodes {
 
 namespace {
-uint64_t mix(uint64_t a, uint64_t b) { return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2)); }
+uint64_t mix(uint64_t a, uint64_t b) { return hashCombine(a, b); }
 }  // namespace
 
 DataHandle ImageNode::cookData(CookContext&, const std::vector<DataHandle>& inputs) {

@@ -55,4 +55,9 @@ inline uint64_t xxh64(const void* data, size_t length, uint64_t seed = 0) {
     return h;
 }
 
+// Combines two 64-bit hashes. Use this, not shift/xor mixing: a weak combiner made distinct image-node tiles share a cache key.
+inline uint64_t hashCombine(uint64_t a, uint64_t b) {
+    const uint64_t pair[2] = {a, b};
+    return xxh64(pair, sizeof pair);
+}
 }  // namespace jitnodes

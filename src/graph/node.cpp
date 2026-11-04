@@ -191,7 +191,7 @@ DataHandle Node::cookData(CookContext& ctx, const std::vector<DataHandle>& input
 }
 
 uint64_t Node::paramsHash() const {
-    auto mix = [](uint64_t a, uint64_t b) { return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2)); };
+    auto mix = [](uint64_t a, uint64_t b) { return hashCombine(a, b); };
     uint64_t h = 0;
     for (const auto& [key, p] : floats_) {
         uint32_t bits;
