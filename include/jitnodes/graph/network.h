@@ -131,6 +131,7 @@ public:
     NodeId addNodeWithId(NodeId id, const std::string& typeName, const std::string& name);
     void clear();  // removes every node; the kernel cache and thread pool are kept
     std::vector<NodeId> nodeIds() const;
+    size_t nodeCount() const { return slots_.size(); }
     // Changes whenever a node is added, removed or replaced or an input is wired or unwired in this network (not its subnets), and never
     // otherwise, so a derived table can be kept while it stays the same.
     std::uint64_t topologyRevision() const { return topologyRevision_; }
