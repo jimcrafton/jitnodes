@@ -1,8 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "jitnodes/graph/network.h"
@@ -54,20 +59,121 @@ void unlockAssetInstance(Network& net, NodeId id);
 // contents are part of the subnet node's text and are reloaded when it changes.
 struct GraphSnapshot;
 
-struct NodeSnapshot {
-    std::shared_ptr<const std::string> text;  // the node's JSON without its wiring (and without a subnet's child graph, see child)
-    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (asset instances)
-    std::shared_ptr<const GraphSnapshot> child;  // a subnet's contents, snapshotted the same way so an edit inside costs what an edit at the root does
+struct NodeMeta {
     std::string type;
     std::string name;
     std::vector<std::string> spare;
     std::vector<NodeId> inputs;
+    bool operator==(const NodeMeta& o) const { return type == o.type && name == o.name && spare == o.spare && inputs == o.inputs; }
+};
+
+struct NodeSnapshot {
+    std::shared_ptr<const std::string> text;  // the node's JSON without its wiring (and without a subnet's child graph, see child)
+    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (asset instances)
+    std::shared_ptr<const GraphSnapshot> child;  // a subnet's contents, snapshotted the same way so an edit inside costs what an edit at the root does
+    std::shared_ptr<const NodeMeta> meta;     // shared with the previous snapshot while it is unchanged, so copying and comparing stay cheap
+};
+
+// The nodes of a snapshot by id, in blocks of 64 ids that snapshots share: copying one copies a pointer per block, writing a node copies
+// only its block, and two snapshots can skip every block they hold in common (same pointer) when they are compared or restored.
+class SnapshotNodes {
+public:
+    using Entry = std::pair<NodeId, NodeSnapshot>;
+    struct Chunk {
+        std::vector<Entry> entries;   // by id, never empty
+    };
+    using Chunks = std::vector<std::pair<std::uint32_t, std::shared_ptr<Chunk>>>;   // by block number
+
+    class const_iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = Entry;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const Entry*;
+        using reference = const Entry&;
+
+        const_iterator() = default;
+        const_iterator(const Chunks* chunks, std::size_t chunk, std::size_t at) : chunks_(chunks), chunk_(chunk), at_(at) {}
+        reference operator*() const { return (*chunks_)[chunk_].second->entries[at_]; }
+        pointer operator->() const { return &**this; }
+        const_iterator& operator++() {
+            if (++at_ >= (*chunks_)[chunk_].second->entries.size()) {
+                ++chunk_;
+                at_ = 0;
+            }
+            return *this;
+        }
+        bool operator==(const const_iterator& o) const { return chunk_ == o.chunk_ && at_ == o.at_; }
+        bool operator!=(const const_iterator& o) const { return !(*this == o); }
+
+    private:
+        const Chunks* chunks_ = nullptr;
+        std::size_t chunk_ = 0;
+        std::size_t at_ = 0;
+    };
+
+    std::size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    const_iterator begin() const { return const_iterator(&chunks_, 0, 0); }
+    const_iterator end() const { return const_iterator(&chunks_, chunks_.size(), 0); }
+    const Chunks& chunks() const { return chunks_; }
+
+    const_iterator find(NodeId id) const {
+        const auto block = findChunk(id >> kBlockBits);
+        if (block == chunks_.end() || block->first != (id >> kBlockBits)) return end();
+        const auto& entries = block->second->entries;
+        const auto at = std::lower_bound(entries.begin(), entries.end(), id, [](const Entry& e, NodeId key) { return e.first < key; });
+        if (at == entries.end() || at->first != id) return end();
+        return const_iterator(&chunks_, static_cast<std::size_t>(block - chunks_.begin()), static_cast<std::size_t>(at - entries.begin()));
+    }
+    std::size_t count(NodeId id) const { return find(id) != end() ? 1 : 0; }
+    const NodeSnapshot& at(NodeId id) const {
+        const const_iterator it = find(id);
+        if (it == end()) throw std::out_of_range("SnapshotNodes::at: no such node");
+        return it->second;
+    }
+
+    void set(NodeId id, NodeSnapshot value) {
+        const std::uint32_t key = id >> kBlockBits;
+        auto block = std::lower_bound(chunks_.begin(), chunks_.end(), key, [](const Chunks::value_type& c, std::uint32_t k) { return c.first < k; });
+        if (block == chunks_.end() || block->first != key) {
+            auto fresh = std::make_shared<Chunk>();
+            fresh->entries.emplace_back(id, std::move(value));
+            chunks_.insert(block, {key, std::move(fresh)});
+            ++size_;
+            return;
+        }
+        if (block->second.use_count() != 1) block->second = std::make_shared<Chunk>(*block->second);
+        auto& entries = block->second->entries;
+        const auto at = std::lower_bound(entries.begin(), entries.end(), id, [](const Entry& e, NodeId k) { return e.first < k; });
+        if (at != entries.end() && at->first == id) {
+            at->second = std::move(value);
+        } else {
+            entries.emplace(at, id, std::move(value));
+            ++size_;
+        }
+    }
+
+private:
+    static constexpr unsigned kBlockBits = 6;
+
+    Chunks::const_iterator findChunk(std::uint32_t key) const {
+        return std::lower_bound(chunks_.begin(), chunks_.end(), key, [](const Chunks::value_type& c, std::uint32_t k) { return c.first < k; });
+    }
+
+    Chunks chunks_;
+    std::size_t size_ = 0;
 };
 
 struct GraphSnapshot {
-    std::map<NodeId, NodeSnapshot> nodes;
+    SnapshotNodes nodes;
     NodeId display = invalidNodeId;
     double fps = 24.0;
+    // What the network looked like when this was taken, so the next snapshot can start from it and redo only the touched nodes.
+    std::uint64_t topology = 0;
+    std::uint64_t touchMark = 0;
+    bool incremental = false;
+    std::vector<NodeId> volatileNodes;  // subnets and asset instances: their contents change without touching the node
 };
 
 struct RestoreStats {
