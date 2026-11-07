@@ -114,6 +114,8 @@ public:
     // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
     // same id), so a snapshot can reuse the text it wrote for a node whose revision it still sees.
     uint64_t revision() const { return revision_; }
+    // A revision no node has had and none will: for recording a change that is not an edit of one node's own data.
+    static uint64_t freshRevision();
     bool hasPosition() const { return hasPosition_; }
     float posX() const { return posX_; }
     float posY() const { return posY_; }
@@ -172,13 +174,28 @@ private:
 
     void setInputCount(int count) { inputCount_ = count; }
 
+    // Almost every parameter is a plain number, and nodes are made by the thousand, so the expression and keys live out of line.
     struct FloatParam {
+        struct Animation {
+            std::string expression;
+            KernelSpec expressionSpec;
+            std::vector<Keyframe> keys;
+        };
         float value = 0.0f;
         float resolved = 0.0f;
-        std::string expression;
-        KernelSpec expressionSpec;
-        std::vector<Keyframe> keys;
-        bool animated() const { return !expression.empty() || !keys.empty(); }
+        std::unique_ptr<Animation> animation;
+        bool animated() const { return animation && (!animation->expression.empty() || !animation->keys.empty()); }
+        const std::string& expression() const { return animation ? animation->expression : emptyText(); }
+        const KernelSpec& expressionSpec() const { return animation ? animation->expressionSpec : emptySpec(); }
+        const std::vector<Keyframe>& keys() const { return animation ? animation->keys : emptyKeys(); }
+        Animation& edit() {
+            if (!animation) animation = std::make_unique<Animation>();
+            return *animation;
+        }
+        void clear() { animation.reset(); }
+        static const std::string& emptyText() { static const std::string none; return none; }
+        static const KernelSpec& emptySpec() { static const KernelSpec none; return none; }
+        static const std::vector<Keyframe>& emptyKeys() { static const std::vector<Keyframe> none; return none; }
     };
 
     FloatParam& floatParam(const std::string& name);
