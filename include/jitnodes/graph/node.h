@@ -92,6 +92,17 @@ public:
     bool hasGeometryParam(const std::string& name) const { return geometries_.count(name) != 0; }
     std::vector<std::string> geometryNames() const;
 
+    // Bypass: the node is skipped. It returns its first input as it is (an empty geometry when that input is not connected) and does no work of
+    // its own. Wins over freeze. Saved with the node.
+    void setBypassed(bool bypassed);
+    bool bypassed() const { return bypassed_; }
+
+    // Freeze: the node returns this geometry and nothing upstream of it is planned or cooked for it, and an edit upstream does not dirty it or
+    // what follows it. A null handle unfreezes. The geometry is saved inline with the node. Network::freezeNode cooks the node and freezes the result.
+    void setFrozenGeometry(GeometryHandle geometry);
+    bool frozen() const { return frozen_ != nullptr; }
+    const GeometryHandle& frozenGeometry() const { return frozen_; }
+
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
         if (hasPosition_ && posX_ == x && posY_ == y) return;
@@ -103,6 +114,8 @@ public:
     // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
     // same id), so a snapshot can reuse the text it wrote for a node whose revision it still sees.
     uint64_t revision() const { return revision_; }
+    // A revision no node has had and none will: for recording a change that is not an edit of one node's own data.
+    static uint64_t freshRevision();
     bool hasPosition() const { return hasPosition_; }
     float posX() const { return posX_; }
     float posY() const { return posY_; }
@@ -161,13 +174,28 @@ private:
 
     void setInputCount(int count) { inputCount_ = count; }
 
+    // Almost every parameter is a plain number, and nodes are made by the thousand, so the expression and keys live out of line.
     struct FloatParam {
+        struct Animation {
+            std::string expression;
+            KernelSpec expressionSpec;
+            std::vector<Keyframe> keys;
+        };
         float value = 0.0f;
         float resolved = 0.0f;
-        std::string expression;
-        KernelSpec expressionSpec;
-        std::vector<Keyframe> keys;
-        bool animated() const { return !expression.empty() || !keys.empty(); }
+        std::unique_ptr<Animation> animation;
+        bool animated() const { return animation && (!animation->expression.empty() || !animation->keys.empty()); }
+        const std::string& expression() const { return animation ? animation->expression : emptyText(); }
+        const KernelSpec& expressionSpec() const { return animation ? animation->expressionSpec : emptySpec(); }
+        const std::vector<Keyframe>& keys() const { return animation ? animation->keys : emptyKeys(); }
+        Animation& edit() {
+            if (!animation) animation = std::make_unique<Animation>();
+            return *animation;
+        }
+        void clear() { animation.reset(); }
+        static const std::string& emptyText() { static const std::string none; return none; }
+        static const KernelSpec& emptySpec() { static const KernelSpec none; return none; }
+        static const std::vector<Keyframe>& emptyKeys() { static const std::vector<Keyframe> none; return none; }
     };
 
     FloatParam& floatParam(const std::string& name);
@@ -188,7 +216,9 @@ private:
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
     bool dirty_ = true;
-    bool anchor_ = false;     // a fused chain stops below this node (see Network::noteEdited)
+    bool bypassed_ = false;
+    GeometryHandle frozen_;
+    bool anchor_ = false;    // a fused chain stops below this node (see Network::noteEdited)
     size_t lastPoints_ = 0;   // points in the latest cook of the node, or of the fused chain it was part of
     float posX_ = 0.0f;
     float posY_ = 0.0f;

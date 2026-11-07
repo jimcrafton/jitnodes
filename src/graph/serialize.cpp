@@ -119,7 +119,7 @@ json5::value writeAssets(json5::builder& b, const std::set<std::string>& types) 
     return b.pop();
 }
 
-json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs = true);
+json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs = true, bool withGraph = true);
 
 // {"points": n, "prims": [[start, count, closed, kind]], "attribs"/"primAttribs": [{"name": n, "values": [floats]}], "ints"/"primInts": the same
 // with integers, "detail": {name: value}}; empty sections are left out. Attribute names are values, not keys: the JSON5 reader rejects keys
@@ -207,7 +207,7 @@ const Node* defaultNode(const std::string& type) {
     return it->second.get();
 }
 
-json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs) {
+json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs, bool withGraph) {
     const Node& n = net.node(id);
     b.push_object();
     b["id"] = json5::value(static_cast<double>(id));
@@ -220,6 +220,9 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         b += floatValue(n.posY());
         b["pos"] = b.pop();
     }
+
+    if (n.bypassed()) b["bypass"] = json5::value(1.0);
+    if (n.frozen()) b["frozen"] = writeGeometry(b, *n.frozenGeometry());
 
     if (!n.spareNames().empty()) {
         b.push_array();
@@ -288,7 +291,7 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         b["inputs"] = b.pop();
     }
 
-    if (const Network* child = n.childNetwork(); child && !n.isAssetInstance()) {
+    if (const Network* child = n.childNetwork(); withGraph && child && !n.isAssetInstance()) {
         b.push_object();
         writeGraphFields(b, *child, false);
         b["graph"] = b.pop();
@@ -409,6 +412,10 @@ void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
             if (!xy.is_valid() || xy.size() != 2) fail("pos must be an array of two numbers");
             n.setPosition(static_cast<float>(requireNumber(xy[0], "pos x")), static_cast<float>(requireNumber(xy[1], "pos y")));
         }
+        // Absent means off, so a snapshot restored over a node that has since been bypassed or frozen switches them off again.
+        json5::value flag;
+        n.setBypassed(member(nv, "bypass", flag) && requireNumber(flag, "bypass") != 0.0);
+        n.setFrozenGeometry(member(nv, "frozen", flag) ? readGeometry(flag, "frozen") : GeometryHandle());
         json5::value spare;
         if (declareSpare && member(nv, "spare", spare)) {
             const json5::array_view names(spare);
@@ -770,34 +777,54 @@ size_t outdatedAssetInstances(const Network& net, const std::string& typeName) {
 
 GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous) {
     GraphSnapshot snap;
+    std::vector<NodeId> redo;
+    bool partial = false;
+    if (previous && previous->incremental && previous->topology == net.topologyRevision() && previous->nodes.size() == net.nodeCount() &&
+        net.touchedSince(previous->touchMark, redo)) {
+        partial = true;
+        snap.nodes = previous->nodes;
+        redo.insert(redo.end(), previous->volatileNodes.begin(), previous->volatileNodes.end());
+        std::sort(redo.begin(), redo.end());
+        redo.erase(std::unique(redo.begin(), redo.end()), redo.end());
+    }
     snap.display = net.displayNode();
     snap.fps = net.fps();
-    for (NodeId id : net.nodeIds()) {
+    snap.topology = net.topologyRevision();
+    snap.touchMark = net.touchRevision();
+    snap.incremental = true;
+    for (NodeId id : partial ? redo : net.nodeIds()) {
         const Node& n = net.node(id);
         NodeSnapshot s;
-        s.type = n.typeName();
-        s.name = n.name();
-        s.spare = n.spareNames();
-        for (int i = 0; i < n.inputCount(); ++i) s.inputs.push_back(net.inputOf(id, i));
+        NodeMeta meta;
+        meta.type = n.typeName();
+        meta.name = n.name();
+        meta.spare = n.spareNames();
+        for (int i = 0; i < n.inputCount(); ++i) meta.inputs.push_back(net.inputOf(id, i));
 
         const NodeSnapshot* old = nullptr;
         if (previous) {
             auto it = previous->nodes.find(id);
             if (it != previous->nodes.end()) old = &it->second;
         }
-        // A subnet's text includes its child graph, whose edits do not touch the container node.
-        s.revision = n.childNetwork() == nullptr ? n.revision() : 0;
+        if (old && old->meta && *old->meta == meta) s.meta = old->meta;
+        else s.meta = std::make_shared<const NodeMeta>(std::move(meta));
+        // Edits inside a subnet do not touch the container node, so its contents are snapshotted separately (and are not part of its text).
+        const Network* child = n.childNetwork();
+        const bool ownsChild = child != nullptr && !n.isAssetInstance();
+        s.revision = child != nullptr && !ownsChild ? 0 : n.revision();
         if (old && s.revision != 0 && old->revision == s.revision) {
             s.text = old->text;
         } else {
             json5::document doc;
             json5::builder b(doc);
-            writeNode(b, net, id, false);
+            writeNode(b, net, id, false, !ownsChild);
             std::string text = dump(doc);
             if (old && *old->text == text) s.text = old->text;
             else s.text = std::make_shared<const std::string>(std::move(text));
         }
-        snap.nodes.emplace(id, std::move(s));
+        if (ownsChild) s.child = std::make_shared<const GraphSnapshot>(snapshotNetwork(*child, old ? old->child.get() : nullptr));
+        if (child != nullptr) snap.volatileNodes.push_back(id);
+        snap.nodes.set(id, std::move(s));
     }
     return snap;
 }
@@ -901,15 +928,41 @@ namespace {
 
 bool sameText(const NodeSnapshot& a, const NodeSnapshot& b) { return a.text == b.text || *a.text == *b.text; }
 
-bool sameMeta(const NodeSnapshot& a, const NodeSnapshot& b) { return a.type == b.type && a.name == b.name && a.spare == b.spare; }
+bool sameMeta(const NodeSnapshot& a, const NodeSnapshot& b) {
+    return a.meta == b.meta || (a.meta->type == b.meta->type && a.meta->name == b.meta->name && a.meta->spare == b.meta->spare);
+}
+
+bool sameInputs(const NodeSnapshot& a, const NodeSnapshot& b) { return a.meta == b.meta || a.meta->inputs == b.meta->inputs; }
+
+}  // namespace
+
+bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b);
+
+namespace {
+
+bool sameChild(const NodeSnapshot& a, const NodeSnapshot& b) {
+    if (a.child == b.child) return true;
+    return a.child && b.child && sameGraph(*a.child, *b.child);
+}
 
 }  // namespace
 
 bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b) {
     if (a.display != b.display || a.fps != b.fps || a.nodes.size() != b.nodes.size()) return false;
-    for (auto ia = a.nodes.begin(), ib = b.nodes.begin(); ia != a.nodes.end(); ++ia, ++ib) {
-        if (ia->first != ib->first || !sameMeta(ia->second, ib->second) || ia->second.inputs != ib->second.inputs || !sameText(ia->second, ib->second))
-            return false;
+    const SnapshotNodes::Chunks& ca = a.nodes.chunks();
+    const SnapshotNodes::Chunks& cb = b.nodes.chunks();
+    if (ca.size() != cb.size()) return false;
+    for (std::size_t i = 0; i < ca.size(); ++i) {
+        if (ca[i].first != cb[i].first) return false;
+        if (ca[i].second == cb[i].second) continue;
+        const auto& ea = ca[i].second->entries;
+        const auto& eb = cb[i].second->entries;
+        if (ea.size() != eb.size()) return false;
+        for (std::size_t k = 0; k < ea.size(); ++k) {
+            if (ea[k].first != eb[k].first || !sameMeta(ea[k].second, eb[k].second) || !sameInputs(ea[k].second, eb[k].second) ||
+                !sameText(ea[k].second, eb[k].second) || !sameChild(ea[k].second, eb[k].second))
+                return false;
+        }
     }
     return true;
 }
@@ -922,23 +975,44 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
     }
     RestoreStats stats;
     std::vector<NodeId> toAdd, toUpdate;
-    for (const auto& [id, c] : current->nodes) {
-        auto it = target.nodes.find(id);
-        if (it == target.nodes.end()) {
-            net.removeNode(id);
-            ++stats.removed;
-        } else if (!sameMeta(c, it->second)) {
-            net.removeNode(id);
-            toAdd.push_back(id);
-            ++stats.rebuilt;
-        } else if (!sameText(c, it->second)) {
-            toUpdate.push_back(id);
+    // Both snapshots are ordered by id, so one walk finds what was removed, added and changed without a lookup per node; a block of ids the
+    // two share (same pointer) is skipped whole.
+    static const std::vector<SnapshotNodes::Entry> noEntries;
+    const auto diffEntries = [&](const std::vector<SnapshotNodes::Entry>& had, const std::vector<SnapshotNodes::Entry>& want) {
+        std::size_t i = 0, j = 0;
+        while (i < had.size() || j < want.size()) {
+            if (j == want.size() || (i < had.size() && had[i].first < want[j].first)) {
+                net.removeNode(had[i].first);
+                ++stats.removed;
+                ++i;
+            } else if (i == had.size() || want[j].first < had[i].first) {
+                toAdd.push_back(want[j].first);
+                ++stats.added;
+                ++j;
+            } else {
+                if (!sameMeta(had[i].second, want[j].second)) {
+                    net.removeNode(had[i].first);
+                    toAdd.push_back(had[i].first);
+                    ++stats.rebuilt;
+                } else if (!sameText(had[i].second, want[j].second) || !sameChild(had[i].second, want[j].second)) {
+                    toUpdate.push_back(had[i].first);
+                }
+                ++i;
+                ++j;
+            }
         }
-    }
-    for (const auto& entry : target.nodes) {
-        if (!current->nodes.count(entry.first)) {
-            toAdd.push_back(entry.first);
-            ++stats.added;
+    };
+    const SnapshotNodes::Chunks& hadChunks = current->nodes.chunks();
+    const SnapshotNodes::Chunks& wantChunks = target.nodes.chunks();
+    for (std::size_t i = 0, j = 0; i < hadChunks.size() || j < wantChunks.size();) {
+        if (j == wantChunks.size() || (i < hadChunks.size() && hadChunks[i].first < wantChunks[j].first)) {
+            diffEntries(hadChunks[i++].second->entries, noEntries);
+        } else if (i == hadChunks.size() || wantChunks[j].first < hadChunks[i].first) {
+            diffEntries(noEntries, wantChunks[j++].second->entries);
+        } else {
+            if (hadChunks[i].second != wantChunks[j].second) diffEntries(hadChunks[i].second->entries, wantChunks[j].second->entries);
+            ++i;
+            ++j;
         }
     }
 
@@ -949,28 +1023,47 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
         const NodeSnapshot& t = target.nodes.at(id);
         json5::document doc;
         parse(t, doc);
-        net.addNodeWithId(id, t.type, t.name);
+        net.addNodeWithId(id, t.meta->type, t.meta->name);
         applyNodeBody(net.node(id), doc, true);
+        if (t.child) restoreSnapshot(*net.node(id).childNetwork(), *t.child);
     }
     for (NodeId id : toUpdate) {
-        json5::document doc;
-        parse(target.nodes.at(id), doc);
+        const NodeSnapshot& t = target.nodes.at(id);
         Node& n = net.node(id);
-        for (const std::string& name : n.floatNames()) n.clearAnimation(name);
-        applyNodeBody(n, doc, false);
+        if (!sameText(current->nodes.at(id), t)) {
+            json5::document doc;
+            parse(t, doc);
+            for (const std::string& name : n.floatNames()) n.clearAnimation(name);
+            applyNodeBody(n, doc, false);
+        }
+        if (t.child) restoreSnapshot(*n.childNetwork(), *t.child, current->nodes.at(id).child.get());
         ++stats.updated;
     }
 
+    // When nothing was removed, rebuilt or added, a node whose meta is the very object `current` holds is wired as it already is.
+    const bool wiringIntact = toAdd.empty() && stats.removed == 0;
     std::vector<std::tuple<NodeId, int, NodeId>> connects;
-    for (const auto& [id, t] : target.nodes) {
-        const size_t slots = std::max(t.inputs.size(), static_cast<size_t>(net.node(id).inputCount()));
+    const auto wire = [&](NodeId id, const NodeSnapshot& t) {
+        const std::vector<NodeId>& wantedInputs = t.meta->inputs;
+        const size_t slots = std::max(wantedInputs.size(), static_cast<size_t>(net.node(id).inputCount()));
         for (size_t i = 0; i < slots; ++i) {
-            const NodeId wanted = i < t.inputs.size() ? t.inputs[i] : invalidNodeId;
+            const NodeId wanted = i < wantedInputs.size() ? wantedInputs[i] : invalidNodeId;
             const NodeId live = net.inputOf(id, static_cast<int>(i));
             if (live == wanted) continue;
             if (live != invalidNodeId) net.disconnect(id, static_cast<int>(i));
             if (wanted != invalidNodeId) connects.emplace_back(wanted, static_cast<int>(i), id);
             ++stats.rewired;
+        }
+    };
+    for (std::size_t i = 0; i < wantChunks.size(); ++i) {
+        const auto& entries = wantChunks[i].second->entries;
+        // The same node set, so the blocks line up one to one.
+        const bool alike = wiringIntact && i < hadChunks.size() && hadChunks[i].first == wantChunks[i].first;
+        if (alike && hadChunks[i].second == wantChunks[i].second) continue;
+        const std::vector<SnapshotNodes::Entry>* had = alike ? &hadChunks[i].second->entries : nullptr;
+        for (std::size_t k = 0; k < entries.size(); ++k) {
+            if (had != nullptr && k < had->size() && (*had)[k].first == entries[k].first && (*had)[k].second.meta == entries[k].second.meta) continue;
+            wire(entries[k].first, entries[k].second);
         }
     }
     for (const auto& [from, input, to] : connects) net.connect(from, to, input);

@@ -1,5 +1,6 @@
 ﻿#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -2001,6 +2002,73 @@ TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
     CHECK(net.node(other).revision() == revision);
 }
 
+TEST(snapshotsOfSubnetsRestoreThemInPlace) {
+    SubnetRig rig;
+    Network& net = rig.net;
+    Network& inner = rig.inner();
+    const NodeId nestedId = inner.addNode("subnet", "nested");
+    Network& nested = subnetOf(inner, nestedId).network();
+    const NodeId deep = nested.addNode("transform", "deep");
+
+    const GraphSnapshot start = snapshotNetwork(net);
+    const GraphSnapshot fresh = snapshotNetwork(net);
+    CHECK(sameGraph(start, fresh));
+
+    inner.node(rig.xf).setFloat("ty", 3.0f);
+    nested.node(deep).setFloat("tx", 8.0f);
+    const NodeId extra = inner.addNode("transform", "extra");
+    inner.connect(rig.in, extra);
+    const GraphSnapshot edited = snapshotNetwork(net, &start);
+    CHECK(!sameGraph(edited, start));
+    CHECK(sameGraph(edited, snapshotNetwork(net)));
+
+    const uint64_t xfRevision = inner.node(rig.xf).revision();
+    restoreSnapshot(net, start, &edited);
+    CHECK(sameGraph(snapshotNetwork(net), start));
+    CHECK(inner.nodeIds().size() == 3 && nested.node(deep).baseFloat("tx") == 0.0f);
+    CHECK(&subnetOf(net, rig.sub).network() == &inner);  // the child network object survives, only the differing nodes change
+    CHECK(inner.node(rig.xf).revision() != xfRevision);
+
+    restoreSnapshot(net, edited, &start);
+    CHECK(sameGraph(snapshotNetwork(net), edited));
+    CHECK(inner.node(rig.xf).baseFloat("ty") == 3.0f && nested.node(deep).baseFloat("tx") == 8.0f && inner.nodeIds().size() == 4);
+
+    // A subnet that is deleted and brought back by undo returns with its contents.
+    const GraphSnapshot withSub = snapshotNetwork(net);
+    net.removeNode(rig.sub);
+    const GraphSnapshot without = snapshotNetwork(net, &withSub);
+    restoreSnapshot(net, withSub, &without);
+    CHECK(sameGraph(snapshotNetwork(net), withSub));
+    CHECK(subnetOf(net, rig.sub).network().nodeIds().size() == 4);
+}
+
+TEST(snapshotsOfBigSubnetsCostAboutAsMuchAsFlatOnes) {
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point s) { return std::chrono::duration<double, std::milli>(Clock::now() - s).count(); };
+    for (int mode = 0; mode < 2; ++mode) {
+        Network net;
+        Network* target = &net;
+        if (mode == 1) target = &subnetOf(net, net.addNode("subnet", "group")).network();
+        std::vector<NodeId> ids;
+        for (int i = 0; i < 2000; ++i) ids.push_back(target->addNode("transform"));
+        for (int i = 0; i < 2000; ++i) net.addNode("transform");
+        const GraphSnapshot base = snapshotNetwork(net);
+        const GraphSnapshot before = snapshotNetwork(net, &base);
+        auto t = Clock::now();
+        target->node(ids[1000]).setFloat("tx", 5.0f);
+        const GraphSnapshot after = snapshotNetwork(net, &before);
+        const double edit = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, before, &after);
+        const double undo = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, after, &before);
+        const double redo = since(t);
+        CHECK(target->node(ids[1000]).baseFloat("tx") == 5.0f);
+        std::printf("  snapshot cost, 2000 nodes %s: edit+snapshot %.2f ms, undo %.2f ms, redo %.2f ms\n", mode ? "in a subnet" : "flat", edit, undo, redo);
+    }
+}
+
 TEST(subnetsRoundTripThroughFiles) {
     SubnetRig rig;
     subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
@@ -2565,6 +2633,142 @@ TEST(undoOnlyTouchesTheNodesThatDiffer) {
     CHECK(net.node(line).cookCount() == 1 && net.node(xf).cookCount() == 1);
     CHECK(net.node(wr).cookCount() == 3 && net.node(out).cookCount() == 3);
 }
+
+TEST(bypassedNodePassesItsFirstInputThroughAndWinsOverFreeze) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    NodeId out = net.addNode("null");
+    net.node(line).setFloat("count", 10.0f);
+    net.node(xf).setFloat("tx", 5.0f);
+    net.connect(line, xf);
+    net.connect(xf, out);
+    const float moved = net.cook(out)->x()[0];
+    CHECK_NEAR(moved, net.cook(line)->x()[0] + 5.0f);
+
+    net.node(xf).setBypassed(true);
+    expectSameGeometry(*net.cook(out), *net.cook(line));
+    net.node(xf).setBypassed(false);
+    CHECK_NEAR(net.cook(out)->x()[0], moved);
+
+    net.node(xf).setBypassed(true);
+    CHECK(throwsRuntimeError([&] { net.freezeNode(xf); }));
+    net.node(xf).setFrozenGeometry(std::make_shared<const Geometry>());
+    CHECK(net.cook(out)->pointCount() == 10);
+}
+
+TEST(bypassedNodeWithoutAnInputGivesAnEmptyGeometry) {
+    Network net(1);
+    NodeId xf = net.addNode("transform");
+    CHECK(throwsRuntimeError([&] { net.cook(xf); }));
+    net.node(xf).setBypassed(true);
+    CHECK(net.cook(xf)->pointCount() == 0);
+}
+
+TEST(bypassedNodeLeavesAFusedChainAndTheRestStillFuses) {
+    Chain fused(true), plain(false);
+    for (Chain* c : {&fused, &plain}) c->net.node(c->wr).setBypassed(true);
+    expectSameGeometry(*fused.net.cookDisplay(), *plain.net.cookDisplay());
+    CHECK(fused.net.cookDisplay()->pointCount() == 21);
+    fused.net.node(fused.wr).setBypassed(false);
+    plain.net.node(plain.wr).setBypassed(false);
+    expectSameGeometry(*fused.net.cookDisplay(), *plain.net.cookDisplay());
+    CHECK(fused.net.fusedChainCount() >= 1);
+}
+
+TEST(frozenNodeIsNotCookedAgainAndEditsUpstreamDoNotReachIt) {
+    Network net(1);
+    net.setFusionEnabled(false);
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    NodeId out = net.addNode("null");
+    net.node(line).setFloat("count", 10.0f);
+    net.connect(line, xf);
+    net.connect(xf, out);
+    net.freezeNode(xf);
+    CHECK(net.node(xf).frozen());
+    const GeometryHandle before = net.cook(out);
+    const size_t lineCooks = net.node(line).cookCount();
+
+    net.node(line).setFloat("count", 30.0f);
+    CHECK(!net.node(out).dirty());
+    CHECK(net.cook(out) == before);
+    CHECK(net.node(line).cookCount() == lineCooks);
+    CHECK(net.cook(out)->pointCount() == 10);
+
+    net.node(xf).setFrozenGeometry(nullptr);
+    CHECK(!net.node(xf).frozen());
+    CHECK(net.cook(out)->pointCount() == 30);
+}
+
+TEST(frozenMergeIsNotAbsorbedIntoTheMergeAfterIt) {
+    Network net(1);
+    NodeId a = net.addNode("line"), b = net.addNode("line"), c = net.addNode("line");
+    NodeId inner = net.addNode("merge"), outer = net.addNode("merge");
+    for (NodeId id : {a, b, c}) net.node(id).setFloat("count", 4.0f);
+    net.connect(a, inner, 0);
+    net.connect(b, inner, 1);
+    net.connect(inner, outer, 0);
+    net.connect(c, outer, 1);
+    net.freezeNode(inner);
+    CHECK(net.cook(outer)->pointCount() == 12);
+    const size_t aCooks = net.node(a).cookCount();
+    net.node(a).setFloat("count", 20.0f);
+    CHECK(net.cook(outer)->pointCount() == 12);
+    CHECK(net.node(a).cookCount() == aCooks);
+    net.node(inner).setFrozenGeometry(nullptr);
+    CHECK(net.cook(outer)->pointCount() == 28);
+}
+
+TEST(frozenNodeIgnoresTheTimeThatMovesItsParameters) {
+    Network net(1);
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    net.node(line).setFloat("count", 5.0f);
+    net.node(xf).setKeyframes("tx", {{0.0, 0.0f}, {1.0, 10.0f}});
+    net.connect(line, xf);
+    const float atZero = net.cook(xf)->x()[0];
+    net.freezeNode(xf);
+    CHECK(!net.setTime(1.0));
+    CHECK_NEAR(net.cook(xf)->x()[0], atZero);
+    net.node(xf).setFrozenGeometry(nullptr);
+    CHECK_NEAR(net.cook(xf)->x()[0], atZero + 10.0f);
+}
+
+TEST(bypassAndFreezeSurviveSaveLoadSnapshotUndoAndPaste) {
+    Network net(1);
+    NodeId line = net.addNode("line", "src");
+    NodeId xf = net.addNode("transform", "xf");
+    NodeId out = net.addNode("null", "out");
+    net.node(line).setFloat("count", 10.0f);
+    net.node(xf).setFloat("tx", 5.0f);
+    net.connect(line, xf);
+    net.connect(xf, out);
+    net.setDisplayNode(out);
+    History history(net);
+    net.freezeNode(xf);
+    const GeometryHandle frozen = net.cook(out);
+    CHECK(history.commit("freeze"));
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    NodeId loadedXf = loaded.findNode("xf");
+    CHECK(loaded.node(loadedXf).frozen() && !loaded.node(loadedXf).bypassed());
+    expectSameGeometry(*loaded.cook(loaded.findNode("out")), *frozen);
+    CHECK(loaded.node(loaded.findNode("src")).cookCount() == 0);
+
+    net.node(xf).setFrozenGeometry(nullptr);
+    net.node(xf).setBypassed(true);
+    CHECK(history.commit("bypass instead"));
+    CHECK(history.undo());
+    CHECK(net.node(xf).frozen() && !net.node(xf).bypassed());
+    CHECK(history.redo());
+    CHECK(!net.node(xf).frozen() && net.node(xf).bypassed());
+
+    std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, xf)})));
+    CHECK(pasted.size() == 1 && net.node(pasted[0]).bypassed());
+}
+
 
 TEST(undoRestoresStructureWiringAnimationAndSubnets) {
     SubnetRig rig;

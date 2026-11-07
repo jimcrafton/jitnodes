@@ -81,35 +81,43 @@ void Node::setExpression(const std::string& name, const std::string& text) {
     FloatParam& p = floatParam(name);
     KernelSpec spec;
     if (!text.empty()) spec = parseWrangle("__result = " + text + ";", {});
-    p.expression = text;
-    p.expressionSpec = std::move(spec);
-    p.keys.clear();
-    if (text.empty()) p.resolved = p.value;
+    if (text.empty()) {
+        p.clear();
+        p.resolved = p.value;
+    } else {
+        FloatParam::Animation& a = p.edit();
+        a.expression = text;
+        a.expressionSpec = std::move(spec);
+        a.keys.clear();
+    }
     rebuildReferences();
     markChanged();
 }
 
-const std::string& Node::expression(const std::string& name) const { return floatParam(name).expression; }
+const std::string& Node::expression(const std::string& name) const { return floatParam(name).expression(); }
 
 void Node::setKeyframes(const std::string& name, std::vector<Keyframe> keys) {
     FloatParam& p = floatParam(name);
     sortKeyframes(keys);
-    p.keys = std::move(keys);
-    p.expression.clear();
-    p.expressionSpec = KernelSpec();
-    if (p.keys.empty()) p.resolved = p.value;
+    if (keys.empty()) {
+        p.clear();
+        p.resolved = p.value;
+    } else {
+        FloatParam::Animation& a = p.edit();
+        a.keys = std::move(keys);
+        a.expression.clear();
+        a.expressionSpec = KernelSpec();
+    }
     rebuildReferences();
     markChanged();
 }
 
-const std::vector<Keyframe>& Node::keyframes(const std::string& name) const { return floatParam(name).keys; }
+const std::vector<Keyframe>& Node::keyframes(const std::string& name) const { return floatParam(name).keys(); }
 
 void Node::clearAnimation(const std::string& name) {
     FloatParam& p = floatParam(name);
     if (!p.animated()) return;
-    p.expression.clear();
-    p.expressionSpec = KernelSpec();
-    p.keys.clear();
+    p.clear();
     p.resolved = p.value;
     rebuildReferences();
     markChanged();
@@ -121,7 +129,7 @@ void Node::rebuildReferences() {
     const std::set<std::string> before = std::move(referencedNodes_);
     referencedNodes_.clear();
     for (const auto& [paramName, p] : floats_) {
-        for (const std::string& symbol : p.expressionSpec.channels) {
+        for (const std::string& symbol : p.expressionSpec().channels) {
             const size_t dot = symbol.find('.');
             if (dot != std::string::npos) referencedNodes_.insert(symbol.substr(0, dot));
         }
@@ -164,7 +172,24 @@ std::vector<std::string> Node::geometryNames() const {
     return names;
 }
 
-void Node::touch() { revision_ = ++revisionCounter; }
+void Node::setBypassed(bool bypassed) {
+    if (bypassed_ == bypassed) return;
+    bypassed_ = bypassed;
+    markChanged();
+}
+
+void Node::setFrozenGeometry(GeometryHandle geometry) {
+    if (geometry == frozen_ || (geometry && frozen_ && sameGeometry(*geometry, *frozen_))) return;
+    frozen_ = std::move(geometry);
+    markChanged();
+}
+
+uint64_t Node::freshRevision() { return ++revisionCounter; }
+
+void Node::touch() {
+    revision_ = ++revisionCounter;
+    if (network_) network_->noteTouched(id_, revision_);
+}
 
 void Node::markChanged(bool structural) {
     touch();
