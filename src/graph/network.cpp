@@ -522,8 +522,8 @@ float Network::paramValue(NodeId id, const std::string& name) {
         ~Guard() { set.erase(key); }
     } guard{evaluating_, key};
 
-    p.resolved = !p.keys.empty() ? evaluateKeyframes(p.keys, time_)
-                                 : evaluateScalar(p.expressionSpec, [&](const std::string& s) { return resolveSymbol(id, s); });
+    p.resolved = !p.keys().empty() ? evaluateKeyframes(p.keys(), time_)
+                                   : evaluateScalar(p.expressionSpec(),[&](const std::string& s) { return resolveSymbol(id, s); });
     return p.resolved;
 }
 
@@ -535,10 +535,10 @@ void Network::evaluateParams(Node& n) {
 bool Network::paramDependsOnTime(NodeId id, const std::string& name, std::set<std::pair<NodeId, std::string>>& visiting) const {
     const Node& n = node(id);
     const Node::FloatParam& p = n.floatParam(name);
-    if (!p.keys.empty()) return true;
-    if (p.expression.empty() || !visiting.insert({id, name}).second) return false;
+    if (!p.keys().empty()) return true;
+    if (p.expression().empty() || !visiting.insert({id, name}).second) return false;
     if (visiting.size() > maxExpressionDepth || stackHeadroom() < minimumStackHeadroom) return true;  // too deep to follow; treat as animated, which only costs recooks
-    for (const std::string& symbol : p.expressionSpec.channels) {
+    for (const std::string& symbol : p.expressionSpec().channels) {
         if (symbol == "time" || symbol == "frame") return true;
         if (symbol == "pi") continue;
         const size_t dot = symbol.find('.');
