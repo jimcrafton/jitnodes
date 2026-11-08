@@ -99,6 +99,7 @@ public:
             checkpoints_.offer(0, solver_, solver_.bytes());
         }
         for (; step_ < target; ++step_) {
+            ctx.progress(static_cast<double>(step_) / static_cast<double>(target));
             for (const GasSource& s : sources) solver_.addSource(s, dt);
             solver_.step(dt, ctx.pool);
             checkpoints_.offer(step_ + 1, solver_, solver_.bytes());

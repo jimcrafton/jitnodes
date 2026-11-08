@@ -518,7 +518,9 @@ public:
             if (!live) checkpoints_.offer(0, st, stateBytes(st));
         }
         std::vector<float> pushX, pushY;
-        for (int64_t step = st.step + 1; step <= target; ++step) {
+        const int64_t firstStep = st.step + 1;
+        for (int64_t step = firstStep; step <= target; ++step) {
+            ctx.progress(static_cast<double>(step - firstStep) / static_cast<double>(target - firstStep + 1));
             advance(st, s, step, ctx.pool, pushX, pushY);
             if (!live) checkpoints_.offer(step, st, stateBytes(st));
         }

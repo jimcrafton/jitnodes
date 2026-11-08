@@ -719,6 +719,7 @@ void Network::runTask(const CookTask& task) {
     auto millis = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
 
     if (cancelRequested()) throw CookCancelled();
+    reportProgress(task.tail, 0.0);
     const auto start = Clock::now();
     Node& tail = node(task.tail);
     CookTimings timings;
@@ -765,7 +766,7 @@ void Network::runTask(const CookTask& task) {
         } else if (tail.frozen_) {
             result = tail.frozen_;
         } else {
-            CookContext ctx{compiler(), time_, pool(), &timings, this};
+            CookContext ctx{compiler(), time_, pool(), &timings, this, task.tail};
             result = tail.cook(ctx, inputs);
         }
         for (NodeId a : task.absorbed) node(a).stats_.fusedInto = task.tail;
@@ -800,6 +801,34 @@ void Network::runTask(const CookTask& task) {
         event.chain = stats.lastChainLength;
         recordTrace(std::move(event));
     }
+    ++root().progressDone_;
+    reportProgress(task.tail, 1.0);
+}
+
+void Network::reportProgress(NodeId node, double fraction) {
+    Network& r = root();
+    if (!r.progressCallback_) return;
+    CookProgress progress;
+    progress.nodesDone = r.progressDone_.load();
+    progress.nodesTotal = r.progressTotal_.load();
+    progress.network = this;
+    progress.node = node;
+    progress.fraction = std::clamp(fraction, 0.0, 1.0);
+    r.progressCallback_(progress);
+}
+
+void Network::throwIfCancelled() const {
+    if (cancelRequested()) throw CookCancelled();
+}
+
+void CookContext::progress(double fraction) const {
+    if (!network) return;
+    network->throwIfCancelled();
+    network->reportProgress(node, fraction);
+}
+
+void CookContext::checkCancelled() const {
+    if (network) network->throwIfCancelled();
 }
 
 void Network::recordTrace(TraceEvent event) {
@@ -867,7 +896,11 @@ GeometryHandle Network::cook(NodeId id) {
     struct CookScope {
         Network& net;
         explicit CookScope(Network& n) : net(n) {
-            if (!net.parent_) net.cooking_ = true;
+            if (!net.parent_) {
+                net.cooking_ = true;
+                net.progressDone_ = 0;
+                net.progressTotal_ = 0;
+            }
         }
         ~CookScope() {
             if (!net.parent_) {
@@ -879,6 +912,7 @@ GeometryHandle Network::cook(NodeId id) {
 
     std::map<NodeId, CookTask> tasks;
     planCook(id, tasks);
+    root().progressTotal_ += tasks.size();
 
     int maxLevel = 0;
     for (const auto& [tail, task] : tasks) {

@@ -204,7 +204,14 @@ Consequences worth knowing:
 - **Rules for node authors:** `cook` may run concurrently with other nodes' `cook`. Touch only your own state, treat
   input geometry as immutable, and use `ctx.pool` for data-parallel work.
 - **Cancellation:** `Network::cancel()` (any thread) makes the cook in progress throw `CookCancelled` before it
-  starts its next task. Finished nodes keep their results, unfinished ones stay dirty. Granularity is one node.
+  starts its next task. Finished nodes keep their results, unfinished ones stay dirty. Granularity is one node,
+  unless the node calls `ctx.progress(fraction)` or `ctx.checkCancelled()` inside its work (`gasField` and `particles` do,
+  once per simulation step), which throw `CookCancelled` too.
+- **Progress:** `Network::setProgressCallback` (set before cooking) gets a `CookProgress` (nodes done of nodes planned, the
+  network and node concerned, and the fraction within that node) when a node starts (0), finishes (1) and whenever a node
+  calls `ctx.progress`. It runs on the thread that cooks the node, so keep it short and thread-safe. The total counts the
+  nodes planned so far: a subnet adds its inner nodes when it starts, so the total grows during the cook. A long node
+  reports with `ctx.progress(step / steps)` in its step loop; nodes that do not call it only show start and finish.
 - **Time:** `setTime(t)` only dirties nodes whose parameters depend on time: keyframes, `time` / `frame` in an
   expression, or references (transitively, also through `parent.`) to such parameters. Everything else keeps its cache,
   which is why scrubbing or playing a mostly static graph is cheap. A node that reads `CookContext::time` itself (the
