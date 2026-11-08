@@ -219,6 +219,23 @@ public:
     // Nodes that already finished keep their results; ignored when no cook is running.
     void cancel();
 
+    // Progress of the cook in progress, for a status display. Set it before cooking, not during. The callback is called on whatever thread
+    // runs a node (independent branches run in parallel, so calls can overlap: keep it short and thread-safe), when a node starts (fraction 0),
+    // when it finishes (1) and whenever it calls CookContext::progress. nodesTotal counts the nodes planned so far; a subnet or loop adds its
+    // inner nodes when it starts, so the total grows while the cook runs. Counts restart with each cook of the root network.
+    struct CookProgress {
+        size_t nodesDone = 0;
+        size_t nodesTotal = 0;
+        const Network* network = nullptr;   // the network `node` belongs to (a subnet's inner network is not the root)
+        NodeId node = invalidNodeId;
+        double fraction = 0.0;              // within `node`
+    };
+    using ProgressCallback = std::function<void(const CookProgress&)>;
+    void setProgressCallback(ProgressCallback callback) { root().progressCallback_ = std::move(callback); }
+    // What CookContext::progress and checkCancelled call.
+    void reportProgress(NodeId node, double fraction);
+    void throwIfCancelled() const;
+
     // Per-node timings of the latest cooks; see Node::stats().
     std::string profileReport() const;
     void resetProfile();
@@ -351,6 +368,8 @@ private:
     std::atomic<size_t> fusedChainCount_{0};
     std::atomic<bool> cooking_{false};
     std::atomic<bool> cancelRequested_{false};
+    std::atomic<size_t> progressDone_{0}, progressTotal_{0};   // the root's; nested networks add to it
+    ProgressCallback progressCallback_;
     std::unique_ptr<ThreadPool> pool_;
     std::atomic<bool> traceEnabled_{false};
     mutable std::mutex traceMutex_;

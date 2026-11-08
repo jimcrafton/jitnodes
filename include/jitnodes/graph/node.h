@@ -30,6 +30,13 @@ struct CookContext {
     ThreadPool* pool = nullptr;      // for data-parallel work inside a node; may be null
     CookTimings* timings = nullptr;  // nodes add their compile/kernel time here; may be null
     Network* network = nullptr;      // the network that is cooking this node
+    NodeId node = invalidNodeId;     // the node being cooked (an id of `network`)
+
+    // For a node whose cook takes long (a simulation step loop): `fraction` (0..1) is how far through its own work it is. Reaches the
+    // network's progress callback, and, like checkCancelled(), throws CookCancelled when Network::cancel() was called. Cheap; may be called
+    // from any thread of the cook. Does nothing without a network.
+    void progress(double fraction) const;
+    void checkCancelled() const;
 };
 
 struct NodeStats {
@@ -174,13 +181,28 @@ private:
 
     void setInputCount(int count) { inputCount_ = count; }
 
+    // Almost every parameter is a plain number, and nodes are made by the thousand, so the expression and keys live out of line.
     struct FloatParam {
+        struct Animation {
+            std::string expression;
+            KernelSpec expressionSpec;
+            std::vector<Keyframe> keys;
+        };
         float value = 0.0f;
         float resolved = 0.0f;
-        std::string expression;
-        KernelSpec expressionSpec;
-        std::vector<Keyframe> keys;
-        bool animated() const { return !expression.empty() || !keys.empty(); }
+        std::unique_ptr<Animation> animation;
+        bool animated() const { return animation && (!animation->expression.empty() || !animation->keys.empty()); }
+        const std::string& expression() const { return animation ? animation->expression : emptyText(); }
+        const KernelSpec& expressionSpec() const { return animation ? animation->expressionSpec : emptySpec(); }
+        const std::vector<Keyframe>& keys() const { return animation ? animation->keys : emptyKeys(); }
+        Animation& edit() {
+            if (!animation) animation = std::make_unique<Animation>();
+            return *animation;
+        }
+        void clear() { animation.reset(); }
+        static const std::string& emptyText() { static const std::string none; return none; }
+        static const KernelSpec& emptySpec() { static const KernelSpec none; return none; }
+        static const std::vector<Keyframe>& emptyKeys() { static const std::vector<Keyframe> none; return none; }
     };
 
     FloatParam& floatParam(const std::string& name);

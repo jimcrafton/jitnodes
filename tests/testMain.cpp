@@ -4225,6 +4225,49 @@ TEST(gasFieldCarriesSmokeUpwardsAndIsAPureFunctionOfTime) {
     CHECK(cookThrows(smoke.net, smoke.gas));
 }
 
+TEST(progressCallbackSeesNodesStartAndFinishAndASimulationsSteps) {
+    Smoke smoke;
+    NodeId pass = smoke.net.addNode("null");
+    smoke.net.connect(smoke.gas, pass);
+    smoke.net.setDisplayNode(pass);
+    std::vector<Network::CookProgress> seen;
+    smoke.net.setProgressCallback([&](const Network::CookProgress& p) { seen.push_back(p); });
+    smoke.net.setTime(1.0);
+    smoke.net.cookDisplay();
+    smoke.net.setProgressCallback(nullptr);
+
+    CHECK(seen.size() > 10);
+    size_t gasInside = 0;
+    double lastGasFraction = -1.0;
+    bool monotonic = true;
+    for (const auto& p : seen) {
+        CHECK(p.network == &smoke.net);
+        CHECK(p.nodesTotal == 2);
+        if (p.node == smoke.gas && p.fraction > 0.0 && p.fraction < 1.0) {
+            ++gasInside;
+            monotonic = monotonic && p.fraction >= lastGasFraction;
+            lastGasFraction = p.fraction;
+        }
+    }
+    CHECK(gasInside > 20);   // a step loop reports as it goes
+    CHECK(monotonic);
+    CHECK(seen.back().nodesDone == 2 && seen.back().node == pass && seen.back().fraction == 1.0);
+}
+
+TEST(aSimulationNodeCanBeCancelledMidCook) {
+    Smoke smoke;
+    int calls = 0;
+    smoke.net.setProgressCallback([&](const Network::CookProgress& p) {
+        if (p.node == smoke.gas && p.fraction > 0.3 && p.fraction < 1.0 && ++calls == 1) smoke.net.cancel();
+    });
+    smoke.net.setTime(2.0);
+    bool threw = false;
+    try { smoke.net.cook(smoke.gas); } catch (const CookCancelled&) { threw = true; }
+    CHECK(threw);
+    smoke.net.setProgressCallback(nullptr);
+    CHECK(smoke.net.cook(smoke.gas) != nullptr);   // the next cook is not affected
+}
+
 TEST(gasFieldRedBlackIsThreadIndependentAndAgreesWithTheSerialSweep) {
     auto configure = [](Smoke& s, bool redBlack) {
         s.net.node(s.gas).setFloat("resolution", 160.0f);
