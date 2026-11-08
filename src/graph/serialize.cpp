@@ -1,4 +1,5 @@
 ﻿#include "jitnodes/graph/serialize.h"
+#include "jitnodes/graph/serializeValue.h"
 
 #include "jitnodes/core/stackGuard.h"
 #include "jitnodes/core/utf8.h"
@@ -421,8 +422,7 @@ void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
             const json5::array_view names(spare);
             if (!names.is_valid()) fail("spare must be an array of names");
             for (const json5::value& s : names) n.addSpareFloat(requireString(s, "spare parameter name"), 0.0f);
-        }
-        for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
+        }        for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
         for (auto [key, value] : json5::object_view(nv["strings"])) n.setString(key, requireString(value, std::string("strings.") + key));
         for (auto [key, value] : json5::object_view(nv["geometries"])) n.setGeometryParam(key, readGeometry(value, std::string("geometries.") + key));
         for (auto [key, value] : json5::object_view(nv["expressions"])) n.setExpression(key, requireString(value, std::string("expressions.") + key));
@@ -589,9 +589,7 @@ void registerAssetValue(const json5::value& def, const std::string& text) {
 
 }  // namespace
 
-std::string saveNetwork(const Network& net, bool includeTime, bool compact) {
-    json5::document doc;
-    json5::builder b(doc);
+json5::value saveNetworkValue(json5::builder& b, const Network& net, bool includeTime, bool compact) {
     b.push_object();
     b["format"] = b.new_string(graphFormat);
     b["version"] = json5::value(formatVersion);
@@ -606,8 +604,20 @@ std::string saveNetwork(const Network& net, bool includeTime, bool compact) {
         throw;
     }
     skipDefaults = false;
-    b.pop();
+    return b.pop();
+}
+
+std::string saveNetwork(const Network& net, bool includeTime, bool compact) {
+    json5::document doc;
+    json5::builder b(doc);
+    saveNetworkValue(b, net, includeTime, compact);
     return dump(doc, compact);
+}
+
+void loadNetworkValue(Network& net, const json5::value& graph) {
+    Network scratch(1);
+    loadFromValue(scratch, graph);  // validates everything before touching net
+    loadFromValue(net, graph);
 }
 
 void loadNetwork(Network& net, const std::string& text) {
@@ -617,9 +627,7 @@ void loadNetwork(Network& net, const std::string& text) {
         fail(std::string("parse error at line ") + std::to_string(err.line) + ", column " + std::to_string(err.column) + ": " +
              json5::error::type_string[err.type]);
     }
-    Network scratch(1);
-    loadFromValue(scratch, doc);  // validates everything before touching net
-    loadFromValue(net, doc);
+    loadNetworkValue(net, doc);
 }
 
 std::string saveAsset(const Network& net, NodeId subnet, const std::string& typeName, int assetVersion) {

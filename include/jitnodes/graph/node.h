@@ -199,8 +199,7 @@ private:
     std::map<std::string, std::string> strings_;
     std::map<std::string, GeometryHandle> geometries_;
     std::set<std::string> referencedNodes_;
-    std::set<std::string> spare_;
-    bool dirty_ = true;
+    std::set<std::string> spare_;    bool dirty_ = true;
     bool bypassed_ = false;
     GeometryHandle frozen_;
     bool anchor_ = false;    // a fused chain stops below this node (see Network::noteEdited)
