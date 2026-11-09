@@ -208,13 +208,8 @@ const Node* defaultNode(const std::string& type) {
     return it->second.get();
 }
 
-json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs, bool withGraph) {
-    const Node& n = net.node(id);
-    b.push_object();
-    b["id"] = json5::value(static_cast<double>(id));
-    b["type"] = b.new_string(n.typeName());
-    b["name"] = b.new_string(n.name());
-    if (const auto* asset = dynamic_cast<const AssetNode*>(&n)) b["assetVersion"] = json5::value(asset->version());
+// Appends the fields a node owns (position, flags, parameters) to the object being built; readNodeBody is its counterpart.
+void writeNodeBody(json5::builder& b, const Node& n) {
     if (n.hasPosition()) {
         b.push_array();
         b += floatValue(n.posX());
@@ -285,6 +280,17 @@ json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool wi
         }
         b["keyframes"] = b.pop();
     }
+
+}
+
+json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs, bool withGraph) {
+    const Node& n = net.node(id);
+    b.push_object();
+    b["id"] = json5::value(static_cast<double>(id));
+    b["type"] = b.new_string(n.typeName());
+    b["name"] = b.new_string(n.name());
+    if (const auto* asset = dynamic_cast<const AssetNode*>(&n)) b["assetVersion"] = json5::value(asset->version());
+    writeNodeBody(b, n);
 
     if (withInputs) {
         b.push_array();
@@ -404,8 +410,8 @@ GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
     return g;
 }
 
-// Applies the saved parameters (and child graph) of a node to n. Existing nodes keep their spare parameters.
-void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
+// Applies the saved body of a node to n. Existing nodes keep their spare parameters.
+void readNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
     {
         json5::value pos;
         if (member(nv, "pos", pos)) {
@@ -440,13 +446,16 @@ void applyNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
             }
             n.setKeyframes(key, std::move(keys));
         }
-        json5::value graph;
-        if (member(nv, "graph", graph)) {
-            Network* child = n.childNetwork();
-            if (!child || n.isAssetInstance()) fail("only subnets store a graph (asset instances take theirs from the definition)");
-            loadGraphBody(*child, graph);
-        }
     }
+}
+
+// A subnet's child graph is kept apart from its body: a snapshot stores it as a separate chunk.
+void readNodeGraph(Node& n, const json5::value& nv) {
+    json5::value graph;
+    if (!member(nv, "graph", graph)) return;
+    Network* child = n.childNetwork();
+    if (!child || n.isAssetInstance()) fail("only subnets store a graph (asset instances take theirs from the definition)");
+    loadGraphBody(*child, graph);
 }
 
 void loadNode(Network& net, const json5::value& nv, size_t index, std::vector<std::pair<NodeId, std::vector<NodeId>>>& wiring) {
@@ -470,7 +479,8 @@ void loadNode(Network& net, const json5::value& nv, size_t index, std::vector<st
         const int fromVersion = asset && member(nv, "assetVersion", savedVersion) ? static_cast<int>(requireNumber(savedVersion, "assetVersion")) : 1;
         if (asset && fromVersion != asset->version()) {
             AssetNode old(type, static_cast<int>(inputs.size()));
-            applyNodeBody(old, nv, true);
+            readNodeBody(old, nv, true);
+            readNodeGraph(old, nv);
             transferParameters(old, n);
             AssetUpgrade upgrade{fromVersion, asset->version(), old, n, inputs};
             if (const AssetMigrationFn* hook = NodeRegistry::instance().assetMigration(type)) (*hook)(upgrade);
@@ -478,7 +488,8 @@ void loadNode(Network& net, const json5::value& nv, size_t index, std::vector<st
             inputs.resize(static_cast<size_t>(n.inputCount()), invalidNodeId);
         } else {
             if (!n.hasVariableInputs() && inputs.size() != static_cast<size_t>(n.inputCount())) fail(inputsWhere + " must be an array of " + std::to_string(n.inputCount()) + " ids");
-            applyNodeBody(n, nv, true);
+            readNodeBody(n, nv, true);
+            readNodeGraph(n, nv);
         }
         wiring.emplace_back(id, std::move(inputs));
     } catch (const std::runtime_error& e) {
@@ -911,7 +922,8 @@ std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips)
             if (json5::from_string(*clips[i].text, doc)) fail("the copied node is corrupt");
             const NodeId id = net.addNode(clips[i].type, net.uniqueName(clips[i].name));
             created.push_back(id);
-            applyNodeBody(net.node(id), doc, true);
+            readNodeBody(net.node(id), doc, true);
+            readNodeGraph(net.node(id), doc);
             indexOf[clips[i].name] = i;
             if (net.node(id).name() != clips[i].name) renames[clips[i].name] = net.node(id).name();
         }
@@ -1032,7 +1044,8 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
         json5::document doc;
         parse(t, doc);
         net.addNodeWithId(id, t.meta->type, t.meta->name);
-        applyNodeBody(net.node(id), doc, true);
+        readNodeBody(net.node(id), doc, true);
+        readNodeGraph(net.node(id), doc);
         if (t.child) restoreSnapshot(*net.node(id).childNetwork(), *t.child);
     }
     for (NodeId id : toUpdate) {
@@ -1042,7 +1055,8 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
             json5::document doc;
             parse(t, doc);
             for (const std::string& name : n.floatNames()) n.clearAnimation(name);
-            applyNodeBody(n, doc, false);
+            readNodeBody(n, doc, false);
+            readNodeGraph(n, doc);
         }
         if (t.child) restoreSnapshot(*n.childNetwork(), *t.child, current->nodes.at(id).child.get());
         ++stats.updated;
