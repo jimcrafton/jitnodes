@@ -28,6 +28,11 @@ public:
             expect('=');
             int value = asValue(expr());
             expect(';');
+            if (isLocal(name)) {
+                locals_[name] = value;
+                skipSpace();
+                continue;
+            }
             int channel = spec_.channelIndex(name);
             current_[channel] = value;
             skipSpace();
@@ -40,6 +45,9 @@ private:
     [[noreturn]] void fail(const std::string& msg) const {
         throw std::runtime_error("wrangle parse error at offset " + std::to_string(pos_) + ": " + msg);
     }
+
+    // '__' is reserved (the scalar-expression wrapper stores to `__result`).
+    static bool isLocal(const std::string& name) { return name.size() > 1 && name[0] == '_' && name[1] != '_'; }
 
     void skipSpace() {
         while (pos_ < src_.size() && std::isspace(static_cast<unsigned char>(src_[pos_]))) ++pos_;
@@ -245,6 +253,11 @@ private:
         const auto constant = constants_.find(name);
         if (constant != constants_.end()) return spec_.graph.constant(constant->second);
         if (name == "sampleIndex") return spec_.graph.index();
+        if (isLocal(name)) {
+            const auto local = locals_.find(name);
+            if (local == locals_.end()) fail("'" + name + "' is read before it is assigned");
+            return local->second;
+        }
         int channel = spec_.channelIndex(name);
         auto it = current_.find(channel);
         return it != current_.end() ? it->second : spec_.graph.load(channel);
@@ -297,6 +310,7 @@ private:
     size_t pos_ = 0;
     KernelSpec spec_;
     std::map<int, int> current_;  // channel -> latest expression assigned this program
+    std::map<std::string, int> locals_;  // '_name' temporaries: never a channel, never stored
 };
 
 }  // namespace

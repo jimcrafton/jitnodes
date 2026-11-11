@@ -1,5 +1,6 @@
 #include "jitnodes/graph/node.h"
 
+#include <algorithm>
 #include <atomic>
 #include <stdexcept>
 
@@ -69,6 +70,25 @@ std::vector<std::string> Node::floatNames() const {
     std::vector<std::string> names;
     for (const auto& entry : floats_) names.push_back(entry.first);
     return names;
+}
+
+void Node::tagParam(const std::string& name, const std::string& tag) {
+    std::vector<std::string>& tags = floatParam(name).tags;
+    if (!tag.empty() && std::find(tags.begin(), tags.end(), tag) == tags.end()) tags.push_back(tag);
+}
+
+const std::vector<std::string>& Node::paramTags(const std::string& name) const { return floatParam(name).tags; }
+
+bool Node::hasParamTag(const std::string& name, const std::string& tag) const {
+    const std::vector<std::string>& tags = floatParam(name).tags;
+    return std::find(tags.begin(), tags.end(), tag) != tags.end();
+}
+
+std::optional<std::string> Node::paramTagValue(const std::string& name, const std::string& key) const {
+    const std::string prefix = key + ":";
+    for (const std::string& tag : floatParam(name).tags)
+        if (tag.compare(0, prefix.size(), prefix) == 0) return tag.substr(prefix.size());
+    return std::nullopt;
 }
 
 std::vector<std::string> Node::stringNames() const {
@@ -182,6 +202,36 @@ void Node::setFrozenGeometry(GeometryHandle geometry) {
     if (geometry == frozen_ || (geometry && frozen_ && sameGeometry(*geometry, *frozen_))) return;
     frozen_ = std::move(geometry);
     markChanged();
+}
+
+void Node::setTags(std::vector<std::string> tags) {
+    if (tags == tags_) return;
+    tags_ = std::move(tags);
+    touch();
+}
+
+bool Node::addTag(const std::string& tag) {
+    if (tag.empty() || hasTag(tag)) return false;
+    tags_.push_back(tag);
+    touch();
+    return true;
+}
+
+bool Node::removeTag(const std::string& tag) {
+    const auto it = std::find(tags_.begin(), tags_.end(), tag);
+    if (it == tags_.end()) return false;
+    tags_.erase(it);
+    touch();
+    return true;
+}
+
+bool Node::hasTag(const std::string& tag) const { return std::find(tags_.begin(), tags_.end(), tag) != tags_.end(); }
+
+std::optional<std::string> Node::tagValue(const std::string& key) const {
+    const std::string prefix = key + ":";
+    for (const std::string& tag : tags_)
+        if (tag.compare(0, prefix.size(), prefix) == 0) return tag.substr(prefix.size());
+    return std::nullopt;
 }
 
 uint64_t Node::freshRevision() { return ++revisionCounter; }

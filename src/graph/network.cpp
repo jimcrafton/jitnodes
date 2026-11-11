@@ -659,7 +659,7 @@ Network::CookTask Network::buildTask(NodeId id) {
         task.inputs.push_back(baseId);
     } else if (fusionEnabled() && n.isMerge()) {
         collectMergeInputs(id, task);
-        if (task.inputs.empty()) throw std::runtime_error(n.name() + ": no input is connected");
+        if (task.inputs.empty() && !n.inputsOptional()) throw std::runtime_error(n.name() + ": no input is connected");
     } else if (n.selectsInput()) {
         evaluateParams(n);
         const Slot& s = slot(id);

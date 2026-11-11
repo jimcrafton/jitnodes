@@ -21,7 +21,7 @@ namespace jitnodes {
 //
 // Identifiers listed in paramNames read the runtime parameter block; identifiers listed in constants
 // compile to that value (the kernel is specific to it); `sampleIndex` is the element's position in the
-// run; every other identifier is an attribute channel (x, y, N.x, group.top, ...). Statements run in
+// run; a name starting with a single '_' is a temporary local to the kernel; every other identifier is an attribute channel (x, y, N.x, group.top, ...). Statements run in
 // order, so later statements see earlier assignments. Throws std::runtime_error with a message on syntax errors.
 KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames,
                         const std::map<std::string, float>& constants = {});

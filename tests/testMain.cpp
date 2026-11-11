@@ -912,6 +912,158 @@ TEST(geometryParametersSaveSnapshotAndPaste) {
     CHECK(pasted.size() == 1 && sameGeometry(*net.cook(pasted[0]), *authoredCurve(0.0f)));
 }
 
+namespace {
+class ExtraStateNode : public Node {
+public:
+    ExtraStateNode() : Node("testExtraState", 0) {}
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return shape_ ? shape_ : std::make_shared<Geometry>(); }
+
+    void set(double gain, std::string label, GeometryHandle shape) {
+        gain_ = gain;
+        label_ = std::move(label);
+        shape_ = std::move(shape);
+        savedStateChanged();
+    }
+    double gain() const { return gain_; }
+    const std::string& label() const { return label_; }
+    const GeometryHandle& shape() const { return shape_; }
+
+    void save(NodeWriter& out) const override {
+        Node::save(out);
+        out.number("gain", gain_);
+        out.text("label", label_);
+        out.geometry("shape", shape_);
+    }
+    void load(NodeReader& in) override {
+        Node::load(in);
+        gain_ = 1.0;
+        label_.clear();
+        shape_ = nullptr;
+        in.number("gain", gain_);
+        in.text("label", label_);
+        in.geometry("shape", shape_);
+    }
+
+private:
+    double gain_ = 1.0;
+    std::string label_;
+    GeometryHandle shape_;
+};
+
+ExtraStateNode& extraNode(Network& net, NodeId id) { return static_cast<ExtraStateNode&>(net.node(id)); }
+}  // namespace
+
+TEST(aNodeSavesAndLoadsStateOfItsOwn) {
+    static const bool registered = (NodeRegistry::instance().registerType("testExtraState", [] { return std::make_unique<ExtraStateNode>(); }), true);
+    (void)registered;
+
+    Network net;
+    const NodeId id = net.addNode("testExtraState");
+    net.node(id).setPosition(4.0f, 5.0f);
+    extraNode(net, id).set(2.5, "layer one", authoredCurve(0.0f));
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    ExtraStateNode& copy = extraNode(loaded, id);
+    CHECK(copy.gain() == 2.5 && copy.label() == "layer one");
+    CHECK(sameGeometry(*copy.shape(), *authoredCurve(0.0f)));
+    CHECK(copy.posX() == 4.0f && copy.posY() == 5.0f);
+
+    // a snapshot sees the change, and restoring it brings the old state back
+    GraphSnapshot before = snapshotNetwork(net);
+    extraNode(net, id).set(7.0, "other", nullptr);
+    GraphSnapshot after = snapshotNetwork(net, &before);
+    CHECK(!sameGraph(before, after));
+    restoreSnapshot(net, before, &after);
+    CHECK(extraNode(net, id).gain() == 2.5 && extraNode(net, id).label() == "layer one" && extraNode(net, id).shape());
+
+    // an unchanged node reuses its snapshot text
+    CHECK(sameGraph(snapshotNetwork(net, &before), before));
+
+    const std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, id)})));
+    CHECK(pasted.size() == 1);
+    CHECK(extraNode(net, pasted[0]).gain() == 2.5 && extraNode(net, pasted[0]).label() == "layer one");
+
+    // a node left at its defaults loads back at them
+    Network plain;
+    const NodeId bare = plain.addNode("testExtraState");
+    Network again;
+    loadNetwork(again, saveNetwork(plain));
+    CHECK(extraNode(again, bare).gain() == 1.0 && extraNode(again, bare).label().empty() && !extraNode(again, bare).shape());
+}
+
+TEST(transformRotatesSkewsAndKeepsItsPivotFixed) {
+    Network net;
+    NodeId line = net.addNode("line");
+    NodeId xf = net.addNode("transform");
+    net.node(line).setFloat("count", 2.0f);
+    net.node(line).setFloat("length", 2.0f);        // points (0,0) and (2,0)
+    net.connect(line, xf);
+
+    net.node(xf).setFloat("rot", 90.0f);
+    net.node(xf).setFloat("px", 1.0f);
+    auto geo = net.cook(xf);
+    CHECK_NEAR(geo->x()[0], 1.0f);                  // (0,0) about (1,0): (-1,0) -> (0,-1)
+    CHECK_NEAR(geo->y()[0], -1.0f);
+    CHECK_NEAR(geo->x()[1], 1.0f);
+    CHECK_NEAR(geo->y()[1], 1.0f);
+
+    net.node(xf).setFloat("rot", 0.0f);
+    net.node(xf).setFloat("px", 0.0f);
+    net.node(xf).setFloat("skew", 45.0f);
+    net.node(xf).setFloat("tx", 5.0f);
+    geo = net.cook(xf);
+    CHECK_NEAR(geo->x()[1], 7.0f);                  // y is 0, so a skew leaves x alone
+    CHECK_NEAR(geo->y()[1], 0.0f);
+}
+
+TEST(anEmptyMergeCooksToEmptyGeometry) {
+    Network net;
+    NodeId merge = net.addNode("merge");
+    CHECK(net.cook(merge)->pointCount() == 0);
+}
+
+TEST(tagsArePlainOrKeyValueAndSurviveSaveSnapshotAndPaste) {
+    Network net;
+    const NodeId id = net.addNode("circle");
+    Node& n = net.node(id);
+    CHECK(n.tags().empty() && !n.tagValue("color"));
+    CHECK(n.addTag("layer") && n.addTag("color:red") && n.addTag("path:C:/art"));
+    CHECK(!n.addTag("layer") && !n.addTag(""));
+    CHECK(n.tags().size() == 3 && n.hasTag("layer") && n.hasTag("color:red") && !n.hasTag("color"));
+    CHECK(*n.tagValue("color") == "red" && *n.tagValue("path") == "C:/art" && !n.tagValue("layer"));
+
+    // a tag does not dirty the node
+    net.cook(id);
+    const uint64_t revision = n.revision();
+    n.addTag("locked:true");
+    CHECK(!n.dirty() && n.revision() != revision);
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    CHECK(loaded.node(id).tags() == n.tags());
+
+    GraphSnapshot before = snapshotNetwork(net);
+    CHECK(n.removeTag("locked:true") && !n.removeTag("locked:true"));
+    GraphSnapshot after = snapshotNetwork(net, &before);
+    CHECK(!sameGraph(before, after));
+    restoreSnapshot(net, before, &after);
+    CHECK(net.node(id).hasTag("locked:true"));
+
+    // a snapshot without tags clears the tags a node has since gained
+    GraphSnapshot tagged = snapshotNetwork(net, &before);
+    n.setTags({});
+    GraphSnapshot bare = snapshotNetwork(net, &tagged);
+    restoreSnapshot(net, tagged, &bare);
+    CHECK(net.node(id).hasTag("layer"));
+    restoreSnapshot(net, bare, &tagged);
+    CHECK(net.node(id).tags().empty());
+
+    n.setTags({"group", "size:3"});
+    const std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, id)})));
+    CHECK(pasted.size() == 1 && net.node(pasted[0]).tags() == n.tags());
+}
+
 TEST(geometryNodeOutputsItsStoredGeometryAndFollowsEdits) {
     Network net;
     NodeId src = net.addNode("geometry");
@@ -2505,7 +2657,7 @@ TEST(mergeTakesAnyNumberOfInputsAndKeepsOneSpare) {
 
     NodeId lonely = net.addNode("merge");
     net.setDisplayNode(lonely);
-    CHECK(throwsRuntimeError([&] { net.cookDisplay(); }));
+    CHECK(net.cookDisplay()->pointCount() == 0);
 }
 
 TEST(mergeWithManyInputsSurvivesSaveLoadAndUndo) {

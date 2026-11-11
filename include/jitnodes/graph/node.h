@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -54,6 +55,29 @@ struct PointKernel {
     std::vector<float> params;
 };
 
+class Node;
+
+// What Node::save and Node::load talk to, so a node does not depend on the file format. standard() writes or reads what every node has
+// (position, bypass, freeze, spare names, parameters, expressions, keyframes); number, text and geometry are fields of the node's own, kept
+// apart from those. A reader returns false for a field that is not in the file (a file from before the field existed).
+class NodeWriter {
+public:
+    virtual ~NodeWriter() = default;
+    virtual void standard(const Node& node) = 0;
+    virtual void number(const std::string& name, double value) = 0;
+    virtual void text(const std::string& name, const std::string& value) = 0;
+    virtual void geometry(const std::string& name, const GeometryHandle& value) = 0;
+};
+
+class NodeReader {
+public:
+    virtual ~NodeReader() = default;
+    virtual void standard(Node& node) = 0;
+    virtual bool number(const std::string& name, double& value) const = 0;
+    virtual bool text(const std::string& name, std::string& value) const = 0;
+    virtual bool geometry(const std::string& name, GeometryHandle& value) const = 0;
+};
+
 class Node {
 public:
     Node(std::string typeName, int inputCount);
@@ -78,6 +102,14 @@ public:
     float baseFloat(const std::string& name) const;  // the stored value, ignoring any expression or keyframes
     std::vector<std::string> floatNames() const;
     std::vector<std::string> stringNames() const;
+
+    // Parameter tags describe a float parameter the way tags describe a node: each is a plain value or "key:value". The node type adds them
+    // where it declares the parameter (tagParam), so they are not saved with the node and never affect cooking. An editor reads them: parameters
+    // sharing a "group:<name>" tag belong in one row, "kind:color" with "channel:r|g|b|a" says that row is a colour, "unit:<step>" is how much a
+    // drag moves the value per pixel.
+    const std::vector<std::string>& paramTags(const std::string& name) const;
+    bool hasParamTag(const std::string& name, const std::string& tag) const;
+    std::optional<std::string> paramTagValue(const std::string& name, const std::string& key) const;  // as tagValue, for one parameter
 
     // Expression symbols: own parameter names, time, frame, pi, and node.param references to other
     // nodes by name. Setting an expression replaces keyframes; an empty text clears it. Throws on
@@ -110,12 +142,28 @@ public:
     bool frozen() const { return frozen_ != nullptr; }
     const GeometryHandle& frozenGeometry() const { return frozen_; }
 
+    // Tags label a node. Each is a plain value ("layer") or "key:value" ("color:red"). They are saved with the node and never affect cooking, so
+    // changing them does not dirty it. Matching is on the exact text.
+    const std::vector<std::string>& tags() const { return tags_; }
+    void setTags(std::vector<std::string> tags);
+    bool addTag(const std::string& tag);        // false for an empty tag or one already there
+    bool removeTag(const std::string& tag);     // false when absent
+    bool hasTag(const std::string& tag) const;
+    std::optional<std::string> tagValue(const std::string& key) const;  // the text after the first ':' of the first "key:..." tag
+
     // Editor layout hint, saved with the graph; it never affects cooking and does not dirty the node.
     void setPosition(float x, float y) {
         if (hasPosition_ && posX_ == x && posY_ == y) return;
         posX_ = x;
         posY_ = y;
         hasPosition_ = true;
+        touch();
+    }
+    // Back to "no saved position" (the editor lays the node out itself).
+    void clearPosition() {
+        if (!hasPosition_) return;
+        posX_ = posY_ = 0.0f;
+        hasPosition_ = false;
         touch();
     }
     // Changes to a fresh process-wide value whenever anything the node saves changes (also for a different node made under the
@@ -167,8 +215,19 @@ public:
     virtual int selectedInput() const { return -1; }
     virtual void onAttached(Network&) {}  // called once the node has an id and owner
 
+    // How the node writes and reads its body: saving, undo snapshots, copy and paste, and loading all go through these. The defaults write and
+    // read the standard body only. An override that keeps state of its own writes it with the NodeWriter fields and reads it back in load; it calls
+    // Node::save / Node::load for the standard body, and savedStateChanged() whenever that state changes. A subnet's child graph is not part of the
+    // body (a snapshot keeps it apart).
+    virtual void save(NodeWriter& out) const { out.standard(*this); }
+    virtual void load(NodeReader& in) { in.standard(*this); }
+
 protected:
+    // For overrides of save and load: a change to the state they write, so a snapshot writes the node out again. It does not dirty the cook.
+    void savedStateChanged() { touch(); }
     void declareFloat(const std::string& name, float defaultValue);
+    // Adds a tag to a declared float parameter (throws for an unknown one); a repeated tag is ignored.
+    void tagParam(const std::string& name, const std::string& tag);
     void declareString(const std::string& name, const std::string& defaultValue);
     void declareGeometry(const std::string& name);
     const Network* owner() const { return network_; }
@@ -190,6 +249,7 @@ private:
         };
         float value = 0.0f;
         float resolved = 0.0f;
+        std::vector<std::string> tags;
         std::unique_ptr<Animation> animation;
         bool animated() const { return animation && (!animation->expression.empty() || !animation->keys.empty()); }
         const std::string& expression() const { return animation ? animation->expression : emptyText(); }
@@ -221,7 +281,9 @@ private:
     std::map<std::string, std::string> strings_;
     std::map<std::string, GeometryHandle> geometries_;
     std::set<std::string> referencedNodes_;
-    std::set<std::string> spare_;    bool dirty_ = true;
+    std::set<std::string> spare_;
+    std::vector<std::string> tags_;
+    bool dirty_ = true;
     bool bypassed_ = false;
     GeometryHandle frozen_;
     bool anchor_ = false;    // a fused chain stops below this node (see Network::noteEdited)

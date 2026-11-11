@@ -71,14 +71,31 @@ public:
     TransformNode() : KernelNode("transform") {
         declareFloat("sx", 1.0f);
         declareFloat("sy", 1.0f);
+        tagParam("sx", "unit:0.01");
+        tagParam("sy", "unit:0.01");
         declareFloat("tx", 0.0f);
         declareFloat("ty", 0.0f);
-        spec_ = parseWrangle("x = x * sx + tx; y = y * sy + ty;", {"sx", "sy", "tx", "ty"});
+        declareFloat("rot", 0.0f);
+        declareFloat("skew", 0.0f);
+        declareFloat("px", 0.0f);
+        declareFloat("py", 0.0f);
+        spec_ = parseWrangle("_nx = a * x + c * y + e; _ny = b * x + d * y + f; x = _nx; y = _ny;", {"a", "b", "c", "d", "e", "f"});
     }
 
+    // Degrees. The pivot stays where it is: p + t + R Sk S (v - p).
     bool pointKernel(PointKernel& out) override {
+        constexpr float degToRad = 3.14159265358979f / 180.0f;
+        const float sx = getFloat("sx"), sy = getFloat("sy");
+        const float px = getFloat("px"), py = getFloat("py");
+        const float r = getFloat("rot") * degToRad;
+        const float k = std::tan(getFloat("skew") * degToRad);
+        const float cs = std::cos(r), sn = std::sin(r);
+        const float a = cs * sx, b = sn * sx;
+        const float c = cs * k * sy - sn * sy, d = sn * k * sy + cs * sy;
+        const float e = px + getFloat("tx") - a * px - c * py;
+        const float f = py + getFloat("ty") - b * px - d * py;
         out.spec = spec_;
-        out.params = {getFloat("sx"), getFloat("sy"), getFloat("tx"), getFloat("ty")};
+        out.params = {a, b, c, d, e, f};
         return true;
     }
 
@@ -121,6 +138,7 @@ public:
 
     bool isMerge() const override { return true; }
     bool hasVariableInputs() const override { return true; }
+    bool inputsOptional() const override { return true; }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
         std::vector<const Geometry*> parts;

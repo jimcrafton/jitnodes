@@ -20,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
+#include <variant>
 
 #include "jitnodes/graph/subnet.h"
 
@@ -208,8 +209,8 @@ const Node* defaultNode(const std::string& type) {
     return it->second.get();
 }
 
-// Appends the fields a node owns (position, flags, parameters) to the object being built; readNodeBody is its counterpart.
-void writeNodeBody(json5::builder& b, const Node& n) {
+// Appends the standard fields of a node (position, flags, parameters) to the object being built; readStandardBody is its counterpart.
+void writeStandardBody(json5::builder& b, const Node& n) {
     if (n.hasPosition()) {
         b.push_array();
         b += floatValue(n.posX());
@@ -219,6 +220,12 @@ void writeNodeBody(json5::builder& b, const Node& n) {
 
     if (n.bypassed()) b["bypass"] = json5::value(1.0);
     if (n.frozen()) b["frozen"] = writeGeometry(b, *n.frozenGeometry());
+
+    if (!n.tags().empty()) {
+        b.push_array();
+        for (const std::string& tag : n.tags()) b += b.new_string(tag);
+        b["tags"] = b.pop();
+    }
 
     if (!n.spareNames().empty()) {
         b.push_array();
@@ -281,6 +288,41 @@ void writeNodeBody(json5::builder& b, const Node& n) {
         b["keyframes"] = b.pop();
     }
 
+}
+
+// A node's own fields are gathered and written as one "extra" object after save returns: the builder has one object open at a time, and the
+// standard body writes into the node's own.
+class JsonNodeWriter : public NodeWriter {
+public:
+    explicit JsonNodeWriter(json5::builder& b) : b_(b) {}
+
+    void standard(const Node& node) override { writeStandardBody(b_, node); }
+    void number(const std::string& name, double value) override { extras_.emplace_back(name, value); }
+    void text(const std::string& name, const std::string& value) override { extras_.emplace_back(name, value); }
+    void geometry(const std::string& name, const GeometryHandle& value) override {
+        if (value) extras_.emplace_back(name, value);
+    }
+
+    void finish() {
+        if (extras_.empty()) return;
+        b_.push_object();
+        for (const auto& [name, value] : extras_) {
+            if (const double* number = std::get_if<double>(&value)) b_[name] = json5::value(*number);
+            else if (const std::string* text = std::get_if<std::string>(&value)) b_[name] = b_.new_string(*text);
+            else b_[name] = writeGeometry(b_, *std::get<GeometryHandle>(value));
+        }
+        b_["extra"] = b_.pop();
+    }
+
+private:
+    json5::builder& b_;
+    std::vector<std::pair<std::string, std::variant<double, std::string, GeometryHandle>>> extras_;
+};
+
+void writeNodeBody(json5::builder& b, const Node& n) {
+    JsonNodeWriter writer(b);
+    n.save(writer);
+    writer.finish();
 }
 
 json5::value writeNode(json5::builder& b, const Network& net, NodeId id, bool withInputs, bool withGraph) {
@@ -410,19 +452,30 @@ GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
     return g;
 }
 
-// Applies the saved body of a node to n. Existing nodes keep their spare parameters.
-void readNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
+// Applies the standard fields of a saved node to n. Existing nodes keep their spare parameters.
+void readStandardBody(Node& n, const json5::value& nv, bool declareSpare) {
     {
         json5::value pos;
         if (member(nv, "pos", pos)) {
             const json5::array_view xy(pos);
             if (!xy.is_valid() || xy.size() != 2) fail("pos must be an array of two numbers");
             n.setPosition(static_cast<float>(requireNumber(xy[0], "pos x")), static_cast<float>(requireNumber(xy[1], "pos y")));
+        } else {
+            n.clearPosition();   // absent means unplaced, so a snapshot restored over a node that has since been moved puts it back
         }
         // Absent means off, so a snapshot restored over a node that has since been bypassed or frozen switches them off again.
         json5::value flag;
         n.setBypassed(member(nv, "bypass", flag) && requireNumber(flag, "bypass") != 0.0);
         n.setFrozenGeometry(member(nv, "frozen", flag) ? readGeometry(flag, "frozen") : GeometryHandle());
+        // Absent means none, like bypass, so a restored snapshot drops tags added since.
+        std::vector<std::string> tags;
+        json5::value tagList;
+        if (member(nv, "tags", tagList)) {
+            const json5::array_view items(tagList);
+            if (!items.is_valid()) fail("tags must be an array of strings");
+            for (const json5::value& item : items) tags.push_back(requireString(item, "tag"));
+        }
+        n.setTags(std::move(tags));
         json5::value spare;
         if (declareSpare && member(nv, "spare", spare)) {
             const json5::array_view names(spare);
@@ -447,6 +500,44 @@ void readNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
             n.setKeyframes(key, std::move(keys));
         }
     }
+}
+
+class JsonNodeReader : public NodeReader {
+public:
+    JsonNodeReader(const json5::value& nv, bool declareSpare) : nv_(nv), declareSpare_(declareSpare) { hasExtra_ = member(nv, "extra", extra_); }
+
+    void standard(Node& node) override { readStandardBody(node, nv_, declareSpare_); }
+    bool number(const std::string& name, double& value) const override {
+        json5::value v;
+        if (!field(name, v)) return false;
+        value = requireNumber(v, "extra." + name);
+        return true;
+    }
+    bool text(const std::string& name, std::string& value) const override {
+        json5::value v;
+        if (!field(name, v)) return false;
+        value = requireString(v, "extra." + name);
+        return true;
+    }
+    bool geometry(const std::string& name, GeometryHandle& value) const override {
+        json5::value v;
+        if (!field(name, v)) return false;
+        value = readGeometry(v, "extra." + name);
+        return true;
+    }
+
+private:
+    bool field(const std::string& name, json5::value& out) const { return hasExtra_ && member(extra_, name.c_str(), out); }
+
+    const json5::value& nv_;
+    bool declareSpare_;
+    json5::value extra_;
+    bool hasExtra_ = false;
+};
+
+void readNodeBody(Node& n, const json5::value& nv, bool declareSpare) {
+    JsonNodeReader reader(nv, declareSpare);
+    n.load(reader);
 }
 
 // A subnet's child graph is kept apart from its body: a snapshot stores it as a separate chunk.
@@ -705,6 +796,7 @@ void registerAssetFromFile(const std::string& path) { registerAsset(readFile(pat
 namespace {
 
 void transferParameters(const Node& from, Node& to) {
+    to.setTags(from.tags());
     for (const std::string& name : from.floatNames()) {
         if (!to.hasFloat(name)) continue;
         to.setFloat(name, from.baseFloat(name));
