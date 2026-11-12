@@ -1064,6 +1064,52 @@ TEST(tagsArePlainOrKeyValueAndSurviveSaveSnapshotAndPaste) {
     CHECK(pasted.size() == 1 && net.node(pasted[0]).tags() == n.tags());
 }
 
+TEST(parameterTagsAPersonAddedSurviveSaveSnapshotAndPasteButTheDeclaredOnesAreNotSaved) {
+    Network net;
+    const NodeId id = net.addNode("transform");
+    Node& n = net.node(id);
+    CHECK(n.paramTags("sx") == std::vector<std::string>{"unit:0.01"} && n.userParamTags("sx").empty());
+
+    n.addSpareFloat("mine", 1.0f);
+    n.addParamTag("sx", "hot");
+    n.addParamTag("sx", "unit:0.01");   // declared already: not stored twice
+    n.addParamTag("sx", "hot");
+    n.addParamTag("sx", "");
+    n.setParamTags("mine", {"group:color", "channel:r", "group:color"});
+    CHECK((n.paramTags("sx") == std::vector<std::string>{"unit:0.01", "hot"}) && n.userParamTags("sx") == std::vector<std::string>{"hot"});
+    CHECK((n.paramTags("mine") == std::vector<std::string>{"group:color", "channel:r"}));
+    CHECK(*n.paramTagValue("mine", "channel") == "r");
+
+    // a parameter tag does not dirty the node
+    net.connect(net.addNode("circle"), id);
+    net.cook(id);
+    const uint64_t revision = n.revision();
+    n.addParamTag("sy", "x");
+    CHECK(!n.dirty() && n.revision() != revision);
+    n.setParamTags("sy", {});
+
+    const std::string text = saveNetwork(net);
+    CHECK(text.find("ptags") != std::string::npos && text.find("unit:0.01") == std::string::npos);   // the declared tag stays in the type
+    Network loaded;
+    loadNetwork(loaded, text);
+    CHECK(loaded.node(id).paramTags("sx") == n.paramTags("sx") && loaded.node(id).paramTags("mine") == n.paramTags("mine"));
+    CHECK(loaded.node(id).userParamTags("sy").empty());
+    CHECK(saveNetwork(loaded) == text);
+
+    GraphSnapshot before = snapshotNetwork(net);
+    n.setParamTags("sx", {});
+    GraphSnapshot after = snapshotNetwork(net, &before);
+    CHECK(!sameGraph(before, after));
+    restoreSnapshot(net, before, &after);
+    CHECK(net.node(id).userParamTags("sx") == std::vector<std::string>{"hot"});
+    restoreSnapshot(net, after, &before);   // a snapshot without ptags clears what was gained since
+    CHECK(net.node(id).userParamTags("sx").empty() && net.node(id).paramTags("sx") == std::vector<std::string>{"unit:0.01"});
+    restoreSnapshot(net, before, &after);
+
+    const std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, id)})));
+    CHECK(pasted.size() == 1 && net.node(pasted[0]).paramTags("mine") == n.paramTags("mine") && net.node(pasted[0]).paramTags("sx") == n.paramTags("sx"));
+}
+
 TEST(geometryNodeOutputsItsStoredGeometryAndFollowsEdits) {
     Network net;
     NodeId src = net.addNode("geometry");

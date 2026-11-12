@@ -110,6 +110,11 @@ public:
     const std::vector<std::string>& paramTags(const std::string& name) const;
     bool hasParamTag(const std::string& name, const std::string& tag) const;
     std::optional<std::string> paramTagValue(const std::string& name, const std::string& key) const;  // as tagValue, for one parameter
+    // The tags a person added to a parameter (spare ones have no others). They are saved with the node ("ptags"); the declared ones are not.
+    // setParamTags replaces the user's tags and keeps the declared ones; a tag the type already declares is not stored twice.
+    const std::vector<std::string>& userParamTags(const std::string& name) const;
+    void setParamTags(const std::string& name, std::vector<std::string> tags);
+    void addParamTag(const std::string& name, const std::string& tag);
 
     // Expression symbols: own parameter names, time, frame, pi, and node.param references to other
     // nodes by name. Setting an expression replaces keyframes; an empty text clears it. Throws on
@@ -249,7 +254,8 @@ private:
         };
         float value = 0.0f;
         float resolved = 0.0f;
-        std::vector<std::string> tags;
+        std::vector<std::string> tags;       // the declared ones, then the user's
+        std::vector<std::string> userTags;   // the part of tags a person added; the only part a file keeps
         std::unique_ptr<Animation> animation;
         bool animated() const { return animation && (!animation->expression.empty() || !animation->keys.empty()); }
         const std::string& expression() const { return animation ? animation->expression : emptyText(); }

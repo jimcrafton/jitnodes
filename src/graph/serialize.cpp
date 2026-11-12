@@ -233,6 +233,20 @@ void writeStandardBody(json5::builder& b, const Node& n) {
         b["spare"] = b.pop();
     }
 
+    // Only the tags a person added to a parameter; the ones the node type declares come from the type.
+    bool hasParamTags = false;
+    for (const std::string& name : n.floatNames()) hasParamTags |= !n.userParamTags(name).empty();
+    if (hasParamTags) {
+        b.push_object();
+        for (const std::string& name : n.floatNames()) {
+            if (n.userParamTags(name).empty()) continue;
+            b.push_array();
+            for (const std::string& tag : n.userParamTags(name)) b += b.new_string(tag);
+            b[name] = b.pop();
+        }
+        b["ptags"] = b.pop();
+    }
+
     // A compact save leaves out what a freshly made node of the type already has: its reader starts from those values.
     const Node* fresh = skipDefaults ? defaultNode(n.typeName()) : nullptr;
     b.push_object();
@@ -482,6 +496,16 @@ void readStandardBody(Node& n, const json5::value& nv, bool declareSpare) {
             if (!names.is_valid()) fail("spare must be an array of names");
             for (const json5::value& s : names) n.addSpareFloat(requireString(s, "spare parameter name"), 0.0f);
         }        for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
+        // Absent means none, like tags, so a restored snapshot drops parameter tags added since.
+        for (const std::string& name : n.floatNames()) n.setParamTags(name, {});
+        for (auto [key, value] : json5::object_view(nv["ptags"])) {
+            if (!n.hasFloat(std::string(key))) fail(std::string("ptags names an unknown parameter '") + std::string(key) + "'");
+            std::vector<std::string> added;
+            const json5::array_view items(value);
+            if (!items.is_valid()) fail(std::string("ptags.") + std::string(key) + " must be an array of strings");
+            for (const json5::value& item : items) added.push_back(requireString(item, "parameter tag"));
+            n.setParamTags(std::string(key), std::move(added));
+        }
         for (auto [key, value] : json5::object_view(nv["strings"])) n.setString(key, requireString(value, std::string("strings.") + key));
         for (auto [key, value] : json5::object_view(nv["geometries"])) n.setGeometryParam(key, readGeometry(value, std::string("geometries.") + key));
         for (auto [key, value] : json5::object_view(nv["expressions"])) n.setExpression(key, requireString(value, std::string("expressions.") + key));
@@ -800,6 +824,7 @@ void transferParameters(const Node& from, Node& to) {
     for (const std::string& name : from.floatNames()) {
         if (!to.hasFloat(name)) continue;
         to.setFloat(name, from.baseFloat(name));
+        to.setParamTags(name, from.userParamTags(name));
         if (!from.expression(name).empty()) to.setExpression(name, from.expression(name));
         else if (!from.keyframes(name).empty()) to.setKeyframes(name, from.keyframes(name));
     }

@@ -84,6 +84,29 @@ bool Node::hasParamTag(const std::string& name, const std::string& tag) const {
     return std::find(tags.begin(), tags.end(), tag) != tags.end();
 }
 
+const std::vector<std::string>& Node::userParamTags(const std::string& name) const { return floatParam(name).userTags; }
+
+void Node::setParamTags(const std::string& name, std::vector<std::string> tags) {
+    FloatParam& p = floatParam(name);
+    std::vector<std::string> kept;
+    for (const std::string& tag : p.tags)
+        if (std::find(p.userTags.begin(), p.userTags.end(), tag) == p.userTags.end()) kept.push_back(tag);   // the declared ones
+    std::vector<std::string> user;
+    for (std::string& tag : tags)
+        if (!tag.empty() && std::find(kept.begin(), kept.end(), tag) == kept.end() && std::find(user.begin(), user.end(), tag) == user.end()) user.push_back(std::move(tag));
+    if (user == p.userTags) return;
+    p.tags = std::move(kept);
+    p.tags.insert(p.tags.end(), user.begin(), user.end());
+    p.userTags = std::move(user);
+    touch();   // the saved state changed; the cook did not
+}
+
+void Node::addParamTag(const std::string& name, const std::string& tag) {
+    std::vector<std::string> user = floatParam(name).userTags;
+    user.push_back(tag);
+    setParamTags(name, std::move(user));
+}
+
 std::optional<std::string> Node::paramTagValue(const std::string& name, const std::string& key) const {
     const std::string prefix = key + ":";
     for (const std::string& tag : floatParam(name).tags)
