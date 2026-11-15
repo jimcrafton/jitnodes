@@ -6,6 +6,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jitnodes/audio/audioStep.h"
@@ -38,6 +39,11 @@ struct CookContext {
     // from any thread of the cook. Does nothing without a network.
     void progress(double fraction) const;
     void checkCancelled() const;
+
+    // The key a shape generator stamps on its geometry (Geometry::addShapePrimitive): the uids of the subnets around the node, then the node's
+    // own uid, then "#local" for a node that makes several shapes. Built from uids only, so animating a parameter or moving the node does not
+    // change it. Empty (anonymous) without a network.
+    std::string shapeKey(std::string_view local = {}) const;
 };
 
 struct NodeStats {
@@ -84,6 +90,12 @@ public:
     virtual ~Node();
 
     NodeId id() const { return id_; }
+    // Unlike the id, which only has to be unique in its network, the uid is unique in the whole document (a per-document counter held by the
+    // root network), is saved with the node and survives undo and moving the node between subnets. Paste gives a copy a fresh one.
+    // setUid(0) takes a fresh uid; any other value is a load putting back what was saved.
+    uint32_t uid() const { return uid_; }
+    std::string uidText() const;   // base 36
+    void setUid(uint32_t uid);
     const std::string& typeName() const { return typeName_; }
     const std::string& name() const { return name_; }
     int inputCount() const { return inputCount_; }
@@ -278,6 +290,7 @@ private:
     void touch();
 
     NodeId id_ = invalidNodeId;
+    uint32_t uid_ = 0;
     uint64_t revision_;
     std::string typeName_;
     std::string name_;

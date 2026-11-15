@@ -255,6 +255,12 @@ public:
     ThreadPool* pool() const { return parent_ ? parent_->pool() : pool_.get(); }
     Network* parent() const { return parent_; }
     NodeId ownerNode() const { return owner_; }
+    // Node uids (Node::uid) come from one counter per document, kept by the root network. reserveUid is for a node loaded with a saved uid:
+    // the counter moves past it so a later node never takes the same one.
+    uint32_t takeUid() { return root().nextUid_++; }
+    void reserveUid(uint32_t uid) { Network& r = root(); if (uid >= r.nextUid_) r.nextUid_ = uid + 1; }
+    // The uids of the subnets around this network, outermost first, each followed by '/'; the start of every shape key made inside it.
+    std::string keyPrefix() const;
     void setParent(Network* parent, NodeId owner) {
         parent_ = parent;
         owner_ = owner;
@@ -346,6 +352,7 @@ private:
     // A subnet's `parent.x` expressions follow the owner's parameters, so its cache goes stale with the owner's.
     void invalidateTimeCache();
     NodeId nextId_ = 1;
+    uint32_t nextUid_ = 1;   // only the root's is used
     std::uint64_t topologyRevision_ = 0;
     static constexpr size_t maxTouchLog = 8192;
     std::deque<std::pair<std::uint64_t, NodeId>> touchLog_;

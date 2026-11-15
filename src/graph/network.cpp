@@ -103,6 +103,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
     std::unique_ptr<Node> n = NodeRegistry::instance().create(typeName);
     n->id_ = id;
     n->network_ = this;
+    n->uid_ = takeUid();
     n->name_ = name;
     if (n->childNetwork()) {
         size_t depth = 1;
@@ -132,8 +133,24 @@ void Network::clear() {
     names_.clear();
     suffixHint_.clear();
     nextId_ = 1;
+    if (!parent_) nextUid_ = 1;
     displayNode_ = invalidNodeId;
     evaluating_.clear();
+}
+
+std::string Network::keyPrefix() const {
+    if (!parent_) return {};
+    return parent_->keyPrefix() + parent_->node(owner_).uidText() + "/";
+}
+
+std::string CookContext::shapeKey(std::string_view local) const {
+    if (network == nullptr || node == invalidNodeId) return std::string(local);
+    std::string key = network->keyPrefix() + network->node(node).uidText();
+    if (!local.empty()) {
+        key += '#';
+        key += local;
+    }
+    return key;
 }
 
 std::vector<NodeId> Network::nodeIds() const {

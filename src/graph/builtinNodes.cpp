@@ -25,7 +25,7 @@ public:
         declareFloat("y", 0.0f);
     }
 
-    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override {
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>&) override {
         auto geo = std::make_shared<Geometry>();
         const size_t n = static_cast<size_t>(std::max(getFloat("count"), 0.0f));
         geo->resizePoints(n);
@@ -36,7 +36,7 @@ public:
             x[i] = static_cast<float>(i) * step;
             y[i] = getFloat("y");
         }
-        if (n) geo->addPrimitive({0, static_cast<uint32_t>(n), false});
+        if (n) geo->addShapePrimitive({0, static_cast<uint32_t>(n), false}, ctx.shapeKey());
         return geo;
     }
 };

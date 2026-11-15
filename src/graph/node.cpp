@@ -17,6 +17,21 @@ Node::Node(std::string typeName, int inputCount) : revision_(++revisionCounter),
 
 Node::~Node() = default;
 
+std::string Node::uidText() const {
+    if (uid_ == 0) return "0";
+    std::string text;
+    for (uint32_t v = uid_; v != 0; v /= 36) text.insert(text.begin(), "0123456789abcdefghijklmnopqrstuvwxyz"[v % 36]);
+    return text;
+}
+
+void Node::setUid(uint32_t uid) {
+    if (uid == 0 && network_ != nullptr) uid = network_->takeUid();
+    else if (network_ != nullptr) network_->reserveUid(uid);
+    if (uid == uid_) return;
+    uid_ = uid;
+    touch();
+}
+
 void Node::declareFloat(const std::string& name, float defaultValue) {
     FloatParam& p = floats_[name];
     p.value = p.resolved = defaultValue;

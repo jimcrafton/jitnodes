@@ -231,6 +231,13 @@ Geometry copyToPoints(const Geometry& source, const Geometry& targets, float sca
         }
     }
     transferPrimAttribs(source, out, srcPrim);
+    if (source.hasShapeKeys()) {
+        // Each copy is its own shape; without a copy number adjacent copies of one shape would merge into one.
+        for (size_t i = 0; i < srcPrim.size(); ++i) {
+            const std::string& key = source.shapeKey(srcPrim[i]);
+            if (!key.empty()) out.setShapeKey(i, key + "@" + std::to_string(i / std::max<size_t>(source.primitiveCount(), 1)));
+        }
+    }
 
     const AttribArray* scaleAttr = targets.findAttrib(AttribClass::point, "scale");
     const AttribArray* angleAttr = targets.findAttrib(AttribClass::point, "angle");
@@ -310,6 +317,13 @@ Geometry symmetry(const Geometry& in, const SymmetryOptions& o, ThreadPool* pool
     made.reserve(copies.size());
     for (const Linear& m : copies) {
         Geometry g = in;
+        if (g.hasShapeKeys()) {
+            const std::string suffix = "@" + std::to_string(made.size());
+            for (size_t i = 0; i < g.primitiveCount(); ++i) {
+                const std::string key = g.shapeKey(i);
+                if (!key.empty()) g.setShapeKey(i, key + suffix);
+            }
+        }
         if (g.pointCount() > 0) {
             float* x = g.x();
             float* y = g.y();

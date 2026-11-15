@@ -211,6 +211,7 @@ const Node* defaultNode(const std::string& type) {
 
 // Appends the standard fields of a node (position, flags, parameters) to the object being built; readStandardBody is its counterpart.
 void writeStandardBody(json5::builder& b, const Node& n) {
+    if (n.uid() != 0) b["uid"] = json5::value(static_cast<double>(n.uid()));
     if (n.hasPosition()) {
         b.push_array();
         b += floatValue(n.posX());
@@ -469,6 +470,9 @@ GeometryHandle readGeometry(const json5::value& v, const std::string& what) {
 // Applies the standard fields of a saved node to n. Existing nodes keep their spare parameters.
 void readStandardBody(Node& n, const json5::value& nv, bool declareSpare) {
     {
+        // A file from before uids keeps the one the node was just given.
+        json5::value uid;
+        if (member(nv, "uid", uid)) n.setUid(static_cast<uint32_t>(requireNumber(uid, "uid")));
         json5::value pos;
         if (member(nv, "pos", pos)) {
             const json5::array_view xy(pos);
@@ -1029,6 +1033,14 @@ std::vector<NodeClip> clipsFromText(const std::string& text) {
     return clips;
 }
 
+// A pasted node is a new node, so it and everything inside a pasted subnet takes a fresh uid instead of the copied one.
+static void renewUids(Node& n) {
+    n.setUid(0);
+    Network* child = n.childNetwork();
+    if (child == nullptr || n.isAssetInstance()) return;
+    for (NodeId id : child->nodeIds()) renewUids(child->node(id));
+}
+
 std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips) {
     std::vector<NodeId> created;
     try {
@@ -1041,6 +1053,7 @@ std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips)
             created.push_back(id);
             readNodeBody(net.node(id), doc, true);
             readNodeGraph(net.node(id), doc);
+            renewUids(net.node(id));
             indexOf[clips[i].name] = i;
             if (net.node(id).name() != clips[i].name) renames[clips[i].name] = net.node(id).name();
         }

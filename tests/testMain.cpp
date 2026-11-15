@@ -7,6 +7,7 @@
 #include <fstream>
 #include <cstdio>
 #include <functional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -2183,6 +2184,87 @@ TEST(promotedParametersAreVisibleInsideAsParentReferences) {
     rig.net.setTime(1.0);
     CHECK_NEAR(rig.net.cookDisplay()->x()[0], 6.0f);
     CHECK(rig.net.node(rig.line).cookCount() == 1);
+}
+
+TEST(uidsAreUniqueInTheDocumentAndSurviveSaveAndLoad) {
+    SubnetRig rig;
+    std::set<uint32_t> seen;
+    for (NodeId id : rig.net.nodeIds()) seen.insert(rig.net.node(id).uid());
+    for (NodeId id : rig.inner().nodeIds()) seen.insert(rig.inner().node(id).uid());
+    CHECK(seen.size() == 5 && !seen.count(0));
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(rig.net));
+    CHECK(loaded.node(rig.sub).uid() == rig.net.node(rig.sub).uid());
+    Network& inner = subnetOf(loaded, rig.sub).network();
+    CHECK(inner.node(rig.xf).uid() == rig.inner().node(rig.xf).uid());
+    const NodeId more = inner.addNode("null");
+    CHECK(!seen.count(inner.node(more).uid()));
+    CHECK(!seen.count(loaded.node(loaded.addNode("null")).uid()));
+}
+
+TEST(pasteGivesTheCopiesFreshUids) {
+    SubnetRig rig;
+    const std::vector<NodeId> pasted = pasteNodes(rig.net, clipsFromText(clipsToText({copyNode(rig.net, rig.sub)})));
+    Node& copy = rig.net.node(pasted[0]);
+    CHECK(copy.uid() != rig.net.node(rig.sub).uid());
+    Network& copyInner = *copy.childNetwork();
+    CHECK(copyInner.node(rig.xf).uid() != rig.inner().node(rig.xf).uid());
+    CHECK(copyInner.node(rig.xf).uid() != copy.uid());
+}
+
+TEST(restoringASnapshotKeepsTheUidOfARemovedNode) {
+    Network net;
+    const NodeId a = net.addNode("circle");
+    const NodeId b = net.addNode("circle");
+    const uint32_t uidB = net.node(b).uid();
+    GraphSnapshot before = snapshotNetwork(net);
+    net.removeNode(b);
+    GraphSnapshot after = snapshotNetwork(net, &before);
+    restoreSnapshot(net, before, &after);
+    CHECK(net.node(b).uid() == uidB && net.node(a).uid() != uidB);
+}
+
+TEST(shapeKeysAreBuiltFromUidsAndIgnoreParameters) {
+    Network net;
+    const NodeId source = net.addNode("line");
+    const NodeId sub = net.addNode("subnet");
+    net.connect(source, sub);
+    Network& inner = subnetOf(net, sub).network();
+    const NodeId circle = inner.addNode("circle");
+    inner.setDisplayNode(circle);
+    net.setDisplayNode(sub);
+    const std::string expected = net.node(sub).uidText() + "/" + inner.node(circle).uidText();
+    auto geo = net.cookDisplay();
+    CHECK(geo->shapes().size() == 1 && geo->shapeKey(0) == expected);
+    inner.node(circle).setFloat("radius", 5.0f);
+    CHECK(net.cookDisplay()->shapeKey(0) == expected);
+
+    Network flat;
+    const NodeId top = flat.addNode("line");
+    flat.setDisplayNode(top);
+    CHECK(flat.cookDisplay()->shapeKey(0) == flat.node(top).uidText());
+}
+
+TEST(copiesOfAKeyedShapeGetTheirOwnKeys) {
+    Network net;
+    const NodeId circle = net.addNode("circle");
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    const NodeId copies = net.addNode("copyToPoints");
+    net.connect(circle, copies, 0);
+    net.connect(line, copies, 1);
+    const std::string key = net.node(circle).uidText();
+    auto geo = net.cook(copies);
+    const std::vector<ShapeRange> shapes = geo->shapes();
+    CHECK(shapes.size() == 3);
+    CHECK(shapes[0].key == key + "@0" && shapes[2].key == key + "@2");
+    CHECK(!checkShapesThrows(*geo));
+
+    const NodeId mirror = net.addNode("mirror");
+    net.connect(circle, mirror);
+    auto both = net.cook(mirror);
+    CHECK(both->shapes().size() == 2 && both->shapes()[0].key == key + "@0" && both->shapes()[1].key == key + "@1");
 }
 
 TEST(subnetsFollowTimeAndNest) {
@@ -6130,7 +6212,7 @@ TEST(everyNodeTypeKeepsStringAttributesConsistent) {
             for (const auto& [name, array] : out->attribs(cls)) {
                 if (array.type() != AttribType::string) continue;
                 ++kept;
-                if (type == "attribString") continue;  // makes new text by design
+                if (type == "attribString" || name == shapeKeyAttrib) continue;  // new text by design
                 for (size_t i = 0; i < array.size(); ++i) CHECK(std::find(words.begin(), words.end(), array.stringAt(i)) != words.end());
             }
         }
