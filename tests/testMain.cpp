@@ -80,6 +80,146 @@ TEST(geometryAppendMergesAttribs) {
     CHECK(a.primitives().size() == 1 && a.primitives()[0].start == 3);
 }
 
+// One two-point primitive per entry; an empty key is an anonymous primitive.
+static Geometry keyedLines(const std::vector<std::string>& keys) {
+    Geometry g;
+    g.resizePoints(keys.size() * 2);
+    for (size_t i = 0; i < keys.size(); ++i) g.addShapePrimitive({static_cast<uint32_t>(i * 2), 2, false}, keys[i]);
+    return g;
+}
+
+static std::vector<std::string> shapeKeysOf(const Geometry& g) {
+    std::vector<std::string> keys;
+    for (const ShapeRange& range : g.shapes()) keys.push_back(std::string(range.key));
+    return keys;
+}
+
+static bool checkShapesThrows(const Geometry& g) {
+    try {
+        g.checkShapes();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+TEST(geometryWithoutKeysHasOneShapePerPrimitive) {
+    Geometry g = keyedLines({"", "", ""});
+    CHECK(!g.hasShapeKeys());   // nothing is allocated until something is keyed
+    const std::vector<ShapeRange> shapes = g.shapes();
+    CHECK(shapes.size() == 3);
+    for (uint32_t i = 0; i < 3; ++i) CHECK(shapes[i].first == i && shapes[i].count == 1 && shapes[i].key.empty());
+    CHECK(g.shapeKey(1).empty() && g.shapeKey(99).empty());
+    CHECK(Geometry().shapes().empty());
+}
+
+TEST(shapesAreRunsOfEqualKeys) {
+    const Geometry g = keyedLines({"a", "a", "b", "", "c", "c"});
+    const std::vector<ShapeRange> shapes = g.shapes();
+    CHECK(shapes.size() == 4);
+    CHECK(shapes[0].first == 0 && shapes[0].count == 2 && shapes[0].key == "a");
+    CHECK(shapes[1].first == 2 && shapes[1].count == 1 && shapes[1].key == "b");
+    CHECK(shapes[2].first == 3 && shapes[2].count == 1 && shapes[2].key.empty());
+    CHECK(shapes[3].first == 4 && shapes[3].count == 2 && shapes[3].key == "c");
+    CHECK((g.shapeOfPrimitive() == std::vector<uint32_t>{0, 0, 1, 2, 3, 3}));
+    CHECK(g.shapeKey(1) == "a" && g.shapeKey(3).empty());
+    const ShapeRange* c = Geometry::findShape(shapes, "c");
+    CHECK(c != nullptr && c->first == 4);
+    CHECK(Geometry::findShape(shapes, "") == nullptr && Geometry::findShape(shapes, "zz") == nullptr);
+    g.checkShapes();
+}
+
+TEST(setShapeKeyChangesAndClearsAKey) {
+    Geometry g = keyedLines({"", ""});
+    g.setShapeKey(0, "");
+    CHECK(!g.hasShapeKeys());   // clearing a key that was never set creates nothing
+    g.setShapeKey(0, "x");
+    g.setShapeKey(1, "x");
+    CHECK(shapeKeysOf(g) == std::vector<std::string>{"x"});
+    g.setShapeKey(1, "");
+    CHECK((shapeKeysOf(g) == std::vector<std::string>{"x", ""}));
+    bool threw = false;
+    try {
+        g.setShapeKey(2, "y");
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(editingACopyOfAGeometryLeavesTheOriginalKeys) {
+    const Geometry a = keyedLines({"a", "b"});
+    Geometry b = a;
+    b.setShapeKey(0, "z");
+    b.setShapeKey(1, "y");
+    CHECK((shapeKeysOf(a) == std::vector<std::string>{"a", "b"}));
+    CHECK((shapeKeysOf(b) == std::vector<std::string>{"z", "y"}));
+}
+
+TEST(appendAndConcatCarryKeysAndKeepAnonymousParts) {
+    const Geometry a = keyedLines({"x", "x", "y"});
+    const Geometry none = keyedLines({""});
+    const Geometry c = keyedLines({"w", "z"});   // its table holds w before z, so the ids differ from a's
+    const Geometry all = Geometry::concat({&a, &none, &c});
+    CHECK((shapeKeysOf(all) == std::vector<std::string>{"x", "y", "", "w", "z"}));
+    CHECK(all.shapes()[0].count == 2);
+    all.checkShapes();
+
+    Geometry appended = a;
+    appended.append(none);
+    appended.append(c);
+    CHECK((shapeKeysOf(appended) == shapeKeysOf(all)));
+
+    Geometry plain = keyedLines({""});   // a part without the attribute first: it zero fills
+    plain.append(a);
+    CHECK((shapeKeysOf(plain) == std::vector<std::string>{"", "x", "y"}));
+}
+
+TEST(keysFollowThePrimitivesThroughGatherOperations) {
+    const Geometry g = keyedLines({"a", "a", "b", "c"});
+    const Geometry picked = extractPrimitives(g, {3, 0});
+    CHECK((shapeKeysOf(picked) == std::vector<std::string>{"c", "a"}));
+    const Geometry both = extractPrimitives(g, {0, 1});
+    CHECK(both.shapes().size() == 1 && both.shapes()[0].count == 2 && both.shapes()[0].key == "a");
+
+    Geometry marked = g;
+    marked.createGroup(AttribClass::primitive, "drop").ints()[2] = 1;   // drops "b"
+    const Geometry kept = blast(marked, AttribClass::primitive, "drop", false);
+    CHECK((shapeKeysOf(kept) == std::vector<std::string>{"a", "c"}));
+    CHECK(kept.shapes()[0].count == 2);
+}
+
+TEST(flatteningCurvesKeepsTheShapeKeys) {
+    Geometry g;
+    g.resizePoints(8);
+    for (size_t i = 0; i < 8; ++i) {
+        g.x()[i] = static_cast<float>(i);
+        g.y()[i] = static_cast<float>(i % 3);
+    }
+    g.addShapePrimitive({0, 4, false, PrimKind::cubic}, "k");
+    g.addShapePrimitive({4, 4, false, PrimKind::cubic}, "k");   // a compound shape of two curves
+    const Geometry flat = flattenCurves(g);
+    CHECK(!hasCurves(flat));
+    CHECK(flat.primitiveCount() == 2);
+    CHECK(flat.shapes().size() == 1 && flat.shapes()[0].key == "k" && flat.shapes()[0].count == 2);
+}
+
+TEST(checkShapesFindsAKeyThatComesBack) {
+    CHECK(!checkShapesThrows(keyedLines({"a", "a", "b"})));
+    CHECK(!checkShapesThrows(keyedLines({"a", "", "b", ""})));
+    CHECK(checkShapesThrows(keyedLines({"a", "b", "a"})));
+    CHECK(!checkShapesThrows(Geometry()));
+}
+
+TEST(shapeKeysSurviveTheGeometryFile) {
+    const Geometry g = keyedLines({"p/1", "p/1", "q", "", "r"});
+    const std::vector<uint8_t> bytes = saveGeometry(g);
+    const Geometry back = loadGeometry(bytes.data(), bytes.size());
+    CHECK((shapeKeysOf(back) == shapeKeysOf(g)));
+    CHECK(back.shapes()[0].count == 2);
+    CHECK(sameGeometry(g, back));
+}
+
 TEST(parserRejectsBadInput) {
     bool threw = false;
     try { parseWrangle("x = (1 + ;", {}); } catch (const std::runtime_error&) { threw = true; }

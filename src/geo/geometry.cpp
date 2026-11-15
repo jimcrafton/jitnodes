@@ -1,6 +1,7 @@
 #include "jitnodes/geo/geometry.h"
 
 #include <stdexcept>
+#include <unordered_set>
 
 namespace jitnodes {
 
@@ -65,6 +66,85 @@ void Geometry::addVectorAttrib(AttribClass cls, const std::string& name, int tup
     if (tupleSize < 2 || tupleSize > 4) throw std::runtime_error("vector attribute tuple size must be 2..4");
     static const char* components[] = {"x", "y", "z", "w"};
     for (int i = 0; i < tupleSize; ++i) attrib(cls, name + "." + components[i]);
+}
+
+void Geometry::addShapePrimitive(const Primitive& p, const std::string& key) {
+    addPrimitive(p);
+    if (!key.empty()) setShapeKey(primitives_.size() - 1, key);
+}
+
+void Geometry::setShapeKey(size_t prim, const std::string& key) {
+    if (prim >= primitives_.size()) throw std::out_of_range("setShapeKey: primitive " + std::to_string(prim) + " does not exist");
+    if (key.empty() && !hasShapeKeys()) return;
+    AttribArray& a = attrib(AttribClass::primitive, shapeKeyAttrib, AttribType::string);
+    const int32_t id = a.intern(key);
+    a.ints()[prim] = id;
+}
+
+const std::string& Geometry::shapeKey(size_t prim) const {
+    static const std::string none;
+    const AttribArray* a = findAttrib(AttribClass::primitive, shapeKeyAttrib);
+    if (!a || prim >= a->size()) return none;
+    return a->stringAt(prim);
+}
+
+std::vector<ShapeRange> Geometry::shapes() const {
+    const size_t n = primitives_.size();
+    std::vector<ShapeRange> out;
+    out.reserve(n);
+    const AttribArray* a = findAttrib(AttribClass::primitive, shapeKeyAttrib);
+    if (!a || a->size() != n) {
+        for (size_t i = 0; i < n; ++i) out.push_back({static_cast<uint32_t>(i), 1, {}});
+        return out;
+    }
+    const StringTable& table = a->table();
+    const int32_t* ids = a->ints().data();
+    int32_t previous = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const int32_t id = ids[i];
+        if (id != 0 && id == previous) {
+            ++out.back().count;
+        } else {
+            if (id < 0 || static_cast<size_t>(id) >= table.strings.size()) throw std::runtime_error("shape key id is outside its table");
+            out.push_back({static_cast<uint32_t>(i), 1, id == 0 ? std::string_view() : std::string_view(table.strings[static_cast<size_t>(id)])});
+        }
+        previous = id;
+    }
+    return out;
+}
+
+std::vector<uint32_t> Geometry::shapeOfPrimitive() const {
+    std::vector<uint32_t> out(primitives_.size());
+    uint32_t shape = 0;
+    for (const ShapeRange& range : shapes()) {
+        for (uint32_t i = 0; i < range.count; ++i) out[range.first + i] = shape;
+        ++shape;
+    }
+    return out;
+}
+
+const ShapeRange* Geometry::findShape(const std::vector<ShapeRange>& shapes, std::string_view key) {
+    if (key.empty()) return nullptr;
+    for (const ShapeRange& range : shapes)
+        if (range.key == key) return &range;
+    return nullptr;
+}
+
+void Geometry::checkShapes() const {
+    const AttribArray* a = findAttrib(AttribClass::primitive, shapeKeyAttrib);
+    if (!a) return;
+    if (a->size() != primitives_.size()) throw std::runtime_error("shape key attribute does not have one entry per primitive");
+    const StringTable& table = a->table();
+    const int32_t* ids = a->ints().data();
+    std::unordered_set<int32_t> seen;
+    int32_t previous = 0;
+    for (size_t i = 0; i < primitives_.size(); ++i) {
+        const int32_t id = ids[i];
+        if (id < 0 || static_cast<size_t>(id) >= table.strings.size()) throw std::runtime_error("shape key id is outside its table at primitive " + std::to_string(i));
+        if (id != 0 && id != previous && !seen.insert(id).second)
+            throw std::runtime_error("shape key '" + table.strings[static_cast<size_t>(id)] + "' comes back at primitive " + std::to_string(i));
+        previous = id;
+    }
 }
 
 AttribArray& Geometry::createGroup(AttribClass cls, const std::string& name) {

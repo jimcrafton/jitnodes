@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "jitnodes/core/alignedArray.h"
@@ -33,6 +34,19 @@ inline uint32_t cubicSegments(const Primitive& p) {
     return p.count >= 4 && p.count % 3 == 1 ? (p.count - 1) / 3 : 0;
 }
 
+// A shape is a maximal run of consecutive primitives with the same non-empty key (the primitive string attribute shapeKeyAttrib). A compound
+// path (a letter and its counter) is one shape of several primitives. The empty key is anonymous: each such primitive is a shape of its own,
+// so geometry that was never given keys has one shape per primitive. `key` points into the geometry's string table: a range is valid until
+// the geometry is modified. See docs/shape-structure.md in curvy.
+struct ShapeRange {
+    uint32_t first = 0;  // the first primitive
+    uint32_t count = 0;  // how many primitives
+    std::string_view key;
+};
+
+// Reserved name of the key attribute (the `shape.` prefix is reserved, as `group.` is).
+inline constexpr const char* shapeKeyAttrib = "shape.key";
+
 class Geometry {
 public:
     Geometry();
@@ -61,6 +75,24 @@ public:
 
     // Vector attributes are stored as float components "name.x", "name.y", ... (tupleSize 2..4).
     void addVectorAttrib(AttribClass cls, const std::string& name, int tupleSize);
+
+    // Shapes. Adds `p` and gives it `key`; adding further primitives with the same key right after makes them part of one shape. An empty
+    // key adds an ordinary (anonymous) primitive. Nothing is allocated for geometry that never gets a key.
+    void addShapePrimitive(const Primitive& p, const std::string& key);
+    // Throws std::out_of_range when `prim` is not a primitive. An empty key makes it anonymous again.
+    void setShapeKey(size_t prim, const std::string& key);
+    // "" when the primitive is anonymous, has no key attribute, or does not exist.
+    const std::string& shapeKey(size_t prim) const;
+    bool hasShapeKeys() const { return findAttrib(AttribClass::primitive, shapeKeyAttrib) != nullptr; }
+    // The shapes in primitive order: one pass over the key column.
+    std::vector<ShapeRange> shapes() const;
+    // The shape (an index into shapes()) of every primitive.
+    std::vector<uint32_t> shapeOfPrimitive() const;
+    // The shape with this key; null when there is none (or for the empty key).
+    static const ShapeRange* findShape(const std::vector<ShapeRange>& shapes, std::string_view key);
+    // Throws std::runtime_error when a key comes back after another key's run (two shapes with one key, or one shape split up), or a key id is
+    // outside its table. For tests and debug checks; a clean geometry is what the nodes that make copies must produce.
+    void checkShapes() const;
 
     // Groups are int attributes named "group.<name>" holding 0/1, so kernels can read and write them.
     AttribArray& createGroup(AttribClass cls, const std::string& name);
