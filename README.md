@@ -47,6 +47,7 @@ changes. `History` provides undo/redo that only touches the nodes that changed.
 - [docs/geometryFiles.md](docs/geometryFiles.md): the `.jngeo` binary geometry format, the `fileRead` and `fileCache` nodes (cache a slow simulation, play back a baked sequence) and the CLI options.
 - [docs/editor.md](docs/editor.md): the newui desktop editor: how to use it and how it is built.
 - [docs/python.md](docs/python.md): the Python module (`import jitnodes`): how the bindings are built with newui's scriptgen, what was added to the library, how object lifetime is made safe (handles that go stale instead of crashing), the Python API and embedding it in an application.
+- [docs/pythonExample.md](docs/pythonExample.md): an annotated Python script (`examples/python/nightSky.py`) that builds a 38-node night sky, renders it to a PNG ([the image](examples/python/nightSky.png)) and shows how to run it.
 - [docs/stress-test.md](docs/stress-test.md): `jitnodesStress`, a test with thousands of nodes and tens of thousands of points per node, and what it found.
 - [docs/design.md](docs/design.md): design, research notes and roadmap.
 - [docs/performance.md](docs/performance.md): benchmarks with the JIT off and on, method and caveats.

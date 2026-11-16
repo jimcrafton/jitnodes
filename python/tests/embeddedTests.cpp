@@ -3,6 +3,9 @@
 // is left behind or reused wrongly after many networks come and go.
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -10,12 +13,9 @@
 
 #include "jitnodes/jitnodes.h"
 #include "pyHandles.h"
+#include "pyRuntime.h"
 
 namespace py = pybind11;
-
-PYBIND11_EMBEDDED_MODULE(jitnodes, m) {
-    jitnodes::python::registerModule(m);
-}
 
 namespace {
 
@@ -179,10 +179,75 @@ del net, nodes, history
                                                       std::to_string(probesDestroyed.load()) + " of " + std::to_string(rounds * perNetwork) + ")");
 }
 
-int runAll() {
+void runtimeIsIsolated(jitnodes::python::PythonRuntime& runtime, const std::filesystem::path& extraFolder) {
+    py::dict scope = runtime.newScope();
+    py::exec(R"py(
+import sys, os, json
+flags_isolated = sys.flags.isolated == 1
+no_site = 'site' not in sys.modules
+no_env_path = not any('bogus_pythonpath' in p for p in sys.path)
+no_system = not any('Program Files' in p and 'Python' in p for p in sys.path) and not any('AppData' in p for p in sys.path)
+stdlib_works = json.loads('[1]') == [1]
+exe_is_bundled = os.path.basename(sys.executable).lower().startswith('python')
+)py", scope);
+    check(flag(scope, "flags_isolated"), "the interpreter is isolated");
+    check(flag(scope, "no_site"), "site is not imported");
+    check(flag(scope, "no_env_path"), "PYTHONPATH is ignored");
+    check(flag(scope, "no_system"), "no system or user folder is on sys.path");
+    check(flag(scope, "stdlib_works"), "the bundled standard library imports");
+    check(flag(scope, "exe_is_bundled"), "sys.executable is the bundled interpreter");
+
+    py::exec("import numpy\nnumpy_ok = numpy.arange(3).sum() == 3\nimport jitnodes\nhas_module = hasattr(jitnodes, 'Network')", scope);
+    check(flag(scope, "numpy_ok"), "NumPy imports from the bundled site-packages");
+    check(flag(scope, "has_module"), "the jitnodes module is built in");
+
+    runtime.addSearchPath(extraFolder);
+    py::exec("import runtime_probe\nprobe_ok = runtime_probe.VALUE == 42", scope);
+    check(flag(scope, "probe_ok"), "a module in an added search path imports");
+    check(runtime.version().rfind("3.", 0) == 0, "version() reports " + runtime.version());
+}
+
+void secondRuntimeIsRefused(const std::filesystem::path& home) {
+    bool refused = false;
+    try {
+        jitnodes::python::PythonRuntime again({home, {}});
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    check(refused, "a second runtime is refused");
+}
+
+void badHomeIsRefused() {
+    bool refused = false;
+    std::string message;
+    try {
+        jitnodes::python::PythonRuntime runtime({std::filesystem::temp_directory_path() / "no_such_python_home", {}});
+    } catch (const std::runtime_error& e) {
+        refused = true;
+        message = e.what();
+    }
+    check(refused && message.find("no Python standard library") != std::string::npos, "a folder without Python is refused with a reason");
+}
+
+int runAll(const std::filesystem::path& home) {
+    badHomeIsRefused();
+
+    const std::filesystem::path extra = std::filesystem::temp_directory_path() / "jitnodes_runtime_probe";
+    std::filesystem::create_directories(extra);
     {
-        py::scoped_interpreter interpreter;
+        std::ofstream(extra / "runtime_probe.py") << "VALUE = 42\n";
+    }
+#ifdef _WIN32
+    _putenv_s("PYTHONPATH", "bogus_pythonpath");
+#else
+    setenv("PYTHONPATH", "bogus_pythonpath", 1);
+#endif
+
+    {
+        jitnodes::python::PythonRuntime runtime({home, {}});
         try {
+            runtimeIsIsolated(runtime, extra);
+            secondRuntimeIsRefused(home);
             scriptOwnedNetworks();
             aNewNetworkAtTheSameAddressDoesNotRevive();
             applicationOwnedNetwork();
@@ -198,9 +263,13 @@ int runAll() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::printf("usage: jitnodesPythonEmbeddedTests <python home>\n");
+        return 2;
+    }
     try {
-        return runAll();
+        return runAll(argv[1]);
     } catch (const std::exception& e) {
         std::printf("[FAIL] exception: %s\n", e.what());
         return 2;

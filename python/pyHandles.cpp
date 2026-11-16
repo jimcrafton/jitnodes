@@ -17,6 +17,8 @@ namespace py = pybind11;
 
 namespace jitnodes::python {
 
+void registerGeometryArrays(py::module_& core);
+
 NetworkRef NetworkRef::owning(std::shared_ptr<Network> network) {
     NetworkRef ref;
     ref.raw_ = network.get();
@@ -438,6 +440,7 @@ void registerModule(py::module_& module) {
     py::module_ core = module.def_submodule("_core",
         "The engine's classes exactly as scriptgen generates them. They are raw references: do not keep their objects, use the handles.");
     registerJitnodesScripting(core);
+    registerGeometryArrays(core);
 
     if (coreNetworkClass == nullptr) {
         coreNetworkClass = new py::object(core.attr("Network"));

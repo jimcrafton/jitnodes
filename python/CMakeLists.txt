@@ -20,11 +20,12 @@ add_subdirectory(${JITNODES_PYBIND11_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pybind11)
 
 include(${JITNODES_NEWUI_DIR}/cmake/ScriptGen.cmake)
 
-add_library(jitnodesPython STATIC pyHandles.cpp)
+add_library(jitnodesPython STATIC pyHandles.cpp pyArrays.cpp pyRuntime.cpp)
 target_link_libraries(jitnodesPython PUBLIC jitnodes::jitnodes pybind11::pybind11)
 target_include_directories(jitnodesPython PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(MSVC)
-  target_compile_options(jitnodesPython PRIVATE /W4 /permissive- /utf-8)
+  # /bigobj: the generated file is one function per class with a long call chain; instrumented builds (ASAN) exceed the default section limit.
+  target_compile_options(jitnodesPython PRIVATE /W4 /permissive- /utf-8 /bigobj)
 endif()
 
 newui_add_scriptgen_output(jitnodesPython
@@ -35,6 +36,12 @@ newui_add_scriptgen_output(jitnodesPython
   STUBS ${CMAKE_CURRENT_BINARY_DIR}/jitnodes/_core.pyi
   STRICT)
 
+# jitnodes/__init__.pyi: the stubs of the handles, derived from the generated jitnodes/_core.pyi.
+add_custom_command(TARGET jitnodesPython POST_BUILD
+  COMMAND ${Python_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/genHandleStubs.py
+          ${CMAKE_CURRENT_BINARY_DIR}/jitnodes/_core.pyi ${CMAKE_CURRENT_BINARY_DIR}/jitnodes/__init__.pyi
+  COMMENT "Generating jitnodes/__init__.pyi")
+
 pybind11_add_module(pyjitnodes MODULE NO_EXTRAS pyModule.cpp)
 target_link_libraries(pyjitnodes PRIVATE jitnodesPython)
 set_target_properties(pyjitnodes PROPERTIES OUTPUT_NAME jitnodes)
@@ -43,11 +50,10 @@ if(JITNODES_BUILD_TESTS)
   add_executable(jitnodesPythonEmbeddedTests tests/embeddedTests.cpp)
   target_link_libraries(jitnodesPythonEmbeddedTests PRIVATE jitnodesPython pybind11::embed)
 
-  # The bundled interpreter needs its home to find the standard library and its DLL next to the test.
+  # The runtime is given the bundled Python's folder; its DLL must be found next to the test or on PATH.
   get_filename_component(python_home ${Python_EXECUTABLE} DIRECTORY)
-  add_test(NAME jitnodesPythonEmbedded COMMAND jitnodesPythonEmbeddedTests)
+  add_test(NAME jitnodesPythonEmbedded COMMAND jitnodesPythonEmbeddedTests ${python_home})
   set_tests_properties(jitnodesPythonEmbedded PROPERTIES
-    ENVIRONMENT "PYTHONHOME=${python_home}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${python_home}")
 
   add_test(NAME jitnodesPythonScripts

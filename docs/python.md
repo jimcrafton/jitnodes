@@ -8,7 +8,8 @@ object-lifetime problems and how they are handled, and the Python API.
 Contents: [Overview](#overview) · [How the binding is built](#how-the-binding-is-built) ·
 [What was added to jitnodes](#what-was-added-to-jitnodes) · [Object lifetime](#object-lifetime) ·
 [The Python API](#the-python-api) · [Embedding in an application](#embedding-in-an-application) ·
-[Building and testing](#building-and-testing) · [Limitations and what is not done](#limitations-and-what-is-not-done)
+[Building and testing](#building-and-testing) · [Limitations and what is not done](#limitations-and-what-is-not-done) ·
+[Worked example: a night sky](pythonExample.md)
 
 ## Overview
 
@@ -252,7 +253,12 @@ the parameter. Parameters of a node type are the ones that type declares; spare 
 * `Geometry` is what `cook` returns: a read-only view of the node cache's result, safe to keep after the network is gone. Only the
   const methods are bound (`readonly`, see below): `point_count()`, `primitive_count()`, `count(cls)`, `has_attrib(cls, name)`,
   `has_point_attrib(name)`, `has_shape_keys()`, `shape_key(prim)`, `shape_of_primitive()`, `in_group(...)`, `detail(name)`,
-  `details()`. `Geometry()` makes an empty one. Raw point arrays are not exposed yet.
+  `details()`. `Geometry()` makes an empty one. The attribute arrays are described under Limitations. `geometry.render_png(path, width=0, height=0)`
+  renders the points that have a `radius` as soft sprites with the settings of a `render` node in the chain (like `jitnodesCli --png`) and returns
+  the size; the GIL is released while it draws.
+* Example: `examples/python/nightSky.py <folder with the module> [out.png]` builds a 38-node night sky (field stars, Milky Way, a spiral galaxy,
+  the Big Dipper driven by a table, a shooting star, a crescent moon) and renders it to `nightSky.png` (about 0.3 s). It is explained, with
+  the exact command to run it and the image, in [pythonExample.md](pythonExample.md).
 * `Keyframe()` has `time`, `value`, `interp`; `node.set_keyframes("count", [k1, k2])` animates a parameter.
 * Enums: `AttribClass`, `AttribType`, `PrimKind`, `KeyInterp` (for example `KeyInterp.smooth`).
 
@@ -288,8 +294,25 @@ void runScript(jitnodes::Network& network, const std::string& code) {
   that is what lets the document close while a script variable still exists.
 * Read a Python error's message (`error_already_set::what()`) while the interpreter is still alive, not after
   `scoped_interpreter` has been destroyed.
-* The embedded test sets `PYTHONHOME` to the Python folder and needs `python313.dll` on the path. The planned
-  `PythonRuntime` class will set up an isolated interpreter (`PyConfig`) instead.
+* **`PythonRuntime`** (`python/pyRuntime.h`) is the supported way to start the interpreter; it replaces `py::scoped_interpreter` and the
+  `PYBIND11_EMBEDDED_MODULE` line above (it registers `jitnodes` itself):
+
+  ```cpp
+  jitnodes::python::PythonRuntime runtime({pythonHome, {scriptsFolder, userPackagesFolder}});
+  pybind11::dict scope = runtime.newScope();       // __builtins__ and jitnodes imported
+  scope["net"] = jitnodes::python::wrapNetwork(network);
+  pybind11::exec(code, scope);
+  ```
+
+  It is isolated (`PyConfig_InitIsolatedConfig`): only the bundled `home` is used (standard library, `DLLs`, `site-packages`, then the extra
+  search paths), so `PYTHONHOME`, `PYTHONPATH`, a system Python, the user site folder and the registry are ignored; `site` is not imported,
+  signal handlers are not installed (the host keeps Ctrl-C), and `sys.executable` is the bundled `python.exe` so `multiprocessing` cannot
+  start the application again. A folder that is not a Python home throws `std::runtime_error` with the reason.
+* Thread model (chosen with the runtime, option D): create and destroy the runtime on the thread that runs scripts, normally the main thread.
+  That thread keeps the GIL; cooking releases it while worker threads run, and progress callbacks take it back. Scripts use a network from one
+  thread at a time. Destroy every `py::object` the application holds before the runtime (it finalizes the interpreter). Only one runtime can
+  exist in a process, ever: a second one throws.
+* The application still needs `python313.dll` next to the executable or on the path.
 
 ## Building and testing
 
@@ -315,18 +338,46 @@ Tests (all registered with `ctest`):
 | `jitnodesPythonScripts` | `python/tests/test_handles.py`: handles, parameters, wiring, stale handles after remove / undo / clear, ownership (nodes, bound methods and histories keep a script's network alive; geometry outlives it), history, keyframes, cooking from another thread with a progress callback |
 | `jitnodesPythonEmbedded` | `python/tests/embeddedTests.cpp`: an application-owned network (handles do not keep it alive, all go stale), address reuse, script-created networks really destroyed when the last handle goes, shutdown with live handles |
 
+### Running under AddressSanitizer
+
+```
+cmake -S . -B out/jitpy-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DJITNODES_BUILD_PYTHON=ON -DJITNODES_SANITIZE=ON ^
+      -DJITNODES_BUILD_EXAMPLES=OFF -DJITNODES_BUILD_TOOLS=OFF
+cmake --build out/jitpy-asan
+```
+
+In a Visual Studio developer prompt (so `clang_rt.asan_dynamic-x86_64.dll` is on `PATH`) with `PYTHONHOME` set to the Python folder:
+
+* `out/jitpy-asan/python/jitnodesPythonEmbeddedTests.exe`: the strong check, because the whole program, including the embedded
+  interpreter's callers, is instrumented.
+* `out/jitpy-asan/jitnodesTests.exe`: the engine suite.
+* The Python tests against the instrumented module: Python 3.8+ does not search `PATH` for an extension's DLLs, so call
+  `os.add_dll_directory(<folder of the asan dll>)` before importing `jitnodes` (a small wrapper script that then runs
+  `tests/runScripts.py`). Only the module is instrumented, not `python.exe`, so this covers less than the embedded run.
+
+Notes: Debug needs `/RTC` off for ASAN, so use RelWithDebInfo; the generated bindings need `/bigobj` when instrumented (set in
+`python/CMakeLists.txt`); MSVC's ASAN has no leak detector (the counting node in the embedded tests is what proves objects are
+freed); ASAN delays reuse of freed memory, so the "new network at the same address" test sees almost no reuse there (it sees
+about 296 of 300 in a normal build), which is why that test runs in the normal build too.
+
+Result (2026-11-15): embedded tests 27 checks, engine tests 233, Python tests 34, all with no ASAN report.
+
 The output of the build also contains `jitnodes.<abi>.pyd` (import it with the folder on `sys.path`) and `python/jitnodes/_core.pyi`.
 
 ## Limitations and what is not done
 
-* **Stubs for the handles.** `_core.pyi` describes the engine classes; the handle classes forward by name, so an editor does not
-  complete `net.add_node(...)` yet.
-* **No raw point arrays.** `Geometry` is readable through its methods only; NumPy views of point attributes are planned.
+* **Stubs for the handles.** The build writes `python/jitnodes/__init__.pyi` (next to `_core.pyi`) with `genHandleStubs.py`, which derives the
+  `Network`, `Node`, `History` and `Geometry` stubs from `_core.pyi` and applies the translations `pyHandles.cpp` makes: node ids become `Node`
+  handles in results (`add_node`, `node_ids`, `find_node` -> `Node | None`, ...), `Node | int` is accepted where the engine takes an id, and
+  parameters are `Any` through `__getattr__`/`__setattr__`. The `Geometry` stub includes the NumPy methods. If a result or argument translation
+  is added to `pyHandles.cpp`, add the name to the tables at the top of the script (`test_stubs.py` checks that every declared member exists).
+  Parameter names of a node type are not known to the stub, so `node.count` is `Any`.
+* **Attribute arrays are read-only.** `geometry.point_attrib("x")`, `prim_attrib(name)` and `attrib(AttribClass, name)` return zero-copy, non-writeable NumPy views (float32, or int32 for int and string attributes; `strings()` and `string_values()` decode string ids). Each view keeps its geometry alive through a capsule, so it stays valid after the network is gone. NumPy is only needed when a view is requested (the module imports without it; the call raises ImportError). Writable arrays are not done: they would dangle when the point count changes. Detail values come from `details()`/`detail()`.
 * **The surface is wide.** Everything public on `Network` and `Node` is forwarded, including engine internals such as
   `note_touched` or `take_uid`. Mark more members `ignore=true` to hide them.
 * **Subnets** are reachable only as nodes. `SubnetNode` and `AssetNode` are not bound, so a script cannot edit a subnet's inner
   network yet.
-* **No Python-authored nodes**, no undo transactions (`with doc.transaction(): ...`), and no isolated interpreter setup yet; see
+* **No Python-authored nodes** and no undo transactions (`with doc.transaction(): ...`) yet; see
   `curvy/docs/py_scripting_plan.md` for the plan.
 * **Not thread safe**, see above. Free-threaded Python builds are not supported or tested.
 * **Windows x64 only** so far (Python SDK, venv path and the MSVC build were set up and tested there).

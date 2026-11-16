@@ -338,5 +338,154 @@ class CookingTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
 
 
+class AttribArrayTest(unittest.TestCase):
+    def setUp(self):
+        self.np = __import__("numpy")
+
+    def test_point_attrib_is_a_read_only_float32_view(self):
+        net, _line, _wrangle, out = line_graph()
+        geometry = net.cook(out)
+        x = geometry.point_attrib("x")
+        self.assertEqual(x.dtype, self.np.float32)
+        self.assertEqual(x.shape, (8,))
+        self.assertFalse(x.flags.writeable)
+        self.assertEqual(list(x), [2.0 * i for i in range(8)])
+        with self.assertRaises(ValueError):
+            x[0] = 1.0
+
+    def test_the_view_shares_the_geometry_storage(self):
+        net, _line, _wrangle, out = line_graph()
+        geometry = net.cook(out)
+        first = geometry.point_attrib("x")
+        second = geometry.attrib(jn.AttribClass.point, "x")
+        self.assertEqual(first.ctypes.data, second.ctypes.data)
+
+    def test_the_array_outlives_the_geometry_and_the_network(self):
+        net, _line, _wrangle, out = line_graph()
+        x = net.cook(out).point_attrib("x")
+        del net, _line, _wrangle, out
+        gc.collect()
+        self.assertEqual(float(x.sum()), 2.0 * sum(range(8)))
+
+    def attrib_graph(self, **settings):
+        net = jn.Network()
+        line = net.add_node("line", "line")
+        line.count = 5
+        create = net.add_node("attribCreate", "create")
+        for name, value in settings.items():
+            setattr(create, name, value)
+        line >> create
+        return net, create
+
+    def test_primitive_attributes_by_type(self):
+        _net, create = self.attrib_graph(name="weight", **{"class": "primitive"}, type="float", value=2.5)
+        geometry = _net.cook(create)
+        weight = geometry.prim_attrib("weight")
+        self.assertEqual(weight.dtype, self.np.float32)
+        self.assertEqual(weight.shape, (geometry.primitive_count(),))
+        self.assertTrue(self.np.all(weight == 2.5))
+        self.assertFalse(weight.flags.writeable)
+
+        _net, create = self.attrib_graph(name="id", **{"class": "primitive"}, type="int", value=7)
+        ids = _net.cook(create).prim_attrib("id")
+        self.assertEqual(ids.dtype, self.np.int32)
+        self.assertTrue(self.np.all(ids == 7))
+
+    def test_int_point_attribute(self):
+        net, create = self.attrib_graph(name="tag", type="int", value=3)
+        tag = net.cook(create).point_attrib("tag")
+        self.assertEqual(tag.dtype, self.np.int32)
+        self.assertEqual(tag.shape, (5,))
+        self.assertTrue(self.np.all(tag == 3))
+
+    def test_string_attributes_give_ids_and_a_table(self):
+        net, create = self.attrib_graph(name="label", type="string", text="hello")
+        geometry = net.cook(create)
+        ids = geometry.point_attrib("label")
+        self.assertEqual(ids.dtype, self.np.int32)
+        table = geometry.strings(jn.AttribClass.point, "label")
+        self.assertEqual(table[0], "")
+        self.assertEqual({table[i] for i in ids}, {"hello"})
+        self.assertEqual(geometry.string_values(jn.AttribClass.point, "label"), ["hello"] * 5)
+        self.assertEqual(geometry.attrib_type(jn.AttribClass.point, "label"), jn.AttribType.string)
+
+    def test_string_attribute_with_a_different_text_per_element(self):
+        net = jn.Network()
+        line = net.add_node("line", "line")
+        line.count = 4
+        label = net.add_node("attribString", "label")
+        label.name = "label"
+        label.text = "pt$P"
+        line >> label
+        geometry = net.cook(label)
+        values = geometry.string_values(jn.AttribClass.point, "label")
+        self.assertEqual(len(values), 4)
+        self.assertEqual(len(set(values)), 4)
+        ids = geometry.point_attrib("label")
+        table = geometry.strings(jn.AttribClass.point, "label")
+        self.assertEqual([table[i] for i in ids], values)
+
+    def test_detail_values_come_from_the_geometry(self):
+        net = jn.Network()
+        line = net.add_node("line", "line")
+        render = net.add_node("render", "render")
+        line >> render
+        details = net.cook(render).details()
+        self.assertEqual(details["render.enabled"], 1.0)
+
+    def test_render_png_writes_an_image_of_the_splats(self):
+        import os
+        import tempfile
+        import zlib
+
+        net = jn.Network()
+        stars = net.add_node("generate", "stars")
+        stars.count = 200
+        look = net.add_node("wrangle", "look")
+        look.code = "radius = 0.5; alpha = 1; softness = 1;"
+        image = net.add_node("render", "image")
+        image.width = 64
+        image.height = 48
+        stars >> look >> image
+        geometry = net.cook(image)
+        folder = tempfile.mkdtemp()
+        path = os.path.join(folder, "sky.png")
+        try:
+            self.assertEqual(geometry.render_png(path), (64, 48))
+            self.assertEqual(geometry.render_png(path, 32, 24), (32, 24))
+            with open(path, "rb") as stream:
+                data = stream.read()
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(int.from_bytes(data[16:20], "big"), 32)
+            idat = data.index(b"IDAT")
+            length = int.from_bytes(data[idat - 4:idat], "big")
+            pixels = zlib.decompress(data[idat + 4:idat + 4 + length])
+            self.assertTrue(any(pixels), "the image is not black")
+        finally:
+            os.remove(path)
+            os.rmdir(folder)
+
+    def test_the_string_table_outlives_the_network(self):
+        net, create = self.attrib_graph(name="label", type="string", text="kept")
+        geometry = net.cook(create)
+        ids = geometry.point_attrib("label")
+        del net, create
+        gc.collect()
+        self.assertEqual(geometry.string_values(jn.AttribClass.point, "label")[0], "kept")
+        self.assertEqual(int(ids[0]), 1)
+
+    def test_names_and_missing_attributes(self):
+        net, _line, _wrangle, out = line_graph()
+        geometry = net.cook(out)
+        self.assertIn("x", geometry.attrib_names(jn.AttribClass.point))
+        self.assertEqual(geometry.attrib_type(jn.AttribClass.point, "x"), jn.AttribType.float32)
+        with self.assertRaises(KeyError):
+            geometry.point_attrib("nope")
+        with self.assertRaises(KeyError):
+            geometry.prim_attrib("nope")
+        with self.assertRaises(TypeError):
+            geometry.strings(jn.AttribClass.point, "x")
+
+
 if __name__ == "__main__":
     unittest.main()
