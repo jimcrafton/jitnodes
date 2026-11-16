@@ -2267,6 +2267,99 @@ TEST(copiesOfAKeyedShapeGetTheirOwnKeys) {
     CHECK(both->shapes().size() == 2 && both->shapes()[0].key == key + "@0" && both->shapes()[1].key == key + "@1");
 }
 
+TEST(aBindingCoversAKeyOrAPrefixEndingAtALevel) {
+    CHECK(shapeKeyMatches("ab", "ab") && shapeKeyMatches("ab/cd", "ab") && shapeKeyMatches("ab#g5", "ab") && shapeKeyMatches("ab@3", "ab"));
+    CHECK(shapeKeyMatches("ab/cd@1", "ab/cd") && shapeKeyMatches("ab/cd@1", "ab/cd@1"));
+    CHECK(!shapeKeyMatches("abc", "ab") && !shapeKeyMatches("ab", "abc") && !shapeKeyMatches("ab", "") && !shapeKeyMatches("", "ab"));
+}
+
+namespace {
+// The average x of every point in the shape.
+float shapeMeanX(const Geometry& g, const ShapeRange& shape) {
+    float sum = 0.0f;
+    size_t n = 0;
+    for (uint32_t p = shape.first; p < shape.first + shape.count; ++p) {
+        const Primitive& prim = g.primitives()[p];
+        for (uint32_t i = prim.start; i < prim.start + prim.count; ++i, ++n) {
+            sum += g.x()[i];
+        }
+    }
+    return sum / static_cast<float>(n);
+}
+}  // namespace
+
+TEST(shapeTransformMovesOnlyTheBoundShapesAndKeepsEveryKey) {
+    Network net;
+    const NodeId circle = net.addNode("circle");
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    const NodeId copies = net.addNode("copyToPoints");
+    net.connect(circle, copies, 0);
+    net.connect(line, copies, 1);
+    const NodeId rig = net.addNode("shapeTransform");
+    net.connect(copies, rig);
+    const std::string key = net.node(circle).uidText();
+
+    auto before = net.cook(copies);
+    const std::vector<ShapeRange> was = before->shapes();
+    CHECK(was.size() == 3);
+    const float x0 = shapeMeanX(*before, was[0]), x1 = shapeMeanX(*before, was[1]), x2 = shapeMeanX(*before, was[2]);
+
+    net.node(rig).setString("bind", key + "@1");
+    net.node(rig).setFloat("tx", 100.0f);
+    auto moved = net.cook(rig);
+    const std::vector<ShapeRange> now = moved->shapes();
+    CHECK(now.size() == 3 && now[0].key == was[0].key && now[1].key == was[1].key && now[2].key == was[2].key);
+    CHECK_NEAR(shapeMeanX(*moved, now[0]), x0);
+    CHECK_NEAR(shapeMeanX(*moved, now[1]), x1 + 100.0f);
+    CHECK_NEAR(shapeMeanX(*moved, now[2]), x2);
+    CHECK_NEAR(shapeMeanX(*before, was[1]), x1);  // the input is not touched
+
+    net.node(rig).setString("bind", key);  // the node's key is a prefix of every copy
+    auto all = net.cook(rig);
+    CHECK_NEAR(shapeMeanX(*all, all->shapes()[0]), x0 + 100.0f);
+    CHECK_NEAR(shapeMeanX(*all, all->shapes()[2]), x2 + 100.0f);
+
+    net.node(rig).setString("bind", "nothing, here");  // a binding that finds nothing leaves the geometry as it was
+    auto same = net.cook(rig);
+    CHECK_NEAR(shapeMeanX(*same, same->shapes()[1]), x1);
+    net.node(rig).setString("bind", "");
+    auto none = net.cook(rig);
+    CHECK_NEAR(shapeMeanX(*none, none->shapes()[1]), x1);
+}
+
+TEST(shapeTransformTurnsAndScalesAroundThePivot) {
+    Network net;
+    const NodeId circle = net.addNode("circle");
+    net.node(circle).setFloat("count", 4.0f);
+    net.node(circle).setFloat("cx", 10.0f);
+    net.node(circle).setFloat("radius", 2.0f);
+    const NodeId rig = net.addNode("shapeTransform");
+    net.connect(circle, rig);
+    net.node(rig).setString("bind", net.node(circle).uidText());
+
+    net.node(rig).setFloat("scaleX", 2.0f);  // around the centre, (10, 0): the point at (12, 0) goes to (14, 0)
+    auto wide = net.cook(rig);
+    CHECK_NEAR(wide->x()[0], 14.0f);
+    CHECK_NEAR(wide->x()[2], 6.0f);
+
+    net.node(rig).setFloat("scaleX", 1.0f);
+    net.node(rig).setFloat("angle", 90.0f);
+    net.node(rig).setString("pivot", "point");  // around the origin: (12, 0) turns to (0, 12)
+    auto turned = net.cook(rig);
+    CHECK_NEAR(turned->x()[0], 0.0f);
+    CHECK_NEAR(turned->y()[0], 12.0f);
+
+    net.node(rig).setString("pivot", "elsewhere");
+    bool refused = false;
+    try {
+        net.cook(rig);
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
 TEST(subnetsFollowTimeAndNest) {
     SubnetRig rig;
     rig.inner().node(rig.xf).setExpression("tx", "time * 2");

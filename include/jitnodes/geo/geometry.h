@@ -47,6 +47,19 @@ struct ShapeRange {
 // Reserved name of the key attribute (the `shape.` prefix is reserved, as `group.` is).
 inline constexpr const char* shapeKeyAttrib = "shape.key";
 
+// Whether a shape's key is covered by a binding (what a rig names): the binding is the key itself, or a prefix that ends at a level of the key
+// (`/` into a subnet, `#` a part of the node's shape, `@` a copy). An empty binding or an anonymous shape matches nothing.
+inline bool shapeKeyMatches(std::string_view key, std::string_view binding) {
+    if (binding.empty() || key.size() < binding.size() || key.compare(0, binding.size(), binding) != 0) {
+        return false;
+    }
+    if (key.size() == binding.size()) {
+        return true;
+    }
+    const char next = key[binding.size()];
+    return next == '/' || next == '#' || next == '@';
+}
+
 class Geometry {
 public:
     Geometry();
