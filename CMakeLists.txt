@@ -11,6 +11,7 @@ option(JITNODES_BUILD_EXAMPLES "Build jitnodes examples"    ON)
 option(JITNODES_BUILD_TOOLS    "Build the jitnodesCli tool"  ON)
 option(JITNODES_SANITIZE       "Build the library and tests with AddressSanitizer (and UBSan on clang/gcc)" OFF)
 option(JITNODES_BUILD_EDITOR   "Build the newui based editor (Windows, builds newui as an external project)" OFF)
+option(JITNODES_BUILD_PYTHON   "Build the Python module (needs pybind11, a Python 3.13 SDK and newui's scriptgen; see python/CMakeLists.txt)" OFF)
 set(JITNODES_NEWUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../newui" CACHE PATH "newui source checkout used by the editor")
 
 # json5 (P-i-N/json5, MIT, header-only) is used for graph files; vendored under 3rdparty.
@@ -114,4 +115,8 @@ endif()
 
 if(JITNODES_BUILD_EDITOR)
   add_subdirectory(editor)
+endif()
+
+if(JITNODES_BUILD_PYTHON)
+  add_subdirectory(python)
 endif()

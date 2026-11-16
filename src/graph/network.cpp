@@ -123,6 +123,7 @@ NodeId Network::addNodeWithId(NodeId id, const std::string& typeName, const std:
 }
 
 void Network::clear() {
+    ++generation_;
     slots_.clear();
     bumpTopology();
     touchLog_.clear();

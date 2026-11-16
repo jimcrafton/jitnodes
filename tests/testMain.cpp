@@ -7620,6 +7620,39 @@ TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
     CHECK(rig.net.node(rig.loop).getFloat("step") == 0.0f);
 }
 
+TEST(networkLifetimeExpiresWhenTheNetworkIsDestroyed) {
+    auto net = std::make_unique<Network>(1);
+    const std::weak_ptr<void> lifetime = net->lifetime();
+    CHECK(!lifetime.expired());
+    CHECK(!net->lifetime().expired());
+    net.reset();
+    CHECK(lifetime.expired());
+}
+
+TEST(generationChangesOnClearAndNotOnOtherEdits) {
+    Network net(1);
+    const std::uint64_t first = net.generation();
+    const NodeId a = net.addNode("line");
+    net.node(a).setFloat("count", 4.0f);
+    net.removeNode(a);
+    CHECK(net.generation() == first);
+    net.clear();
+    CHECK(net.generation() != first);
+    // The ids start over, which is why a handle remembers the generation.
+    CHECK(net.addNode("line") == a);
+}
+
+TEST(aNestedNetworkLifetimeExpiresWithItsSubnetNode) {
+    Network net(1);
+    const NodeId sub = net.addNode("subnet", "sub");
+    const std::weak_ptr<void> inner = subnetOf(net, sub).network().lifetime();
+    const std::weak_ptr<void> outer = net.lifetime();
+    CHECK(!inner.expired());
+    net.removeNode(sub);
+    CHECK(inner.expired());
+    CHECK(!outer.expired());
+}
+
 }  // namespace
 
 int main() {

@@ -127,6 +127,15 @@ public:
     Network(const Network&) = delete;
     Network& operator=(const Network&) = delete;
 
+    // Expires when the network is destroyed. Something that reaches the network without owning it (a script handle) holds this
+    // and checks it before every use; a nested network has its own, so it expires with its subnet node.
+    // @scriptable ignore=true
+    std::weak_ptr<void> lifetime() const { return lifetime_; }
+    // Counts clear() calls (a load clears first). Ids and uids start over after a clear, so a handle remembers the generation it was
+    // made in: otherwise a handle to the old node 3 would silently become the new node 3.
+    // @scriptable ignore=true
+    std::uint64_t generation() const { return generation_; }
+
     NodeId addNode(const std::string& typeName, const std::string& name = {});
     // Used when restoring saved graphs so node ids stay stable. Throws if the id is invalid or taken.
     NodeId addNodeWithId(NodeId id, const std::string& typeName, const std::string& name);
@@ -192,14 +201,17 @@ public:
     // True when the reverse indexes agree with a scan of the graph (for tests).
     bool indexesConsistent() const;
 
+    // @scriptable release_gil
     GeometryHandle cook(NodeId id);
     // Cooks the node (what is upstream of it too) and keeps the result as its frozen geometry; throws for a bypassed node.
     // Node::setFrozenGeometry(nullptr) unfreezes.
+    // @scriptable release_gil
     void freezeNode(NodeId id);
     void setDisplayNode(NodeId id) {
         displayNode_ = id;
         notifyOwner();
     }
+    // @scriptable release_gil
     GeometryHandle cookDisplay() { return cook(displayNode_); }
 
     // Upstream nodes of id (inclusive) in execution order.
@@ -294,6 +306,9 @@ public:
     bool dependsOnTime(NodeId id) const;
 
 private:
+    std::shared_ptr<void> lifetime_ = std::make_shared<char>();
+    std::uint64_t generation_ = 0;
+
     struct Slot {
         std::unique_ptr<Node> node;
         std::vector<NodeId> inputs;

@@ -63,7 +63,8 @@ inline bool shapeKeyMatches(std::string_view key, std::string_view binding) {
     return next == '/' || next == '#' || next == '@';
 }
 
-// @scriptable holder=shared
+// A script gets cooked geometry shared with the node cache, so only the const methods are bound.
+// @scriptable holder=shared readonly
 class Geometry {
 public:
     Geometry();
