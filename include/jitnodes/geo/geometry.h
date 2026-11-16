@@ -18,8 +18,10 @@ namespace jitnodes {
 // points (n segments); a closed one has 3n, and the last segment returns to the first anchor. Handles are ordinary points, so nodes that move
 // points (transform, wrangle, noise) move them with their anchors, and a point attribute on an anchor can ride on its handles too. Nodes that
 // only understand polylines flatten curves first (flattenCurves).
+// @scriptable
 enum class PrimKind : uint8_t { polyline, cubic };
 
+// @scriptable ignore=true
 struct Primitive {
     uint32_t start = 0;
     uint32_t count = 0;
@@ -38,6 +40,7 @@ inline uint32_t cubicSegments(const Primitive& p) {
 // path (a letter and its counter) is one shape of several primitives. The empty key is anonymous: each such primitive is a shape of its own,
 // so geometry that was never given keys has one shape per primitive. `key` points into the geometry's string table: a range is valid until
 // the geometry is modified. See docs/shape-structure.md in curvy.
+// @scriptable ignore=true
 struct ShapeRange {
     uint32_t first = 0;  // the first primitive
     uint32_t count = 0;  // how many primitives
@@ -60,6 +63,7 @@ inline bool shapeKeyMatches(std::string_view key, std::string_view binding) {
     return next == '/' || next == '#' || next == '@';
 }
 
+// @scriptable holder=shared
 class Geometry {
 public:
     Geometry();
@@ -112,12 +116,18 @@ public:
     bool inGroup(AttribClass cls, const std::string& name, size_t index) const;
 
     bool hasPointAttrib(const std::string& name) const { return hasAttrib(AttribClass::point, name); }
+    // @scriptable ignore=true
     AlignedArray<float>& pointAttrib(const std::string& name) { return attrib(AttribClass::point, name).floats(); }
+    // @scriptable ignore=true
     const AlignedArray<float>* findPointAttrib(const std::string& name) const;
 
+    // @scriptable ignore=true
     float* x() { return pointAttrib("x").data(); }
+    // @scriptable ignore=true
     float* y() { return pointAttrib("y").data(); }
+    // @scriptable ignore=true
     const float* x() const { return findPointAttrib("x")->data(); }
+    // @scriptable ignore=true
     const float* y() const { return findPointAttrib("y")->data(); }
 
     void setDetail(const std::string& name, float value) { detail_[name] = value; }

@@ -12,6 +12,7 @@ namespace jitnodes {
 // Fixed-size pool. parallelFor runs fn(0..count-1) with the calling thread taking part, so it
 // is safe to call from inside a pool task (nested parallelism) and with zero workers (inline).
 // The first exception thrown by fn is rethrown after every index has finished.
+// @scriptable ignore=true
 class ThreadPool {
 public:
     explicit ThreadPool(size_t workerCount);

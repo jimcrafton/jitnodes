@@ -116,6 +116,7 @@ void registerLoopNodes();
 void registerSubnetNodes();
 void registerAudioNodes();
 
+// @scriptable
 class Network {
 public:
     // Cooking, saving and undo recurse through nested subnets, so deeper nesting is refused when the subnet node is added.
@@ -139,6 +140,7 @@ public:
     void removeNode(NodeId id);
     // Swaps the node for a fresh one (same id and name), keeping the wiring that still fits unless `inputs` gives
     // the new wiring. Not allowed while cooking.
+    // @scriptable ignore=true
     void replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs = nullptr);
     Node& node(NodeId id);
     const Node& node(NodeId id) const;
@@ -171,6 +173,7 @@ public:
     // The newest revision any node of this network was touched at (0 when none was).
     std::uint64_t touchRevision() const { return touchLog_.empty() ? touchedFloor_ : touchLog_.back().first; }
     // Adds the ids of the nodes touched after `watermark` to `out`; false when the log no longer reaches back that far (look at everything).
+    // @scriptable ignore=true
     bool touchedSince(std::uint64_t watermark, std::vector<NodeId>& out) const;
     // The nodes with an input wired to `id` (one entry per wired input), in no particular order.
     const std::vector<NodeId>& consumersOf(NodeId id) const {

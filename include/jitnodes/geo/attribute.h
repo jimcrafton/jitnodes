@@ -12,8 +12,10 @@
 
 namespace jitnodes {
 
+// @scriptable
 enum class AttribClass : uint8_t { point, primitive };
 // string: the data are int32 ids into the attribute's StringTable, so everything that moves int32 values moves them unchanged.
+// @scriptable
 enum class AttribType : uint8_t { float32, int32, string };
 
 // int32 and string attributes are stored (and loaded by kernels) as int32.
@@ -44,6 +46,7 @@ struct StringTable {
 
 // Copying an AttribArray shares its storage; the first non-const access of a shared array clones it. A string table is shared the same way
 // and cloned before it changes.
+// @scriptable ignore=true
 class AttribArray {
 public:
     explicit AttribArray(AttribType type = AttribType::float32) : type_(type) {

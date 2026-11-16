@@ -26,6 +26,7 @@ struct CookTimings {
     double kernelMs = 0.0;
 };
 
+// @scriptable ignore=true
 struct CookContext {
     KernelCompiler& compiler;
     double time = 0.0;
@@ -46,6 +47,7 @@ struct CookContext {
     std::string shapeKey(std::string_view local = {}) const;
 };
 
+// @scriptable ignore=true
 struct NodeStats {
     size_t cooks = 0;
     double lastCookMs = 0.0;
@@ -56,6 +58,7 @@ struct NodeStats {
     NodeId fusedInto = 0;  // tail node that cooked this node as part of a fused chain (0 = none)
 };
 
+// @scriptable ignore=true
 struct PointKernel {
     KernelSpec spec;
     std::vector<float> params;
@@ -66,6 +69,7 @@ class Node;
 // What Node::save and Node::load talk to, so a node does not depend on the file format. standard() writes or reads what every node has
 // (position, bypass, freeze, spare names, parameters, expressions, keyframes); number, text and geometry are fields of the node's own, kept
 // apart from those. A reader returns false for a field that is not in the file (a file from before the field existed).
+// @scriptable ignore=true
 class NodeWriter {
 public:
     virtual ~NodeWriter() = default;
@@ -75,6 +79,7 @@ public:
     virtual void geometry(const std::string& name, const GeometryHandle& value) = 0;
 };
 
+// @scriptable ignore=true
 class NodeReader {
 public:
     virtual ~NodeReader() = default;
@@ -84,6 +89,7 @@ public:
     virtual bool geometry(const std::string& name, GeometryHandle& value) const = 0;
 };
 
+// @scriptable holder=shared
 class Node {
 public:
     Node(std::string typeName, int inputCount);

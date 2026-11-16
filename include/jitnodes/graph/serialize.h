@@ -176,6 +176,7 @@ struct GraphSnapshot {
     std::vector<NodeId> volatileNodes;  // subnets and asset instances: their contents change without touching the node
 };
 
+// @scriptable ignore=true
 struct RestoreStats {
     size_t added = 0;
     size_t removed = 0;
