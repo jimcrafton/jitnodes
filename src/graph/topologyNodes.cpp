@@ -16,6 +16,30 @@ AttribClass classFromString(const std::string& s) {
     throw std::runtime_error("attribute class must be 'point' or 'primitive', got '" + s + "'");
 }
 
+// Comma separated, spaces around an item dropped, empty items skipped.
+std::vector<std::string> splitList(const std::string& list) {
+    std::vector<std::string> items;
+    for (size_t start = 0; start <= list.size();) {
+        size_t end = list.find(',', start);
+        if (end == std::string::npos) {
+            end = list.size();
+        }
+        size_t from = start;
+        size_t to = end;
+        while (from < to && list[from] == ' ') {
+            ++from;
+        }
+        while (to > from && list[to - 1] == ' ') {
+            --to;
+        }
+        if (to > from) {
+            items.push_back(list.substr(from, to - from));
+        }
+        start = end + 1;
+    }
+    return items;
+}
+
 class CircleNode : public Node {
 public:
     CircleNode() : Node("circle", 0) {
@@ -123,17 +147,86 @@ public:
         o.angle = getFloat("angle");
         o.folds = static_cast<int>(std::clamp(getFloat("folds"), 1.0f, 64.0f));
         o.keepOriginal = getFloat("keepOriginal") != 0.0f;
-        const std::string& list = getString("vectors");
-        for (size_t start = 0; start <= list.size();) {
-            size_t end = list.find(',', start);
-            if (end == std::string::npos) end = list.size();
-            size_t from = start, to = end;
-            while (from < to && list[from] == ' ') ++from;
-            while (to > from && list[to - 1] == ' ') --to;
-            if (to > from) o.vectors.push_back(list.substr(from, to - from));
-            start = end + 1;
-        }
+        o.vectors = splitList(getString("vectors"));
         return std::make_shared<Geometry>(symmetry(*in[0], o, ctx.pool));
+    }
+};
+
+// The first rig node: moves, turns and scales only the shapes a binding names, leaving every other shape and every key as it was. Several
+// bindings are separated by commas. The turn and scale happen around the pivot (the centre of the bound shapes, or a given point), then the move.
+class ShapeTransformNode : public Node {
+public:
+    ShapeTransformNode() : Node("shapeTransform", 1) {
+        declareString("bind", "");
+        declareFloat("tx", 0.0f);
+        declareFloat("ty", 0.0f);
+        declareFloat("angle", 0.0f);
+        declareFloat("scaleX", 1.0f);
+        declareFloat("scaleY", 1.0f);
+        declareString("pivot", "centre");
+        declareFloat("pivotX", 0.0f);
+        declareFloat("pivotY", 0.0f);
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        const std::string& pivotMode = getString("pivot");
+        if (pivotMode != "centre" && pivotMode != "point") {
+            throw std::runtime_error("shapeTransform: pivot must be 'centre' or 'point', got '" + pivotMode + "'");
+        }
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const std::vector<std::string> bindings = splitList(getString("bind"));
+        if (bindings.empty() || geo->pointCount() == 0) {
+            return geo;
+        }
+
+        std::vector<char> bound(geo->pointCount(), 0);
+        bool any = false;
+        for (const ShapeRange& shape : geo->shapes()) {
+            const bool matches = std::any_of(bindings.begin(), bindings.end(), [&](const std::string& b) { return shapeKeyMatches(shape.key, b); });
+            if (!matches) {
+                continue;
+            }
+            for (uint32_t p = shape.first; p < shape.first + shape.count; ++p) {
+                const Primitive& prim = geo->primitives()[p];
+                std::fill(bound.begin() + prim.start, bound.begin() + prim.start + prim.count, char(1));
+                any = true;
+            }
+        }
+        if (!any) {
+            return geo;
+        }
+
+        float* x = geo->x();
+        float* y = geo->y();
+        float px = getFloat("pivotX"), py = getFloat("pivotY");
+        if (pivotMode == "centre") {
+            float minX = 0, maxX = 0, minY = 0, maxY = 0;
+            bool first = true;
+            for (size_t i = 0; i < bound.size(); ++i) {
+                if (!bound[i]) {
+                    continue;
+                }
+                minX = first ? x[i] : std::min(minX, x[i]);
+                maxX = first ? x[i] : std::max(maxX, x[i]);
+                minY = first ? y[i] : std::min(minY, y[i]);
+                maxY = first ? y[i] : std::max(maxY, y[i]);
+                first = false;
+            }
+            px = 0.5f * (minX + maxX);
+            py = 0.5f * (minY + maxY);
+        }
+        const float a = getFloat("angle") * 0.01745329252f;
+        const float c = std::cos(a), s = std::sin(a);
+        const float sx = getFloat("scaleX"), sy = getFloat("scaleY"), tx = getFloat("tx"), ty = getFloat("ty");
+        for (size_t i = 0; i < bound.size(); ++i) {
+            if (!bound[i]) {
+                continue;
+            }
+            const float dx = (x[i] - px) * sx, dy = (y[i] - py) * sy;
+            x[i] = px + c * dx - s * dy + tx;
+            y[i] = py + s * dx + c * dy + ty;
+        }
+        return geo;
     }
 };
 
@@ -152,6 +245,7 @@ void registerTopologyNodes() {
     add<CopyToPointsNode>("copyToPoints");
     add<BlastNode>("blast");
     add<MirrorNode>("mirror");
+    add<ShapeTransformNode>("shapeTransform");
 }
 
 }  // namespace jitnodes
