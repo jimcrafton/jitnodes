@@ -43,6 +43,28 @@ void Node::addSpareFloat(const std::string& name, float defaultValue) {
     touch();
 }
 
+bool Node::removeSpareFloat(const std::string& name) {
+    if (spare_.erase(name) == 0) {
+        return false;
+    }
+    floats_.erase(name);
+    rebuildReferences();
+    touch();
+    return true;
+}
+
+bool Node::floatMinimum(const std::string& name, float& value) const {
+    (void)name;
+    (void)value;
+    return false;
+}
+
+bool Node::floatMaximum(const std::string& name, float& value) const {
+    (void)name;
+    (void)value;
+    return false;
+}
+
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
 
 void Node::declareGeometry(const std::string& name) { geometries_[name] = std::make_shared<const Geometry>(); }
@@ -200,6 +222,7 @@ void Node::setString(const std::string& name, const std::string& value) {
     if (it == strings_.end()) throw std::runtime_error("unknown string parameter '" + name + "' on " + typeName_);
     if (it->second == value) return;
     it->second = value;
+    stringChanged(name);
     markChanged();
 }
 

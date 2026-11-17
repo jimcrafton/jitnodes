@@ -70,10 +70,11 @@ name = expression;
 ```
 
 - **Whitespace** (spaces, tabs, newlines) is free.
-- **Comments are not supported.** `#`, `//` and `/* */` are syntax errors. Put documentation in the node's name or
-  elsewhere.
-- **Statements are assignments only.** There is no `if`/`else` statement, no loops, no function definitions, no
-  declarations. Conditionals are the `? :` expression; see [Booleans and masks](#booleans-and-masks).
+- **Comments** start with `#` and run to the end of the line, on a line of their own or after a statement. `//` and
+  `/* */` are syntax errors. A `#` inside a string literal is part of the string.
+- **Statements are assignments, plus a list of parameter declarations at the top** (see [Declared parameters](#declared-parameters)). There is no
+  `if`/`else` statement, no loops, no function definitions, no other declarations. Conditionals are the `? :` expression; see
+  [Booleans and masks](#booleans-and-masks).
 - **Identifiers** start with a letter or underscore and continue with letters, digits and underscores. A dot followed
   by a letter is part of the name, so `N.x`, `Cd.y` and `group.top` are single identifiers (attribute names), not
   member accesses.
@@ -278,6 +279,33 @@ with `b = 0.35` and `a` = the expression `time * 3`: the phase advances three ra
 
 Because `a`-`d` are reserved, **do not use them as temporary names**: `d = sqrt(x * x + y * y);` is rejected with
 `cannot assign to parameter 'd'`. Use `dist`, `r`, `t`, ...
+
+## Declared parameters
+
+`a` to `d` are fixed. A program can declare as many more as it needs, with a name of its own:
+
+```
+# a wave whose strength, speed and step count show up in the editor as parameters
+| amount = 0.35(0, 2), speed = 3, steps(1,) |
+x = x + sin(y * 2 + speed) * amount;
+```
+
+- Form: a list between two bars, `| name [= default] [(min, max)], ... |`. The default is a number literal (a leading `-` is allowed)
+  and is 0 when left out. Either limit in the parentheses may be empty, meaning no limit: `count(1,)` has a minimum of 1 only,
+  `ratio(,1)` a maximum of 1 only, `x(,)` none. The comma between the two limits is always written.
+- The list stands at the top: before the first assignment (comments and several lists are fine). A bar after an assignment is an
+  error, and `||` is still the or operator.
+- Each declaration becomes a float parameter of the node, named after the variable: it can be typed, scrubbed, driven by an
+  expression or keyframed, like `a`-`d`, and changing it never recompiles. Read it like `a`; it **cannot be assigned**.
+- Editing `code` adds the parameters of new declarations and removes those whose declaration is gone. One that stays declared keeps
+  its value, expression and keyframes, so changing the default in the code does not change a value already set. A parse error leaves
+  the parameters as they were; the next cook reports it.
+- The limits are what a typed or dragged value in an editor is kept within, and a slider covers `min` to `max` when both are given
+  (with one limit only there is no slider). The cook does not enforce them: an expression or keyframes may go beyond. The node
+  reports them through `floatMinimum(name, value)` and `floatMaximum(name, value)`.
+- Not allowed as names: `a`-`d`, `code`, `class`, `time`, `frame`, `pi`, `parent`, `sampleIndex`, names with a `.`, names starting
+  with `_`, a name declared twice. The error is `cannot declare parameter 'name'`.
+- Only the `wrangle` node reads declarations. In a [parameter expression](#parameter-expressions) a `|` is not part of the language.
 
 ## Attribute names other nodes understand
 
@@ -521,10 +549,14 @@ Rules of thumb that follow:
 
 | Message (after `wrangle parse error at offset N:`) | Cause |
 |---|---|
-| `expected assignment target` | a statement does not start with an identifier: a stray `;;`, a comment (`#`, `//`), a number |
+| `expected assignment target` | a statement does not start with an identifier: a stray `;;`, a `//` comment, a number |
 | `expected '='` / `expected ';'` | missing operator or semicolon, or an unsupported operator such as `%` or a chained comparison |
-| `cannot assign to parameter 'a'` | assigning to `a`, `b`, `c` or `d` (also when you meant a temporary name) |
-| `unexpected character 'c'` | a character that is not part of the language (`#`, `{`, `[`, `%`, a quote ...) where an operand was expected |
+| `cannot assign to parameter 'a'` | assigning to `a`, `b`, `c`, `d` or a declared parameter (also when you meant a temporary name) |
+| `cannot declare parameter 'x'` | a declared name that is reserved, has a `.`, starts with `_` or is already declared |
+| `declarations must come before the first assignment` | a `\| ... \|` list after an assignment |
+| `expected a parameter name` / `expected '\|'` | an empty or unclosed declaration list |
+| `the limits of 'x' have the minimum above the maximum` | `x(5, 2)` |
+| `unexpected character 'c'` | a character that is not part of the language (`{`, `[`, `%`, a quote ...) where an operand was expected |
 | `unexpected end of input` | an expression is cut off (`y = x +` at the end) |
 | `unknown function 'foo'` | only the 13 listed functions exist |
 | `foo() expects N argument(s)` | wrong argument count |
@@ -547,7 +579,7 @@ Other things that look like bugs but are not:
 
 ## Limits
 
-- No control flow other than `? :`, no loops, no local variables, no functions, no comments.
+- No control flow other than `? :`, no loops, no local variables (a `_name` temporary aside), no functions.
 - No operators `%`, `^`, `&`, `|`, `<<`, bit tricks, compound assignment (`+=`) or increment.
 - No access to other points, primitives, neighbours or detail values, no random or noise functions, no matrix or vector
   values, and strings only as the literal in a comparison (see [String attributes](#string-attributes)).
@@ -559,7 +591,10 @@ Other things that look like bugs but are not:
 ## Grammar
 
 ```
-program     := { assignment }
+program     := { declarations } { assignment }       (a '#' starts a comment that runs to the end of the line)
+declarations := '|' declaration { ',' declaration } '|'
+declaration := identifier [ '=' signed ] [ '(' [ signed ] ',' [ signed ] ')' ]
+signed      := [ '-' ] number
 assignment  := identifier '=' expression ';'
 expression  := conditional
 conditional := or [ '?' expression ':' expression ]

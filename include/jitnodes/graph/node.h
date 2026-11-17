@@ -115,6 +115,15 @@ public:
     // Spare parameters are added at run time (promoted subnet parameters, user parameters). They behave
     // like declared ones and are saved with the node.
     void addSpareFloat(const std::string& name, float defaultValue);
+    // Drops a spare parameter with its expression and keyframes; false when there is no such spare parameter.
+    bool removeSpareFloat(const std::string& name);
+    // The limits a node type gives a float (a wrangle's `| gain(0, 10) |`): what a typed or dragged value in an editor is kept within, and
+    // the range of a slider when both exist. They are not enforced when the node cooks (an expression may go beyond them). False when
+    // there is no such limit; Python gets `ok, value = node.float_minimum(name)`.
+    // @scriptable out=value
+    virtual bool floatMinimum(const std::string& name, float& value) const;
+    // @scriptable out=value
+    virtual bool floatMaximum(const std::string& name, float& value) const;
     bool isSpare(const std::string& name) const { return spare_.count(name) != 0; }
     std::vector<std::string> spareNames() const { return std::vector<std::string>(spare_.begin(), spare_.end()); }
     float baseFloat(const std::string& name) const;  // the stored value, ignoring any expression or keyframes
@@ -252,6 +261,9 @@ protected:
     // Adds a tag to a declared float parameter (throws for an unknown one); a repeated tag is ignored.
     void tagParam(const std::string& name, const std::string& tag);
     void declareString(const std::string& name, const std::string& defaultValue);
+    // Called by setString after a string parameter changed value, before the node is marked dirty. A node type whose text defines
+    // parameters (the wrangle's declared ones) adds and removes spare floats here. Must not throw.
+    virtual void stringChanged(const std::string& name) { (void)name; }
     void declareGeometry(const std::string& name);
     const Network* owner() const { return network_; }
     // For container nodes that hand a value to the graph inside them (the loop counter, read there as `parent.name`): sets a declared

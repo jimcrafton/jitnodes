@@ -230,6 +230,117 @@ TEST(parserRejectsBadInput) {
     CHECK(threw);
 }
 
+TEST(parserSkipsHashComments) {
+    KernelSpec plain = parseWrangle("x = x * 2; y = y + 1;", {});
+    KernelSpec commented = parseWrangle("# double x\nx = x * 2; # trailing\n  # a line of its own\ny = y + 1;\n# last line, no newline", {});
+    CHECK(commented.graph.size() == plain.graph.size());
+    CHECK(commented.stores.size() == plain.stores.size());
+    CHECK(parseWrangle("# only a comment", {}).stores.empty());
+
+    bool threw = false;
+    std::string message;
+    try { parseWrangle("x = 1; # fine\ny = (1 + ;", {}); } catch (const std::runtime_error& e) { threw = true; message = e.what(); }
+    CHECK(threw);
+    CHECK(message.find("offset 23") != std::string::npos);   // offsets still count the comment's characters
+}
+
+TEST(parserReadsParamDeclarations) {
+    std::vector<WrangleParam> declared;
+    KernelSpec spec = parseWrangle("# tweakables\n| gain = 1.5, radius = 2(-1, 10), count(1,), ratio(, 1), plain |\nlabel = x;\nx = x * gain + radius + a;", {"a"}, {}, &declared);
+    CHECK(declared.size() == 5 && spec.paramCount == 6);
+    CHECK(declared[0].name == "gain" && declared[0].value == 1.5f && !declared[0].hasMinimum && !declared[0].hasMaximum && declared[0].slot == 1);
+    CHECK(declared[1].name == "radius" && declared[1].value == 2.0f && declared[1].hasMinimum && declared[1].minimum == -1.0f &&
+          declared[1].hasMaximum && declared[1].maximum == 10.0f && declared[1].slot == 2);
+    CHECK(declared[2].name == "count" && declared[2].value == 0.0f && declared[2].hasMinimum && declared[2].minimum == 1.0f && !declared[2].hasMaximum);
+    CHECK(declared[3].name == "ratio" && !declared[3].hasMinimum && declared[3].hasMaximum && declared[3].maximum == 1.0f);
+    CHECK(declared[4].name == "plain" && declared[4].value == 0.0f && !declared[4].hasMinimum && !declared[4].hasMaximum && declared[4].slot == 5);
+
+    // several lists may stand at the top; empty parentheses set no limit
+    parseWrangle("| p |\n# next\n| q(,) |\nx = p + q;", {}, {}, &declared);
+    CHECK(declared.size() == 2 && !declared[1].hasMinimum && !declared[1].hasMaximum);
+
+    // without the out-parameter a bar is not part of the language, but || still is
+    bool threw = false;
+    try { parseWrangle("| g |\nx = g;", {}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    CHECK(parseWrangle("x = a || b;", {}, {}, &declared).stores.size() == 1 && declared.empty());
+
+    // a string literal takes a slot after the declared ones
+    parseWrangle("| p |\nok = label == \"a\";", {}, {}, &declared);
+    CHECK(declared.size() == 1 && declared[0].slot == 0);
+}
+
+TEST(parserRejectsBadParamDeclarations) {
+    for (const char* code : {"| g |\ng = 2;", "| a |", "| time |", "| g, g |", "x = 1;\n| g |", "| |", "| g = |", "| g = x |", "| _t |", "| n.x |", "| g",
+                             "| g(1 |", "| g(5, 2) |", "| g(1) |", "| g, |", "| g = 1 2 |", "|| g |"}) {
+        std::vector<WrangleParam> declared;
+        bool threw = false;
+        try { parseWrangle(code, {"a"}, {}, &declared); } catch (const std::runtime_error&) { threw = true; }
+        CHECK(threw);
+    }
+}
+
+TEST(wrangleDeclaredParametersAreNodeParameters) {
+    Network net;
+    const NodeId line = net.addNode("line", "ln");
+    const NodeId wr = net.addNode("wrangle", "wr");
+    net.node(line).setFloat("count", 5.0f);
+    net.node(line).setFloat("length", 4.0f);
+    net.connect(line, wr);
+    net.setDisplayNode(wr);
+    Node& node = net.node(wr);
+    node.setString("code", "| gain = 2(0, 10) |\nx = x * gain;");
+    CHECK(node.hasFloat("gain") && node.isSpare("gain") && node.getFloat("gain") == 2.0f);
+    float limit = -1.0f;
+    CHECK(node.floatMinimum("gain", limit) && limit == 0.0f);
+    CHECK(node.floatMaximum("gain", limit) && limit == 10.0f);
+    CHECK(!node.floatMinimum("a", limit) && !node.floatMaximum("nothing", limit));
+    GeometryHandle g = net.cookDisplay();
+    CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 4.0f);
+
+    node.setFloat("gain", 3.0f);
+    g = net.cookDisplay();
+    CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 6.0f);
+
+    // editing the code keeps the value, an expression survives, a new declaration appears, a dropped one goes
+    node.setExpression("gain", "time + 1");
+    node.setString("code", "| gain = 9, extra(1,) |\n# comment\nx = x * gain + extra;");
+    CHECK(node.hasFloat("extra") && node.expression("gain") == "time + 1" && node.baseFloat("gain") == 3.0f);
+    CHECK(!node.floatMinimum("gain", limit) && !node.floatMaximum("gain", limit));   // the limits follow the code
+    CHECK(node.floatMinimum("extra", limit) && limit == 1.0f && !node.floatMaximum("extra", limit));
+    node.setString("code", "x = x * a;");
+    CHECK(!node.hasFloat("gain") && !node.hasFloat("extra"));
+
+    // a parse error leaves the parameters alone; the cook reports it
+    node.setString("code", "| keep = 4 | x = x * keep;");
+    node.setString("code", "| keep = 4 | x = x * (keep;");
+    CHECK(node.hasFloat("keep"));
+    bool threw = false;
+    try { net.cookDisplay(); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+
+    // a user-added spare is never removed by code edits
+    node.addSpareFloat("mine", 1.0f);
+    node.setString("code", "x = x;");
+    CHECK(node.hasFloat("mine") && !node.hasFloat("keep"));
+}
+
+TEST(wrangleDeclaredParametersSurviveSaveAndLoad) {
+    Network net;
+    const NodeId wr = net.addNode("wrangle", "wr");
+    net.node(wr).setString("code", "| gain = 2(0, 10) |\nx = x * gain;");
+    net.node(wr).setFloat("gain", 7.0f);
+    const std::string text = saveNetwork(net);
+    Network loaded;
+    loadNetwork(loaded, text);
+    Node& node = loaded.node(loaded.findNode("wr"));
+    float limit = 0.0f;
+    CHECK(node.hasFloat("gain") && node.baseFloat("gain") == 7.0f);
+    CHECK(node.floatMaximum("gain", limit) && limit == 10.0f);
+    node.setString("code", "x = x;");
+    CHECK(!node.hasFloat("gain"));
+}
+
 TEST(exprGraphSharesSubexpressions) {
     KernelSpec s = parseWrangle("x = (x + 1) * (1 + x);", {});
     CHECK(s.graph.size() == 4);  // load, const, add, mul
@@ -6332,6 +6443,32 @@ bool wrangleThrows(const std::string& code, const Geometry& input) {
 }
 
 }  // namespace
+
+TEST(wrangleDeclaredParametersWorkInFusedChains) {
+    for (bool jit : {true, false}) {
+        Network net(2);
+        net.setFusionEnabled(true);
+        net.compiler().setJitEnabled(jit);
+        net.setExternalInputs({std::make_shared<Geometry>(labelled({"q", "r", "q", "q", "r"}, {"q", "r"}))});
+        const NodeId in = net.addNode("subnetInput", "in");
+        const NodeId w1 = net.addNode("wrangle", "w1");
+        const NodeId w2 = net.addNode("wrangle", "w2");
+        net.node(w1).setString("code", "| gain = 2 |\nx = x * gain;");
+        net.node(w2).setString("code", "| off = 10, gain = 3 |\nok = label == \"q\"; x = x * gain + off + a;");
+        net.node(w2).setFloat("a", 100.0f);
+        net.connect(in, w1);
+        net.connect(w1, w2);
+        net.setDisplayNode(w2);
+        GeometryHandle g = net.cookDisplay();
+        CHECK(net.fusedChainCount() >= 1);
+        CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 2.0f * 2.0f * 3.0f + 10.0f + 100.0f);
+        CHECK(g->findAttrib(AttribClass::point, "ok")->at(1) == 0.0f && g->findAttrib(AttribClass::point, "ok")->at(2) == 1.0f);
+        net.node(w1).setFloat("gain", 1.0f);
+        net.node(w2).setFloat("gain", 2.0f);
+        g = net.cookDisplay();
+        CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 2.0f * 1.0f * 2.0f + 10.0f + 100.0f);
+    }
+}
 
 TEST(wrangleComparesStringAttributesWithLiterals) {
     const Geometry input = labelled({"tree", "rock", "", "tree", "bush", "rock"}, {"rock", "tree"});
