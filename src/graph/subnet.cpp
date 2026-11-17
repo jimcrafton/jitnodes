@@ -54,6 +54,36 @@ GeometryHandle SubnetNode::cookInner(const Network& outer, double time, const st
     return inner_.cook(output);
 }
 
+const AssetParam* AssetNode::assetParam(const std::string& name) const {
+    if (!params_) {
+        return nullptr;
+    }
+    for (const AssetParam& p : *params_) {
+        if (p.name == name) {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+bool AssetNode::floatMinimum(const std::string& name, float& value) const {
+    const AssetParam* p = assetParam(name);
+    if (!p || !p->minimum) {
+        return false;
+    }
+    value = *p->minimum;
+    return true;
+}
+
+bool AssetNode::floatMaximum(const std::string& name, float& value) const {
+    const AssetParam* p = assetParam(name);
+    if (!p || !p->maximum) {
+        return false;
+    }
+    value = *p->maximum;
+    return true;
+}
+
 void registerSubnetNodes() {
     add<SubnetInputNode>("subnetInput");
     add<SubnetNode>("subnet0", std::string("subnet0"), 0);

@@ -396,7 +396,7 @@ std::string requireStringMember(const json5::value& obj, const char* key, const 
 }
 
 void loadGraphBody(Network& net, const json5::value& body);
-void registerAssetValue(const json5::value& def, const std::string& text);
+void registerAssetValue(const json5::value& def, const std::string& text, bool commit = true);
 
 std::vector<double> requireNumbers(const json5::value& v, size_t count, const std::string& what) {
     const json5::array_view arr(v);
@@ -686,7 +686,9 @@ std::unique_ptr<Node> instantiateAsset(const std::string& type, const std::strin
     json5::document doc;
     if (json5::from_string(text, doc)) fail("stored definition of asset '" + type + "' is corrupt");
     auto node = std::make_unique<AssetNode>(type, static_cast<int>(requireNumberMember(doc, "inputs", "asset inputs")));
-    for (auto [name, value] : json5::object_view(doc["promote"])) node->addSpareFloat(name, static_cast<float>(requireNumber(value, std::string("promote.") + name)));
+    auto params = std::make_shared<std::vector<AssetParam>>(readAssetParams(doc));
+    for (const AssetParam& p : *params) node->addSpareFloat(p.name, p.defaultValue);
+    node->setParams(std::move(params));
     json5::value graph;
     if (!member(doc, "graph", graph)) fail("asset '" + type + "' has no graph");
     loadGraphBody(node->network(), graph);
@@ -695,7 +697,8 @@ std::unique_ptr<Node> instantiateAsset(const std::string& type, const std::strin
     return node;
 }
 
-void registerAssetValue(const json5::value& def, const std::string& text) {
+// With commit false everything is checked (and assets the definition embeds are registered, as when a graph file is loaded) but this asset is not.
+void registerAssetValue(const json5::value& def, const std::string& text, bool commit) {
     if (!def.is_object()) fail("an asset definition must be an object");
     if (requireStringMember(def, "format", "asset format") != assetFormat) fail("not a jitnodes asset (format is not 'jitnodes-asset')");
     const int version = static_cast<int>(requireNumberMember(def, "version", "asset version"));
@@ -713,8 +716,12 @@ void registerAssetValue(const json5::value& def, const std::string& text) {
 
     // Validate by building one instance before replacing anything.
     instantiateAsset(type, text);
+    std::map<std::string, std::string> renames;
+    for (auto [from, to] : json5::object_view(def["renames"])) renames[std::string(from)] = requireString(to, std::string("renames.") + std::string(from));
+    if (!commit) return;
     registry.registerType(type, [type, shared = std::make_shared<const std::string>(text)] { return instantiateAsset(type, *shared); });
     registry.setAssetText(type, text, assetVersionOf(def));
+    registry.setAssetRenames(type, std::move(renames));
 }
 
 }  // namespace
@@ -795,7 +802,79 @@ void registerAsset(const std::string& definitionText) {
         fail(std::string("asset parse error at line ") + std::to_string(err.line) + ", column " + std::to_string(err.column) + ": " +
              json5::error::type_string[err.type]);
     }
-    registerAssetValue(doc, definitionText);
+    registerAssetValue(doc, definitionText, true);
+}
+
+std::string checkAsset(const std::string& definitionText) {
+    try {
+        json5::document doc;
+        const json5::error err = json5::from_string(definitionText, doc);
+        if (err) {
+            fail(std::string("asset parse error at line ") + std::to_string(err.line) + ", column " + std::to_string(err.column) + ": " +
+                 json5::error::type_string[err.type]);
+        }
+        registerAssetValue(doc, definitionText, false);
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    return {};
+}
+
+void loadGraphText(Network& net, const std::string& graphText) {
+    json5::document doc;
+    const json5::error err = json5::from_string(graphText, doc);
+    if (err) {
+        fail(std::string("parse error at line ") + std::to_string(err.line) + ", column " + std::to_string(err.column) + ": " + json5::error::type_string[err.type]);
+    }
+    loadGraphBody(net, doc);
+}
+
+std::vector<AssetParam> readAssetParams(const json5::value& def) {
+    std::vector<AssetParam> out;
+    json5::value list;
+    if (member(def, "params", list)) {
+        const json5::array_view items(list);
+        if (!items.is_valid()) fail("asset params must be an array");
+        for (const json5::value& item : items) {
+            if (!item.is_object()) fail("each asset parameter must be an object");
+            AssetParam p;
+            p.name = requireStringMember(item, "name", "asset parameter name");
+            json5::value v;
+            if (member(item, "label", v)) p.label = requireString(v, "asset parameter label");
+            if (member(item, "default", v)) p.defaultValue = static_cast<float>(requireNumber(v, "asset parameter default"));
+            if (member(item, "min", v)) p.minimum = static_cast<float>(requireNumber(v, "asset parameter min"));
+            if (member(item, "max", v)) p.maximum = static_cast<float>(requireNumber(v, "asset parameter max"));
+            if (member(item, "step", v)) p.step = static_cast<float>(requireNumber(v, "asset parameter step"));
+            if (member(item, "group", v)) p.group = requireString(v, "asset parameter group");
+            if (member(item, "tooltip", v)) p.tooltip = requireString(v, "asset parameter tooltip");
+            out.push_back(std::move(p));
+        }
+        return out;
+    }
+    for (auto [name, value] : json5::object_view(def["promote"])) {
+        AssetParam p;
+        p.name = std::string(name);
+        p.defaultValue = static_cast<float>(requireNumber(value, std::string("promote.") + std::string(name)));
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+json5::value writeAssetParams(json5::builder& b, const std::vector<AssetParam>& params) {
+    b.push_array();
+    for (const AssetParam& p : params) {
+        b.push_object();
+        b["name"] = b.new_string(p.name);
+        if (!p.label.empty()) b["label"] = b.new_string(p.label);
+        b["default"] = floatValue(p.defaultValue);
+        if (p.minimum) b["min"] = floatValue(*p.minimum);
+        if (p.maximum) b["max"] = floatValue(*p.maximum);
+        if (p.step != 0.0f) b["step"] = floatValue(p.step);
+        if (!p.group.empty()) b["group"] = b.new_string(p.group);
+        if (!p.tooltip.empty()) b["tooltip"] = b.new_string(p.tooltip);
+        b += b.pop();
+    }
+    return b.pop();
 }
 
 namespace {
@@ -823,15 +902,38 @@ void registerAssetFromFile(const std::string& path) { registerAsset(readFile(pat
 
 namespace {
 
+void copyFloatParameter(const Node& from, const std::string& fromName, Node& to, const std::string& toName) {
+    to.setFloat(toName, from.baseFloat(fromName));
+    to.setParamTags(toName, from.userParamTags(fromName));
+    if (!from.expression(fromName).empty()) to.setExpression(toName, from.expression(fromName));
+    else if (!from.keyframes(fromName).empty()) to.setKeyframes(toName, from.keyframes(fromName));
+}
+
+// A parameter that the asset renamed since `from` was built goes to its new name (a chain a -> b -> c is followed); one that still has a
+// parameter of its own name is left to the same-name transfer.
+void applyAssetRenames(const Node& from, Node& to) {
+    const std::map<std::string, std::string>* renames = NodeRegistry::instance().assetRenames(to.typeName());
+    if (!renames) return;
+    for (const std::string& oldName : from.floatNames()) {
+        if (to.hasFloat(oldName)) continue;
+        std::string target = oldName;
+        for (int hops = 0; hops < 16; ++hops) {
+            const auto step = renames->find(target);
+            if (step == renames->end()) break;
+            target = step->second;
+            if (to.hasFloat(target)) break;
+        }
+        if (target != oldName && to.hasFloat(target)) copyFloatParameter(from, oldName, to, target);
+    }
+}
+
 void transferParameters(const Node& from, Node& to) {
     to.setTags(from.tags());
     for (const std::string& name : from.floatNames()) {
         if (!to.hasFloat(name)) continue;
-        to.setFloat(name, from.baseFloat(name));
-        to.setParamTags(name, from.userParamTags(name));
-        if (!from.expression(name).empty()) to.setExpression(name, from.expression(name));
-        else if (!from.keyframes(name).empty()) to.setKeyframes(name, from.keyframes(name));
+        copyFloatParameter(from, name, to, name);
     }
+    if (dynamic_cast<const AssetNode*>(&to)) applyAssetRenames(from, to);
     const std::vector<std::string> kept = to.stringNames();
     for (const std::string& name : from.stringNames())
         if (std::find(kept.begin(), kept.end(), name) != kept.end()) to.setString(name, from.getString(name));

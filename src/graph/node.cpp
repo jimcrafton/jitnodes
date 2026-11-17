@@ -53,6 +53,25 @@ bool Node::removeSpareFloat(const std::string& name) {
     return true;
 }
 
+void Node::renameSpareFloat(const std::string& from, const std::string& to) {
+    if (spare_.count(from) == 0) {
+        throw std::runtime_error("'" + from + "' is not a spare parameter of '" + name_ + "'");
+    }
+    if (from == to) {
+        return;
+    }
+    if (floats_.count(to) != 0) {
+        throw std::runtime_error("parameter '" + to + "' already exists on '" + name_ + "'");
+    }
+    auto entry = floats_.extract(from);
+    entry.key() = to;
+    floats_.insert(std::move(entry));
+    spare_.erase(from);
+    spare_.insert(to);
+    rebuildReferences();
+    touch();
+}
+
 bool Node::floatMinimum(const std::string& name, float& value) const {
     (void)name;
     (void)value;

@@ -1,5 +1,8 @@
 #include "pyHandles.h"
 
+#include "pyAssets.h"
+#include "pyGuard.h"
+
 #include <algorithm>
 #include <functional>
 #include <set>
@@ -177,9 +180,50 @@ py::object wrapResult(const NetworkRef& network, Level level, const std::string&
 
 // A callable that checks the handle, translates the arguments, calls the generated method of the same name and
 // translates the result. The handle is checked again at call time, so a bound method kept in a variable is safe too.
+// Asks the active event restrictions (pyGuard.h) whether this call may edit what it is about to edit. Only reached while one is active.
+void checkRestrictedCall(const py::object& core, const py::args& args, const py::kwargs& kwargs, const NetworkRef& network, Level level,
+                         const std::string& name) {
+    if (level == Level::node) {
+        EventRestriction::checkNode(network, core.cast<Node&>().id(), name);
+        return;
+    }
+    if (name == "add_node" || name == "add_node_with_id") {
+        EventRestriction::checkCreate(network, name);
+        return;
+    }
+    // connect(from, to, input) edits the consumer `to`; the other editing calls edit the nodes they are given.
+    bool found = false;
+    const auto consider = [&](const py::handle& value) {
+        if (py::isinstance<PyNode>(value)) {
+            found = true;
+            EventRestriction::checkNode(network, value.cast<const PyNode&>().id(), name);
+        }
+    };
+    if (name == "connect") {
+        if (args.size() > 1) {
+            consider(args[1]);
+        } else if (kwargs.contains("to")) {
+            consider(kwargs["to"]);
+        }
+    } else {
+        for (const py::handle item : args) {
+            consider(item);
+        }
+        for (const auto item : kwargs) {
+            consider(item.second);
+        }
+    }
+    if (!found) {
+        EventRestriction::checkNetwork(network, name);
+    }
+}
+
 py::object makeForwarder(std::function<py::object()> resolve, NetworkRef network, Level level, std::string name) {
     return py::cpp_function([resolve = std::move(resolve), network = std::move(network), level, name](py::args args, py::kwargs kwargs) {
         py::object core = resolve();
+        if (level != Level::other && EventRestriction::active() && isMutatingName(name)) {
+            checkRestrictedCall(core, args, kwargs, network, level, name);
+        }
         py::tuple callArgs(args.size());
         for (size_t i = 0; i < args.size(); ++i) {
             callArgs[i] = unwrapArgument(args[i], level, network);
@@ -231,6 +275,9 @@ py::object readParameter(const PyNode& handle, const std::string& name) {
 
 void writeParameter(const PyNode& handle, const std::string& name, const py::object& value) {
     Node& node = handle.get();
+    if (EventRestriction::active()) {
+        EventRestriction::checkNode(handle.network(), handle.id(), "set " + name);
+    }
     if (node.hasFloat(name)) {
         node.setFloat(name, value.cast<float>());
     } else if (hasString(node, name)) {
@@ -391,6 +438,9 @@ void registerNode(py::module_& m) {
             }
             self.get();
             target.get();
+            if (EventRestriction::active()) {
+                EventRestriction::checkNode(target.network(), target.id(), "connect");
+            }
             self.network().get().connect(self.id(), target.id(), input);
             return target;
         }, py::arg("target"), py::arg("input") = 0, "Wires this node to an input of `target` and returns `target`.")
@@ -400,11 +450,17 @@ void registerNode(py::module_& m) {
             }
             self.get();
             target.get();
+            if (EventRestriction::active()) {
+                EventRestriction::checkNode(target.network(), target.id(), "connect");
+            }
             self.network().get().connect(self.id(), target.id(), 0);
             return target;
         })
         .def("disconnect", [](const PyNode& self, int input) {
             self.get();
+            if (EventRestriction::active()) {
+                EventRestriction::checkNode(self.network(), self.id(), "disconnect");
+            }
             self.network().get().disconnect(self.id(), input);
         }, py::arg("input") = 0, "Unwires an input of this node.");
 }
@@ -457,6 +513,7 @@ void registerModule(py::module_& module) {
     registerNode(module);
     registerNetwork(module);
     registerHistory(module);
+    registerAssets(module);
 }
 
 py::object wrapNetwork(Network& network) {

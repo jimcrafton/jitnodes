@@ -41,6 +41,11 @@ void saveAssetToFile(const Network& net, NodeId subnet, const std::string& typeN
 // Existing instances keep the definition they were built from until updateAssetInstances is called.
 void registerAsset(const std::string& definitionText);
 void registerAssetFromFile(const std::string& path);
+// Everything registerAsset checks, without registering the asset: an empty string when the text is a valid definition, else the problem.
+// Assets the definition embeds are registered, as loading a graph file does.
+std::string checkAsset(const std::string& definitionText);
+// Replaces the contents of net from the JSON of a graph body (the "graph" member of an asset definition). Throws std::runtime_error.
+void loadGraphText(Network& net, const std::string& graphText);
 
 // Rebuilds the instances (also inside subnets and assets) whose registered definition changed since they were
 // created, optionally only for one type. Parameters with the same name keep their value, expression or keyframes,

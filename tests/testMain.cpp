@@ -7790,6 +7790,291 @@ TEST(aNestedNetworkLifetimeExpiresWithItsSubnetNode) {
     CHECK(!outer.expired());
 }
 
+// Asset definitions as values, the library, parameter renames.
+
+TEST(assetDefinitionsRoundTripAndKeepUnknownKeys) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "defRoundTripAsset", 3);
+    CHECK(d.name == "defRoundTripAsset" && d.version == 3 && d.inputs == 1);
+    CHECK(d.params.size() == 1 && d.params[0].name == "amount" && d.params[0].defaultValue == 2.0f);
+    CHECK(!d.graphText.empty());
+
+    d.label = "Round trip";
+    d.category = "Test";
+    d.help = "Moves things.";
+    d.inputLabels = {"geometry"};
+    d.params[0].label = "Amount";
+    d.params[0].minimum = 0.0f;
+    d.params[0].maximum = 5.0f;
+    d.params[0].group = "Main";
+    d.params[0].tooltip = "How much";
+    d.scripts["onCreated"] = "print('hi')";
+    d.renames["old"] = "amount";
+    d.files["notes.txt"] = "text";
+    CHECK(d.validate().empty());
+
+    std::string text = d.toText();
+    const size_t close = text.rfind('}');
+    text.insert(close, ", \"futureKey\": { \"a\": [1, 2] }");
+    const AssetDefinition back = AssetDefinition::fromText(text);
+    CHECK(back.label == d.label && back.category == d.category && back.help == d.help && back.inputLabels == d.inputLabels);
+    CHECK(back.params == d.params && back.scripts == d.scripts && back.renames == d.renames && back.files == d.files);
+    CHECK(back.version == 3 && back.graphText == d.graphText);
+    CHECK(back.unknown.count("futureKey") == 1);
+    CHECK(back.toText().find("futureKey") != std::string::npos);
+    CHECK(AssetDefinition::fromText(back.toText()).toText() == back.toText());
+}
+
+TEST(assetFilesFromBeforeParamsStillRead) {
+    const std::string path = std::string(JITNODES_SOURCE_DIR) + "/examples/assets/wobble.asset.json";
+    std::ifstream in(path, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const AssetDefinition d = AssetDefinition::fromText(text);
+    CHECK(d.name == "wobbleAsset" && d.params.size() == 2 && d.params[0].name == "amount" && d.params[1].name == "speed");
+    CHECK(std::fabs(d.params[0].defaultValue - 0.3f) < 1e-6f && d.params[1].defaultValue == 3.0f);
+    CHECK(d.validate().empty());
+    CHECK(d.toText().find("\"promote\"") != std::string::npos && d.toText().find("\"params\"") != std::string::npos);
+}
+
+TEST(assetDefinitionValidationReportsEachProblem) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    const AssetDefinition good = AssetDefinition::fromNode(rig.net, rig.sub, "validateGoodAsset");
+    CHECK(good.validate().empty());
+
+    auto problem = [&](const std::function<void(AssetDefinition&)>& change) {
+        AssetDefinition d = good;
+        change(d);
+        return d.validate();
+    };
+    CHECK(problem([](AssetDefinition& d) { d.name = ""; }).find("type name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.name = "9lives"; }).find("valid type name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.name = "line"; }).find("built-in") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.inputs = 99; }).find("between 0 and 16") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.inputLabels = {"a", "b"}; }).find("input label") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params.push_back(d.params[0]); }).find("twice") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].name = "bad name"; }).find("parameter name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].minimum = 5.0f; d.params[0].maximum = 1.0f; }).find("minimum is above") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].maximum = 1.0f; }).find("outside its limits") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.renames["a"] = "a"; }).find("rename") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onSomethingElse"] = "x"; }).find("script name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.graphText = "{ nodes: [ { id: 1, type: 'noSuchNodeType', name: 'x', inputs: [] } ] }"; }).find("noSuchNodeType") != std::string::npos);
+
+    AssetDefinition::setScriptValidator([](const AssetDefinition& d) { return d.scripts.count("onFrameChanged") ? std::string("onFrameChanged 3:5 cannot change the asset") : std::string(); });
+    CHECK(problem([](AssetDefinition&) {}).empty());
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onFrameChanged"] = "x"; }) == "onFrameChanged 3:5 cannot change the asset");
+    AssetDefinition::setScriptValidator({});
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onFrameChanged"] = "x"; }).empty());
+}
+
+TEST(assetParameterLimitsAndLabelsReachInstances) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("other", 1.0f);
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "limitsAsset");
+    d.params[0].minimum = 0.0f;
+    d.params[0].maximum = 5.0f;
+    d.params[0].group = "Main";
+    registerAsset(d.toText());
+
+    Network net(1);
+    const NodeId a = net.addNode("limitsAsset");
+    float value = -1.0f;
+    CHECK(net.node(a).floatMinimum("amount", value) && value == 0.0f);
+    CHECK(net.node(a).floatMaximum("amount", value) && value == 5.0f);
+    CHECK(!net.node(a).floatMinimum("other", value));
+    const auto& asset = dynamic_cast<const AssetNode&>(net.node(a));
+    CHECK(asset.assetParam("amount") && asset.assetParam("amount")->group == "Main" && asset.assetParam("nope") == nullptr);
+    CHECK(net.node(a).baseFloat("amount") == 2.0f);
+}
+
+TEST(renamedAssetParametersKeepValuesAcrossVersions) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("scale", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.scale * 10");
+    registerAsset(AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 1).toText());
+
+    Network net(1);
+    const NodeId line = net.addNode("line");
+    const NodeId a = net.addNode("renameChainAsset", "inst");
+    net.connect(line, a);
+    net.node(a).setFloat("scale", 3.0f);
+    net.node(a).setKeyframes("scale", {{0.0, 3.0f, KeyInterp::linear}, {2.0, 5.0f, KeyInterp::linear}});
+    const std::string oldGraph = saveNetwork(net);
+
+    // Version 2 renames scale to gain; the contents follow.
+    CHECK(renameSpareParameter(rig.net, rig.sub, "scale", "gain") == 1);
+    AssetDefinition v2 = AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 2);
+    v2.renames["scale"] = "gain";
+    registerAsset(v2.toText());
+    CHECK(updateAssetInstances(net) == 1);
+    CHECK(net.node(a).hasFloat("gain") && !net.node(a).hasFloat("scale"));
+    CHECK(net.node(a).keyframes("gain").size() == 2 && net.node(a).keyframes("gain")[1].value == 5.0f);
+
+    // Version 3 renames it again: an instance of version 1 follows the chain.
+    CHECK(renameSpareParameter(rig.net, rig.sub, "gain", "strength") == 1);
+    AssetDefinition v3 = AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 3);
+    v3.renames["scale"] = "gain";
+    v3.renames["gain"] = "strength";
+    registerAsset(v3.toText());
+
+    // A graph file saved with version 1 migrates by the renames when it is loaded.
+    Network loaded(1);
+    loadNetwork(loaded, oldGraph);
+    const NodeId b = loaded.findNode("inst");
+    CHECK(loaded.node(b).hasFloat("strength") && loaded.node(b).keyframes("strength").size() == 2);
+    CHECK(updateAssetInstances(net) == 1 && net.node(a).hasFloat("strength"));
+}
+
+TEST(renamingAPromotedParameterRewritesTheExpressionsThatReadIt) {
+    SubnetRig rig;
+    SubnetNode& sub = subnetOf(rig.net, rig.sub);
+    sub.addSpareFloat("amount", 0.5f);
+    sub.addSpareFloat("amountMore", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.amountMore + parent.amount");
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+
+    std::string message;
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "nope", "x"); }, &message) && message.find("not a promoted") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "amount", "amountMore"); }, &message) && message.find("already exists") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "amount", "bad name"); }));
+    CHECK(rig.inner().node(rig.xf).expression("tx") == "parent.amount * 10");
+
+    CHECK(renameSpareParameter(rig.net, rig.sub, "amount", "size") == 2);
+    CHECK(rig.inner().node(rig.xf).expression("tx") == "parent.size * 10");
+    CHECK(rig.inner().node(rig.xf).expression("ty") == "parent.amountMore + parent.size");
+    CHECK(sub.isSpare("size") && !sub.isSpare("amount") && sub.baseFloat("size") == 0.5f);
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+}
+
+TEST(renamingAParameterOfADefinitionRewritesItsContentsAndRecordsTheRename) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("other", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "renameParamAsset");
+    d.renames["first"] = "amount";
+
+    CHECK(d.renameParam("amount", "size") == 1);
+    CHECK(d.params[0].name == "size" && d.renames["amount"] == "size" && d.renames["first"] == "size");
+    CHECK(d.graphText.find("parent.size * 10") != std::string::npos && d.graphText.find("parent.amount") == std::string::npos);
+    CHECK(d.validate().empty());
+
+    AssetDefinition fresh = d;
+    CHECK(fresh.renameParam("size", "span", false) == 1 && fresh.renames.count("size") == 0 && fresh.renames["amount"] == "size");
+    std::string message;
+    CHECK(throwsRuntimeError([&] { d.renameParam("nope", "x"); }, &message) && message.find("not a parameter") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { d.renameParam("size", "other"); }, &message) && message.find("already exists") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { d.renameParam("size", "bad name"); }));
+    CHECK(d.params[0].name == "size");
+}
+
+TEST(applyingADefinitionReplacesTheContentsAndParametersOfASubnet) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("gone", 1.0f);
+    SubnetRig other;
+    subnetOf(other.net, other.sub).addSpareFloat("amount", 7.0f);
+    subnetOf(other.net, other.sub).addSpareFloat("added", 4.0f);
+    other.inner().node(other.xf).setFloat("tx", 9.0f);
+    const AssetDefinition d = AssetDefinition::fromNode(other.net, other.sub, "applyToAsset");
+
+    d.applyTo(rig.net, rig.sub);
+    CHECK(subnetOf(rig.net, rig.sub).isSpare("added") && !subnetOf(rig.net, rig.sub).isSpare("gone"));
+    CHECK(subnetOf(rig.net, rig.sub).baseFloat("amount") == 2.0f);   // an existing parameter keeps its value
+    CHECK(subnetOf(rig.net, rig.sub).baseFloat("added") == 4.0f);
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 9.0f);
+    CHECK(throwsRuntimeError([&] { d.applyTo(rig.net, rig.line); }));
+}
+
+TEST(theAssetLibraryInstallsSavesUpdatesAndUninstalls) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jitnodes_asset_library_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    AssetLibrary& library = AssetLibrary::instance();
+    int notified = 0;
+    const int listener = library.addListener([&] { ++notified; });
+
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "libraryTestAsset");
+    d.label = "Library test";
+    const std::string path = (dir / "libraryTestAsset.asset.json").string();
+    library.save(d, path);
+    CHECK(library.has("libraryTestAsset") && d.version == 1 && d.source == path && fs::exists(path) && notified == 1);
+
+    Network net(1);
+    const NodeId line = net.addNode("line");
+    const NodeId a = net.addNode("libraryTestAsset");
+    net.connect(line, a);
+    std::vector<AssetEntry> entries = library.list(&net);
+    const auto find = [&](const std::string& name) {
+        return std::find_if(entries.begin(), entries.end(), [&](const AssetEntry& e) { return e.name == name; });
+    };
+    CHECK(find("libraryTestAsset") != entries.end());
+    CHECK(find("libraryTestAsset")->instances == 1 && find("libraryTestAsset")->outdated == 0 && !find("libraryTestAsset")->embedded);
+    CHECK(find("libraryTestAsset")->label == "Library test" && find("libraryTestAsset")->params == std::vector<std::string>{"amount"});
+
+    // Saving again writes the next version and leaves the instance outdated until it is updated.
+    AssetDefinition edited = library.definition("libraryTestAsset");
+    edited.params[0].defaultValue = 4.0f;
+    library.save(edited, path);
+    CHECK(edited.version == 2 && NodeRegistry::instance().assetVersion("libraryTestAsset") == 2);
+    entries = library.list(&net);
+    CHECK(find("libraryTestAsset")->outdated == 1);
+    CHECK(library.updateInstances(net, "libraryTestAsset") == 1);
+    entries = library.list(&net);
+    CHECK(find("libraryTestAsset")->outdated == 0);
+
+    std::string message;
+    CHECK(throwsRuntimeError([&] { library.uninstall("libraryTestAsset", &net); }, &message) && message.find("1 instance") != std::string::npos);
+    net.removeNode(a);
+    library.uninstall("libraryTestAsset", &net);
+    CHECK(!library.has("libraryTestAsset") && fs::exists(path));
+    CHECK(throwsRuntimeError([&] { library.uninstall("libraryTestAsset"); }));
+
+    // Reinstalling from the file, reloading, and the directory scan.
+    library.installFile(path);
+    CHECK(library.has("libraryTestAsset") && library.source("libraryTestAsset") == path);
+    library.reload("libraryTestAsset");
+    {
+        AssetDefinition second = AssetDefinition::fromNode(rig.net, rig.sub, "libraryTestAssetTwo");
+        std::ofstream(dir / "two.asset.json", std::ios::binary) << second.toText();
+        std::ofstream(dir / "broken.asset.json", std::ios::binary) << "{ not an asset";
+        std::ofstream(dir / "ignored.txt", std::ios::binary) << "x";
+    }
+    size_t installed = 0;
+    const std::string error = library.installDirectory(dir.string(), &installed);
+    CHECK(installed == 2 && error.find("broken.asset.json") != std::string::npos);   // the broken file is reported, the others still load
+    CHECK(library.has("libraryTestAssetTwo"));
+    CHECK(library.installDirectory((dir / "missing").string()).empty());
+
+    // Apply registers in memory: the asset is "embedded" (no file) until it is saved.
+    AssetDefinition memory = AssetDefinition::fromNode(rig.net, rig.sub, "libraryMemoryAsset");
+    library.apply(memory);
+    entries = library.list();
+    CHECK(find("libraryMemoryAsset")->embedded);
+    AssetDefinition invalid = memory;
+    invalid.name = "line";
+    CHECK(throwsRuntimeError([&] { library.apply(invalid); }));
+    CHECK(throwsRuntimeError([&] { library.save(invalid, (dir / "line.asset.json").string()); }) && !fs::exists(dir / "line.asset.json"));
+    CHECK(throwsRuntimeError([&] { library.reload("libraryMemoryAsset"); }));
+
+    library.removeListener(listener);
+    const int before = notified;
+    library.uninstall("libraryMemoryAsset");
+    CHECK(notified == before);
+    for (const char* name : {"libraryTestAsset", "libraryTestAssetTwo"}) {
+        library.uninstall(name);
+    }
+    fs::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {

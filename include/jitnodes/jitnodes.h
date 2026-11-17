@@ -13,6 +13,8 @@
 #include "jitnodes/geo/svgExport.h"
 #include "jitnodes/geo/topology.h"
 #include "jitnodes/graph/animation.h"
+#include "jitnodes/graph/assetDefinition.h"
+#include "jitnodes/graph/assetLibrary.h"
 #include "jitnodes/graph/history.h"
 #include "jitnodes/graph/network.h"
 #include "jitnodes/graph/serialize.h"

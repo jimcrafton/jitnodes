@@ -69,6 +69,8 @@ add_library(jitnodes STATIC
   src/graph/loopNodes.cpp
   src/graph/subnet.cpp
   src/graph/serialize.cpp
+  src/graph/assetDefinition.cpp
+  src/graph/assetLibrary.cpp
   src/graph/history.cpp
 )
 add_library(jitnodes::jitnodes ALIAS jitnodes)

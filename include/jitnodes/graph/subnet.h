@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 
+#include <memory>
+
+#include "jitnodes/graph/assetDefinition.h"
 #include "jitnodes/graph/network.h"
 #include "jitnodes/graph/node.h"
 
@@ -47,10 +50,16 @@ public:
     void setRevision(size_t revision) { revision_ = revision; }
     int version() const { return version_; }  // assetVersion of the definition this instance was built from
     void setVersion(int version) { version_ = version; }
+    // What the definition says about the promoted parameters (labels, limits, groups), shared by all instances of one definition.
+    void setParams(std::shared_ptr<const std::vector<AssetParam>> params) { params_ = std::move(params); }
+    const AssetParam* assetParam(const std::string& name) const;
+    bool floatMinimum(const std::string& name, float& value) const override;
+    bool floatMaximum(const std::string& name, float& value) const override;
 
 private:
     size_t revision_ = 0;
     int version_ = 1;
+    std::shared_ptr<const std::vector<AssetParam>> params_;
 };
 
 }  // namespace jitnodes

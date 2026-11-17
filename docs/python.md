@@ -248,6 +248,36 @@ the parameter. Parameters of a node type are the ones that type declares; spare 
 `commit(label="")` (returns whether anything changed), `undo()`, `redo()`, `can_undo()`, `can_redo()`, `undo_label()`,
 `redo_label()`, `size()`. Handles to nodes survive undo as described above.
 
+### `jitnodes.assets`
+
+Asset definitions, the asset library and the rules for asset scripts (the C++ side is in [assets.md](assets.md)); hand written in
+`python/pyAssets.cpp`, `pyAssetCheck.cpp` and `pyGuard.cpp`.
+
+* `AssetDef` is a *value*: `AssetDef()`, `AssetDef.from_text(text)`, `assets.get(name)` or `assets.create(subnet_node, name=None, path=None)`
+  give a copy that does not touch the library until `apply()` (register in memory) or `save(path=None)` (write the file, one version up,
+  register). Fields: `name`, `label`, `category`, `description`, `author`, `icon`, `help`, `version`, `inputs`, `input_labels`, and read-only
+  `source`, `graph_text`. `params` is a list of live `AssetParam` objects of the definition (`d.params[0].label = "x"` edits it; also
+  `name`, `default`, `minimum`, `maximum`, `step`, `group`, `tooltip`); `add_param(name, default=0, label="", minimum=None, maximum=None,
+  step=0, group="", tooltip="")`, `param(name)`, `remove_param(name)`, `rename_param(old, new, record=True)` (rewrites `parent.<old>` in the
+  contents and returns how many expressions changed; with `record` the old name goes into `renames` for older instances, pass `False` for a
+  parameter no registered version has had). `renames`, `scripts` and `files` read as copies and are assigned as
+  whole dicts, or edited with `set_rename`, `set_script`/`remove_script`, `set_file`/`remove_file`. `validate()` returns `""` or the first
+  problem; `to_text()`.
+* Library: `list(network=None)` (`AssetInfo` with `name`, `label`, `category`, `version`, `inputs`, `params`, `source`, `embedded`, `instances`,
+  `outdated`), `has(name)`, `get(name)`, `install(path)`, `install_directory(folder)` (returns `(count, first_error)`), `reload(name)`,
+  `uninstall(name, network=None)` (refuses while the network has instances), `update_instances(network, name=None)`, `unlock(node)`,
+  `rename_parameter(node, old, new)` (rewrites `parent.<old>` inside the subnet; returns how many expressions changed).
+* Script rules: `check_scripts({name: source})` returns `(script, line, column, message)` for each problem. Every script must parse and may not
+  use `exec`, `eval`, `compile`, `__import__` or `getattr`/`setattr`/`delattr` with a computed name. `onFrameChanged` may not change its node
+  (`node`, `kwargs['node']`, and anything derived from it: a call such as `set_float` or `connect`, an assignment, `node >> x`, or a call of
+  a `module` function that does). `onVersionUpdated` may only read `old` and change `fresh`, and may not use `doc`, `network`, `selection`
+  or `curvy`. This is by syntax, so it cannot see everything; `AssetDef.validate()` (and so `apply` and `save`) includes it.
+* `with assets.restricted(node, event):` enforces the same rule while the block runs, on the handles: `onFrameChanged` raises
+  `PermissionError` for an edit of the node, of anything inside it, or of anything upstream of it (found by following the wiring, lazily and
+  cached until the structure changes); `onVersionUpdated` refuses every edit; library changes are refused in both; other events are not
+  restricted; a second block for the same node and event raises `RuntimeError`. Nodes downstream of the node, unrelated nodes and new nodes
+  may be changed. Applications run each event inside it (C++: `EventRestriction`, `pyGuard.h`).
+
 ### Values: `Geometry`, `Keyframe`, enums
 
 * `Geometry` is what `cook` returns: a read-only view of the node cache's result, safe to keep after the network is gone. Only the

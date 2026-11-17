@@ -117,6 +117,9 @@ public:
     void addSpareFloat(const std::string& name, float defaultValue);
     // Drops a spare parameter with its expression and keyframes; false when there is no such spare parameter.
     bool removeSpareFloat(const std::string& name);
+    // Gives a spare parameter another name and keeps its value, expression, keyframes and tags. Throws std::runtime_error when `from` is not a spare
+    // parameter or `to` already exists. Expressions elsewhere that read it (`parent.<from>` inside a subnet) are not changed here, see renameSpareParameter.
+    void renameSpareFloat(const std::string& from, const std::string& to);
     // The limits a node type gives a float (a wrangle's `| gain(0, 10) |`): what a typed or dragged value in an editor is kept within, and
     // the range of a slider when both exist. They are not enforced when the node cooks (an expression may go beyond them). False when
     // there is no such limit; Python gets `ok, value = node.float_minimum(name)`.

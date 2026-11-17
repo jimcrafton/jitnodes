@@ -75,6 +75,29 @@ public:
         return it == assets_.end() ? 0 : it->second.revision;
     }
 
+    // Parameter renames of an asset type: old name to new name, accumulated over its versions. An instance built from an older version takes the
+    // value, expression or keyframes of `old` into `new` when it is brought up to date (a chain a -> b -> c is followed). Set by registerAsset.
+    void setAssetRenames(const std::string& typeName, std::map<std::string, std::string> renames) {
+        auto it = assets_.find(typeName);
+        if (it != assets_.end()) {
+            it->second.renames = std::move(renames);
+        }
+    }
+    const std::map<std::string, std::string>* assetRenames(const std::string& typeName) const {
+        auto it = assets_.find(typeName);
+        return it == assets_.end() || it->second.renames.empty() ? nullptr : &it->second.renames;
+    }
+    // Removes an asset type: its definition, creator and migration hook. Instances already in a graph keep working (they hold their own contents)
+    // but can no longer be loaded from a file unless the file embeds the definition. False when there is no such asset.
+    bool unregisterAsset(const std::string& typeName) {
+        if (assets_.erase(typeName) == 0) {
+            return false;
+        }
+        creators_.erase(typeName);
+        migrations_.erase(typeName);
+        return true;
+    }
+
     // Migration hook of an asset type, called when an instance built from an older assetVersion is brought up to
     // date (see updateAssetInstances and loadNetwork). Independent of registerAsset; an empty function removes it.
     void setAssetMigration(const std::string& typeName, AssetMigrationFn fn) {
@@ -91,6 +114,7 @@ private:
         std::string text;
         int version = 1;
         size_t revision = 0;
+        std::map<std::string, std::string> renames;
     };
 
     std::map<std::string, Creator> creators_;
