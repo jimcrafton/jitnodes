@@ -46,7 +46,7 @@ public:
         if (event_ == "onFrameChanged") {
             mode = EventRestriction::Mode::instanceAndInputs;
         } else if (event_ == "onVersionUpdated") {
-            mode = EventRestriction::Mode::readOnly;
+            mode = EventRestriction::Mode::onlyThisNode;
         } else {
             return;
         }

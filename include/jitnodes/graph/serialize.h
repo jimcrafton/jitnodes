@@ -54,6 +54,10 @@ void loadGraphText(Network& net, const std::string& graphText);
 size_t updateAssetInstances(Network& net, const std::string& typeName = {});
 size_t outdatedAssetInstances(const Network& net, const std::string& typeName = {});
 
+// Copies the float parameters of `from` (value, user tags, expression or keyframes) and the string parameters that `to` has onto `to`. A float that
+// `to` lacks is skipped, or with `addMissing` added to it as a spare parameter. Used to hand a migration script scratch copies of two nodes.
+void copyNodeParameters(const Node& from, Node& to, bool addMissing);
+
 // Replaces an asset instance by an ordinary subnet (same id, name and wiring) holding a copy of the asset's contents and
 // promoted parameters with the instance's values, so the contents can be edited. Throws std::runtime_error when the node is
 // not an asset instance or has more than four inputs. Not allowed while the network cooks.

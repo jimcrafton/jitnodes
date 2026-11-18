@@ -3571,6 +3571,64 @@ TEST(assetMigrationHooksUpgradeInstancesInPlaceAndOnLoad) {
     registry.setAssetMigration("migAsset", nullptr);
 }
 
+TEST(assetMigrationFallbackServesTypesWithoutAHookOfTheirOwn) {
+    auto define = [](int version, const std::string& param) {
+        SubnetRig rig;
+        SubnetNode& s = subnetOf(rig.net, rig.sub);
+        s.addSpareFloat(param, 1.0f);
+        rig.inner().node(rig.xf).setExpression("tx", "parent." + param);
+        registerAsset(saveAsset(rig.net, rig.sub, "fallbackAsset", version));
+    };
+    NodeRegistry& registry = NodeRegistry::instance();
+    int fallbackCalls = 0;
+    int ownCalls = 0;
+    registry.setAssetMigrationFallback([&](AssetUpgrade& up) {
+        ++fallbackCalls;
+        up.fresh.setFloat("gain", up.old.baseFloat("amount") * 10.0f);
+    });
+    define(1, "amount");
+    Network net;
+    const NodeId a = net.addNode("fallbackAsset", "a");
+    net.node(a).setFloat("amount", 2.0f);
+    const std::string oldText = saveNetwork(net);
+
+    define(2, "gain");
+    CHECK(updateAssetInstances(net) == 1 && fallbackCalls == 1);
+    CHECK_NEAR(net.node(a).baseFloat("gain"), 20.0f);
+
+    Network loaded(1);
+    loadNetwork(loaded, oldText);
+    const int afterLoad = fallbackCalls;   // a load runs the hook twice (once to validate)
+    CHECK(afterLoad >= 2);
+    CHECK_NEAR(loaded.node(loaded.findNode("a")).baseFloat("gain"), 20.0f);
+
+    registry.setAssetMigration("fallbackAsset", [&](AssetUpgrade&) { ++ownCalls; });
+    define(3, "gain");
+    CHECK(updateAssetInstances(net) == 1 && ownCalls == 1 && fallbackCalls == afterLoad);
+
+    registry.setAssetMigration("fallbackAsset", nullptr);
+    registry.setAssetMigrationFallback(nullptr);
+    CHECK(registry.assetMigration("fallbackAsset") == nullptr);
+}
+
+TEST(copyNodeParametersCopiesWhatTheTargetHasAndOptionallyTheRest) {
+    Network net;
+    const NodeId from = net.addNode("null", "from");
+    const NodeId to = net.addNode("null", "to");
+    net.node(from).addSpareFloat("scale", 5.0f);
+    net.node(from).addSpareFloat("kept", 1.0f);
+    net.node(from).setExpression("kept", "frame");
+    net.node(to).addSpareFloat("kept", 0.0f);
+
+    copyNodeParameters(net.node(from), net.node(to), false);
+    CHECK(!net.node(to).hasFloat("scale"));
+    CHECK(net.node(to).expression("kept") == "frame");
+
+    copyNodeParameters(net.node(from), net.node(to), true);
+    CHECK(net.node(to).hasFloat("scale") && net.node(to).isSpare("scale"));
+    CHECK_NEAR(net.node(to).baseFloat("scale"), 5.0f);
+}
+
 TEST(nodePositionsRoundTripAndFollowUndo) {
     Network net(1);
     NodeId a = net.addNode("line", "a");

@@ -104,10 +104,14 @@ public:
         if (fn) migrations_[typeName] = std::move(fn);
         else migrations_.erase(typeName);
     }
+    // The hook of the type, else the fallback (null when neither exists). The fallback is for an application that decides per call what to
+    // do for an asset (it looks the asset up itself), which also covers assets a graph file embeds and registers while it loads.
     const AssetMigrationFn* assetMigration(const std::string& typeName) const {
         auto it = migrations_.find(typeName);
-        return it == migrations_.end() ? nullptr : &it->second;
+        if (it != migrations_.end()) return &it->second;
+        return fallbackMigration_ ? &fallbackMigration_ : nullptr;
     }
+    void setAssetMigrationFallback(AssetMigrationFn fn) { fallbackMigration_ = std::move(fn); }
 
 private:
     struct Asset {
@@ -120,6 +124,7 @@ private:
     std::map<std::string, Creator> creators_;
     std::map<std::string, Asset> assets_;
     std::map<std::string, AssetMigrationFn> migrations_;
+    AssetMigrationFn fallbackMigration_;
 };
 
 void registerBuiltinNodes();

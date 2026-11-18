@@ -927,6 +927,23 @@ void applyAssetRenames(const Node& from, Node& to) {
     }
 }
 
+}  // namespace
+
+void copyNodeParameters(const Node& from, Node& to, bool addMissing) {
+    for (const std::string& name : from.floatNames()) {
+        if (!to.hasFloat(name)) {
+            if (!addMissing) continue;
+            to.addSpareFloat(name, 0.0f);
+        }
+        copyFloatParameter(from, name, to, name);
+    }
+    const std::vector<std::string> kept = to.stringNames();
+    for (const std::string& name : from.stringNames())
+        if (std::find(kept.begin(), kept.end(), name) != kept.end()) to.setString(name, from.getString(name));
+}
+
+namespace {
+
 void transferParameters(const Node& from, Node& to) {
     to.setTags(from.tags());
     for (const std::string& name : from.floatNames()) {

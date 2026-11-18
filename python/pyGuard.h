@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_set>
 
 #include "jitnodes/graph/network.h"
@@ -19,13 +20,16 @@ bool isMutatingName(const std::string& name);
 //   Mode::instanceAndInputs (onFrameChanged): the instance, anything inside it, and anything it reads from. What the instance reads from is
 //     found lazily, on the first edit of some other node of its network, by following the wiring upstream; it is cached until the network's
 //     structure changes. Nodes that only come after the instance, and everything else, may be edited.
-//   Mode::readOnly (onVersionUpdated): nothing in any network.
+//   Mode::readOnly: nothing in any network.
+//   Mode::onlyThisNode (onVersionUpdated, where `instance` is the scratch copy of the new instance): that node may be edited; nothing else in any
+//     network may be, and no node may be added.
 // Whatever the mode, the asset library cannot be changed from inside an event. An event cannot start itself: a second restriction for the same
 // instance and event throws std::runtime_error. Restrictions nest (an event can make another one run); every active one is checked.
-// Main thread only (scripts reach the document from there, see curvy's script dispatch).
+// A restriction applies to the thread that made it: a migration script that runs on a document-loading thread must not restrict a script that
+// runs on another one at the same time (they take turns on the interpreter lock).
 class EventRestriction {
 public:
-    enum class Mode { instanceAndInputs, readOnly };
+    enum class Mode { instanceAndInputs, readOnly, onlyThisNode };
 
     // `instance` is a node of `network` (a subnet or asset instance).
     EventRestriction(Network& network, NodeId instance, std::string event, Mode mode);
@@ -48,6 +52,7 @@ private:
     Mode mode_;
     Network* inner_;
     std::weak_ptr<void> alive_;
+    std::thread::id thread_;
     std::unordered_set<NodeId> upstream_;
     std::uint64_t upstreamRevision_ = 0;
     bool upstreamBuilt_ = false;
