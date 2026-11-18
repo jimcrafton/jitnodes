@@ -400,7 +400,7 @@ public:
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) override {
         if (!pythonNodeAllowed(*this)) {
-            throw std::runtime_error("Python nodes are not allowed here: the application has not trusted this code");
+            throw std::runtime_error(pythonNodeNotAllowedMessage);
         }
         const std::string signature = runSignature(inputs);
         if (!stoppedSignature_.empty() && signature == stoppedSignature_) {

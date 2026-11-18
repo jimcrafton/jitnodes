@@ -15,6 +15,10 @@ namespace jitnodes::python {
 // code does; allowing a node means trusting its code.
 using PythonNodePolicy = std::function<bool(const Node&)>;
 
+// What the cook fails with while the policy refuses a node: an editor recognises a refusal by this text (it starts the message) and can offer to
+// allow the code.
+inline constexpr const char* pythonNodeNotAllowedMessage = "Python nodes are not allowed here: the application has not trusted this code";
+
 // An empty policy allows nothing (the default).
 void setPythonNodePolicy(PythonNodePolicy policy);
 bool pythonNodeAllowed(const Node& node);
