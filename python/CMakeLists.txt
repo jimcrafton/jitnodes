@@ -20,7 +20,7 @@ add_subdirectory(${JITNODES_PYBIND11_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pybind11)
 
 include(${JITNODES_NEWUI_DIR}/cmake/ScriptGen.cmake)
 
-add_library(jitnodesPython STATIC pyHandles.cpp pyArrays.cpp pyRuntime.cpp pyGuard.cpp pyAssets.cpp pyAssetCheck.cpp)
+add_library(jitnodesPython STATIC pyHandles.cpp pyArrays.cpp pyRuntime.cpp pyGuard.cpp pyAssets.cpp pyAssetCheck.cpp pyPythonNode.cpp)
 target_link_libraries(jitnodesPython PUBLIC jitnodes::jitnodes pybind11::pybind11)
 target_include_directories(jitnodesPython PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(MSVC)

@@ -2,6 +2,7 @@
 
 #include "pyAssets.h"
 #include "pyGuard.h"
+#include "pyPythonNode.h"
 
 #include <algorithm>
 #include <functional>
@@ -514,6 +515,7 @@ void registerModule(py::module_& module) {
     registerNetwork(module);
     registerHistory(module);
     registerAssets(module);
+    registerPythonNode(module);
 }
 
 py::object wrapNetwork(Network& network) {

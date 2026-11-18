@@ -292,6 +292,77 @@ Asset definitions, the asset library and the rules for asset scripts (the C++ si
 * `Keyframe()` has `time`, `value`, `interp`; `node.set_keyframes("count", [k1, k2])` animates a parameter.
 * Enums: `AttribClass`, `AttribType`, `PrimKind`, `KeyInterp` (for example `KeyInterp.smooth`).
 
+### The `python` node and `MutableGeometry`
+
+A node of type `python` (registered with the module, so the type exists once `jitnodes` is imported) runs the text of its `code` parameter every time
+it cooks. It has one optional input, the float parameters `a b c d` (more can be added as spare parameters) and any string parameters. The code runs in
+a fresh namespace each cook (nothing is kept between cooks), with:
+
+| Name | What |
+|---|---|
+| `geo` | a `jitnodes.MutableGeometry`: a copy of the first input (empty with no input). Whatever `geo` holds when the code ends is the node's result. |
+| `inputs` | list of the connected inputs as read-only `Geometry` |
+| `params` | dict of every float parameter (`params['a']`, spare ones included), resolved for this cook |
+| `strings` | dict of the string parameters other than `code` |
+
+```python
+x = geo.point_attrib("x")        # a writable NumPy view, no copy
+x *= 2
+geo.add_attrib(jitnodes.AttribClass.point, "alpha")
+geo.point_attrib("alpha")[:] = 0.5
+```
+
+`MutableGeometry` has `point_count()`, `primitive_count()`, `resize_points(n)`, `add_attrib(cls, name, type=float32)`, `has_attrib`, `attrib_names`,
+`attrib(cls, name)`, `point_attrib(name)`, `prim_attrib(name)` (writable views), `set_detail`, `detail`, `details`. It is valid for the cook only.
+
+* **Primitives:** `add_primitive(start, count, closed=False, kind=PrimKind.polyline, key="")` adds a primitive over points that exist (a cubic one
+  needs 3n+1 points, or 3n when closed; a bad range is refused at once). `primitive(i)` and `primitives()` give `(start, count, closed, kind)`.
+  A non-empty `key` makes it part of the shape with that key (primitives of one shape must follow each other); `shape_key(i)` and
+  `set_shape_key(i, key)` read and set it. The primitive attributes grow with each primitive, so `add_primitive` raises while an array from
+  `prim_attrib`/`attrib(primitive, ...)` is alive (like `resize_points` for point arrays).
+* **Strings:** create the attribute with `add_attrib(cls, name, AttribType.string)`; `set_string(cls, name, index, text)` and
+  `set_string_values(cls, name, [texts])` (one per element) write it, `string_values(cls, name)` and `strings(cls, name)` (the table) read it.
+  A view of a string attribute shows the ids (writable; an id outside the table fails the cook). A table keeps texts that no element uses any more.
+* When the cook ends the result is checked: string ids, shape keys (a key that comes back after another shape's run, or a split shape, fails the
+  cook) and every primitive's range against the points (points removed after a primitive was added fail it).
+
+Rules that keep the cache and the memory safe:
+
+* The attribute storage is shared with the input until the first write; asking for a view copies it first, so a script never changes the input
+  geometry or another node's cached result.
+* `resize_points` raises while a view from `point_attrib`/`attrib` is still referenced (the storage would move). `del` the array and any slice
+  of it first, or resize before taking views.
+* When the cook ends every view that is still referenced becomes read-only, and if the script kept one (a global, a slice) the node returns an
+  unshared copy of the geometry, so a later write through the kept array cannot reach the cached result.
+* Errors in the code (with the traceback) fail the cook like any node error.
+
+**Trust.** Code in a graph file is somebody else's code, so a python node does not run until the application allows it: `jitnodes.allow_python_nodes(True)`
+from Python (the default is False), or `jitnodes::python::setPythonNodePolicy(fn)` from C++, where `fn(const Node&)` is asked on every cook (from a
+worker thread, so it must be thread safe) and can say yes for some nodes. Until then the node fails with "Python nodes are not allowed here".
+Nothing is filtered or sandboxed (Python cannot be restricted); like Blender's "Auto Run Python Scripts", allowing means trusting the code.
+
+**Threads.** Nodes cook on worker threads, and the code needs the interpreter lock. `Network::setCookThreadHooks` (installed by the module) makes
+the thread that starts a cook give the lock up while the workers run, so a host that holds the lock all the time (curvy's main thread) does not
+deadlock. Python nodes in one cook level run one after the other, since they share the lock.
+
+**Time limit and cancel.** While a python node runs, one watchdog thread (started on the first run) looks every 20 ms and, when any of these is true,
+raises `jitnodes.NodeInterrupted` in the node's thread (`PyThreadState_SetAsyncExc`):
+
+* the node has run longer than the limit, `setPythonNodeTimeLimit` / `jitnodes.set_python_node_time_limit(seconds)` (default 10 s, 0 = none). The
+  time counts from the moment the node holds the interpreter, not from when it was queued behind other python nodes. The cook fails with
+  "Python node stopped: it ran longer than N seconds";
+* `Network::cancel()` was called: the cook ends as cancelled (`CookCancelled`), not as a failure, and nothing is remembered against the node;
+* the host's check, `setPythonNodeInterruptCheck(fn)` (polled from the watchdog thread, so thread safe and quick), says yes: the cook fails with
+  "Python node stopped" (curvy answers yes while Esc is held).
+
+`NodeInterrupted` derives from `BaseException`, so `except Exception` in the script does not swallow it (it is raised again every 250 ms for a script
+that catches `BaseException` too). Python delivers it between bytecodes: a call that does not return to Python (`time.sleep`, one very large NumPy
+operation) is stopped when it returns. An exception raised just as the node ends is withdrawn, so it cannot fire in the next Python code.
+
+A node that was stopped by the limit or the host does not run again until its code, a parameter, an input or the limit changes: it fails at once with
+the same message plus "(change the code, a parameter or an input to run it again)". Without that, every repaint of a canvas would run the endless
+loop again for the whole limit. A cancel is not remembered.
+
 ### Errors
 
 | Exception | When |
@@ -402,12 +473,12 @@ The output of the build also contains `jitnodes.<abi>.pyd` (import it with the f
   parameters are `Any` through `__getattr__`/`__setattr__`. The `Geometry` stub includes the NumPy methods. If a result or argument translation
   is added to `pyHandles.cpp`, add the name to the tables at the top of the script (`test_stubs.py` checks that every declared member exists).
   Parameter names of a node type are not known to the stub, so `node.count` is `Any`.
-* **Attribute arrays are read-only.** `geometry.point_attrib("x")`, `prim_attrib(name)` and `attrib(AttribClass, name)` return zero-copy, non-writeable NumPy views (float32, or int32 for int and string attributes; `strings()` and `string_values()` decode string ids). Each view keeps its geometry alive through a capsule, so it stays valid after the network is gone. NumPy is only needed when a view is requested (the module imports without it; the call raises ImportError). Writable arrays are not done: they would dangle when the point count changes. Detail values come from `details()`/`detail()`.
+* **Attribute arrays are read-only.** `geometry.point_attrib("x")`, `prim_attrib(name)` and `attrib(AttribClass, name)` return zero-copy, non-writeable NumPy views (float32, or int32 for int and string attributes; `strings()` and `string_values()` decode string ids). Each view keeps its geometry alive through a capsule, so it stays valid after the network is gone. NumPy is only needed when a view is requested (the module imports without it; the call raises ImportError). Writable arrays exist only inside a `python` node, on its `MutableGeometry` (see "The `python` node"). Detail values come from `details()`/`detail()`.
 * **The surface is wide.** Everything public on `Network` and `Node` is forwarded, including engine internals such as
   `note_touched` or `take_uid`. Mark more members `ignore=true` to hide them.
 * **Subnets** are reachable only as nodes. `SubnetNode` and `AssetNode` are not bound, so a script cannot edit a subnet's inner
   network yet.
-* **No Python-authored nodes** and no undo transactions (`with doc.transaction(): ...`) yet; see
-  `curvy/docs/py_scripting_plan.md` for the plan.
+* **The python node** (see above) has no time limit or cancel, runs one at a time (shared interpreter lock), has the limits above (not a sandbox), and is not allowed by default. A document that holds python nodes needs the `jitnodes` module imported before it is loaded
+  (the type is registered by the module). Undo transactions are handled by curvy's `doc.transaction()`, not here.
 * **Not thread safe**, see above. Free-threaded Python builds are not supported or tested.
 * **Windows x64 only** so far (Python SDK, venv path and the MSVC build were set up and tested there).

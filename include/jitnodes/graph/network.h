@@ -259,9 +259,20 @@ public:
     void setThreadCount(size_t threads);
     size_t threadCount() const { return pool()->concurrency(); }
 
+    // Called around the parallel part of every cook, on the thread that started the cook. `leave` may return a token that `enter` receives
+    // back; the Python module uses them to give up the interpreter lock while worker threads run nodes (a thread that holds the lock
+    // and waits for workers that need it would never finish). Set once at startup, not during a cook.
+    struct CookThreadHooks {
+        std::function<void*()> leave;
+        std::function<void(void*)> enter;
+    };
+    static void setCookThreadHooks(CookThreadHooks hooks);
+
     // Callable from any thread: makes the cook in progress throw CookCancelled before it starts its next node.
     // Nodes that already finished keep their results; ignored when no cook is running.
     void cancel();
+    // True from cancel() until the cook ends; a node that cannot poll (a running Python script) is stopped from another thread by it.
+    bool isCancelRequested() const { return cancelRequested(); }
 
     // Progress of the cook in progress, for a status display. Set it before cooking, not during. The callback is called on whatever thread
     // runs a node (independent branches run in parallel, so calls can overlap: keep it short and thread-safe), when a node starts (fraction 0),

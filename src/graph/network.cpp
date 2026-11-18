@@ -264,6 +264,21 @@ std::string Network::uniqueName(const std::string& base) const {
 
 namespace {
 
+std::mutex& cookThreadHooksMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+Network::CookThreadHooks& cookThreadHooksStorage() {
+    static Network::CookThreadHooks hooks;
+    return hooks;
+}
+
+Network::CookThreadHooks cookThreadHooks() {
+    std::lock_guard<std::mutex> lock(cookThreadHooksMutex());
+    return cookThreadHooksStorage();
+}
+
 bool identifierChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
 // Replaces the node part of `oldName.param` symbols; other identifiers and numbers are left alone.
@@ -942,8 +957,24 @@ GeometryHandle Network::cook(NodeId id) {
 
     std::vector<std::vector<const CookTask*>> levels(static_cast<size_t>(maxLevel) + 1);
     for (const auto& entry : tasks) levels[static_cast<size_t>(entry.second.level)].push_back(&entry.second);
+    const Network::CookThreadHooks hooks = cookThreadHooks();
+    void* token = hooks.leave ? hooks.leave() : nullptr;
+    struct Reenter {
+        const Network::CookThreadHooks& hooks;
+        void* token;
+        ~Reenter() {
+            if (hooks.enter) {
+                hooks.enter(token);
+            }
+        }
+    } reenter{hooks, token};
     for (const auto& level : levels) pool()->parallelFor(level.size(), [&](size_t i) { runTask(*level[i]); });
     return node(id).cooked_;
+}
+
+void Network::setCookThreadHooks(CookThreadHooks hooks) {
+    std::lock_guard<std::mutex> lock(cookThreadHooksMutex());
+    cookThreadHooksStorage() = std::move(hooks);
 }
 
 void Network::cancel() {
