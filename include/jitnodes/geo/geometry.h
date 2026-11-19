@@ -102,6 +102,11 @@ public:
     // "" when the primitive is anonymous, has no key attribute, or does not exist.
     const std::string& shapeKey(size_t prim) const;
     bool hasShapeKeys() const { return findAttrib(AttribClass::primitive, shapeKeyAttrib) != nullptr; }
+    // True when some primitive has no key (a geometry without primitives has none).
+    bool hasAnonymousPrimitives() const;
+    // Gives every anonymous primitive the key `base` + "#p" + its index, so each becomes a shape of its own with a key that stays the same
+    // while the node keeps making the same primitives. Returns how many it stamped.
+    size_t stampAnonymousShapes(const std::string& base);
     // The shapes in primitive order: one pass over the key column.
     std::vector<ShapeRange> shapes() const;
     // The shape (an index into shapes()) of every primitive.

@@ -88,6 +88,24 @@ const std::string& Geometry::shapeKey(size_t prim) const {
     return a->stringAt(prim);
 }
 
+bool Geometry::hasAnonymousPrimitives() const {
+    if (primitives_.empty()) return false;
+    if (!hasShapeKeys()) return true;
+    for (size_t i = 0; i < primitives_.size(); ++i)
+        if (shapeKey(i).empty()) return true;
+    return false;
+}
+
+size_t Geometry::stampAnonymousShapes(const std::string& base) {
+    size_t stamped = 0;
+    for (size_t i = 0; i < primitives_.size(); ++i) {
+        if (!shapeKey(i).empty()) continue;
+        setShapeKey(i, base + "#p" + std::to_string(i));
+        ++stamped;
+    }
+    return stamped;
+}
+
 std::vector<ShapeRange> Geometry::shapes() const {
     const size_t n = primitives_.size();
     std::vector<ShapeRange> out;

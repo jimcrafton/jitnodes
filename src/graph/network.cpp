@@ -801,6 +801,11 @@ void Network::runTask(const CookTask& task) {
         } else {
             CookContext ctx{compiler(), time_, pool(), &timings, this, task.tail};
             result = tail.cook(ctx, inputs);
+            if (result && stampAnonymousShapes() && result->hasAnonymousPrimitives()) {
+                auto stamped = std::make_shared<Geometry>(*result);
+                stamped->stampAnonymousShapes(ctx.shapeKey());
+                result = stamped;
+            }
         }
         for (NodeId a : task.absorbed) node(a).stats_.fusedInto = task.tail;
     }

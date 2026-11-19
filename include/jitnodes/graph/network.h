@@ -297,6 +297,10 @@ public:
 
     // Records one event per cooked task (node, thread, start, duration) while enabled; a subnet's network records into its root's.
     // writeTrace emits Chrome trace JSON for chrome://tracing and Perfetto. Recording does not change any result.
+    // Off by default (geometry that never gets keys allocates nothing). When on, a node whose output has anonymous primitives gets them
+    // stamped with `<node key>#p<index>` right after it cooks, so every shape that leaves the graph can be selected and bound by key.
+    void setStampAnonymousShapes(bool enabled) { root().stampAnonymousShapes_ = enabled; }
+    bool stampAnonymousShapes() const { return root().stampAnonymousShapes_.load(); }
     void setTraceEnabled(bool enabled) { root().traceEnabled_ = enabled; }
     bool traceEnabled() const { return root().traceEnabled_.load(); }
     void clearTrace();
@@ -437,6 +441,7 @@ private:
     ProgressCallback progressCallback_;
     std::unique_ptr<ThreadPool> pool_;
     std::atomic<bool> traceEnabled_{false};
+    std::atomic<bool> stampAnonymousShapes_{false};
     mutable std::mutex traceMutex_;
     std::vector<TraceEvent> traceEvents_;
 };

@@ -318,7 +318,9 @@ geo.point_attrib("alpha")[:] = 0.5
 * **Primitives:** `add_primitive(start, count, closed=False, kind=PrimKind.polyline, key="")` adds a primitive over points that exist (a cubic one
   needs 3n+1 points, or 3n when closed; a bad range is refused at once). `primitive(i)` and `primitives()` give `(start, count, closed, kind)`.
   A non-empty `key` makes it part of the shape with that key (primitives of one shape must follow each other); `shape_key(i)` and
-  `set_shape_key(i, key)` read and set it. The primitive attributes grow with each primitive, so `add_primitive` raises while an array from
+  `set_shape_key(i, key)` read and set it. A primitive left without a key stays anonymous in plain jitnodes; in an application that turns on
+  `Network::setStampAnonymousShapes` (curvy does) the node gets `<node key>#p<index>` for it right after the cook, so every shape can be
+  selected and bound; give a key yourself when the shape must keep its identity if the script's primitive order changes. The primitive attributes grow with each primitive, so `add_primitive` raises while an array from
   `prim_attrib`/`attrib(primitive, ...)` is alive (like `resize_points` for point arrays).
 * **Strings:** create the attribute with `add_attrib(cls, name, AttribType.string)`; `set_string(cls, name, index, text)` and
   `set_string_values(cls, name, [texts])` (one per element) write it, `string_values(cls, name)` and `strings(cls, name)` (the table) read it.
