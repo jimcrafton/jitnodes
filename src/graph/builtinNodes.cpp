@@ -80,6 +80,12 @@ public:
         declareFloat("skew", 0.0f);
         declareFloat("px", 0.0f);
         declareFloat("py", 0.0f);
+        for (const char* length : {"tx", "ty", "px", "py"}) {
+            tagParam(length, "quantity:length");
+        }
+        for (const char* angle : {"rot", "skew"}) {
+            tagParam(angle, "quantity:angle");
+        }
         spec_ = parseWrangle("_nx = a * x + c * y + e; _ny = b * x + d * y + f; x = _nx; y = _ny;", {"a", "b", "c", "d", "e", "f"});
     }
 
