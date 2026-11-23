@@ -41,7 +41,8 @@ RenderSettings renderSettingsFromDetails(const Geometry& geo, int width = 0, int
 // rendering sums the sprites in linear light and tone maps the result; otherwise sprites are composited in index order over the background.
 Image renderSplats(const Geometry& geo, const RenderSettings& settings, ThreadPool* pool = nullptr);
 
-// Writes an uncompressed PNG; throws when the file cannot be written.
-void writePng(const std::string& path, const Image& image);
+// Writes an uncompressed PNG; throws when the file cannot be written. The pixels are premultiplied 0xAARRGGBB. Without `withAlpha` the file is
+// RGB and holds the premultiplied colour as it is (the picture over black); with it the file is RGBA and holds straight (unpremultiplied) colour.
+void writePng(const std::string& path, const Image& image, bool withAlpha = false);
 
 }  // namespace jitnodes

@@ -37,8 +37,11 @@ add_library(jitnodes STATIC
   src/core/stackGuard.cpp
   src/geo/geometry.cpp
   src/geo/topology.cpp
+  src/geo/pathMotion.cpp
   src/geo/svgExport.cpp
   src/geo/raster.cpp
+  src/geo/floatImage.cpp
+  src/geo/exrFile.cpp
   src/geo/geoFile.cpp
   src/jit/expr.cpp
   src/jit/exprParser.cpp
@@ -56,6 +59,8 @@ add_library(jitnodes STATIC
   src/graph/generateNodes.cpp
   src/graph/fxNodes.cpp
   src/graph/patternNodes.cpp
+  src/graph/strokeNodes.cpp
+  src/graph/ramp.cpp
   src/graph/particleNodes.cpp
   src/graph/gasSolver.cpp
   src/graph/gasNodes.cpp
@@ -78,7 +83,7 @@ add_library(jitnodes::jitnodes ALIAS jitnodes)
 target_include_directories(jitnodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(jitnodes PUBLIC asmjit::asmjit)
-target_include_directories(jitnodes SYSTEM PRIVATE ${JITNODES_JSON5_DIR})
+target_include_directories(jitnodes SYSTEM PRIVATE ${JITNODES_JSON5_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tinyexr)
 
 if(MSVC)
   target_compile_options(jitnodes PRIVATE /W4 /permissive- /utf-8)

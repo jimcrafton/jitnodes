@@ -316,6 +316,7 @@ void registerBuiltinNodes() {
     registerGenerateNodes();
     registerFxNodes();
     registerPatternNodes();
+    registerStrokeNodes();
     registerParticleNodes();
     registerGasNodes();
     registerFieldNodes();

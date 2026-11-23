@@ -85,6 +85,8 @@ public:
     // Creates an attribute of the same type as `like` (a string attribute starts with like's table) unless the name exists. Use it, not
     // attrib(..., like.type()), to make an attribute that will receive like's values, so string ids keep their meaning.
     AttribArray& attribLike(AttribClass cls, const std::string& name, const AttribArray& like);
+    // Removes an attribute; false when there is none. The point attributes x and y cannot be removed (std::runtime_error).
+    bool removeAttrib(AttribClass cls, const std::string& name);
     // Throws when a string attribute holds an id that is not in its table.
     void checkStrings() const;
     const AttribArray* findAttrib(AttribClass cls, const std::string& name) const;

@@ -205,6 +205,12 @@ void Network::replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vec
             slot(in);
             if (reaches(in, id)) throw std::runtime_error("new inputs of " + s.node->name() + " would create a cycle");
         }
+        for (size_t i = 0; i < inputs->size(); ++i) {
+            const NodeId in = (*inputs)[i];
+            if (in != invalidNodeId && slot(in).node->outputType() != fresh->inputType(static_cast<int>(i))) {
+                throw std::runtime_error("new inputs of " + s.node->name() + ": input " + std::to_string(i) + " has the wrong type");
+            }
+        }
         for (NodeId in : s.inputs)
             if (in != invalidNodeId) {
                 removeEdge(in, id);
@@ -348,10 +354,15 @@ bool Network::reaches(NodeId from, NodeId target) const {
 }
 
 void Network::connect(NodeId from, NodeId to, int inputIndex) {
-    slot(from);
+    const Slot& src = slot(from);
     Slot& dst = slot(to);
     if (inputIndex < 0 || (static_cast<size_t>(inputIndex) >= dst.inputs.size() && !dst.node->hasVariableInputs()))
         throw std::runtime_error("input index out of range on " + dst.node->name());
+    if (src.node->outputType() != dst.node->inputType(inputIndex)) {
+        const auto typeText = [](PortType type) { return type == PortType::image ? "image" : "geometry"; };
+        throw std::runtime_error(std::string("cannot wire ") + typeText(src.node->outputType()) + " output of " + src.node->name() + " to " +
+                                 typeText(dst.node->inputType(inputIndex)) + " input " + std::to_string(inputIndex) + " of " + dst.node->name());
+    }
     if (reaches(from, to)) throw std::runtime_error("connection would create a cycle");
     if (static_cast<size_t>(inputIndex) >= dst.inputs.size()) dst.inputs.resize(static_cast<size_t>(inputIndex) + 1, invalidNodeId);
     const NodeId previous = dst.inputs[static_cast<size_t>(inputIndex)];
@@ -432,6 +443,7 @@ void Network::markDownstream(NodeId id, std::unordered_set<NodeId>& seen) {
         if (current != id && n.frozen_ && !n.bypassed_) continue;
         n.dirty_ = true;
         n.cooked_.reset();
+        n.cookedImage_.reset();
         if (auto it = consumers_.find(current); it != consumers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
         if (auto it = referrers_.find(n.name()); it != referrers_.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
     }
@@ -442,6 +454,7 @@ void Network::markAllDirty() {
     for (auto& entry : slots_) {
         entry.second.node->dirty_ = true;
         entry.second.node->cooked_.reset();
+        entry.second.node->cookedImage_.reset();
     }
     notifyOwner();
 }
@@ -654,7 +667,7 @@ void Network::collectMergeInputs(NodeId id, CookTask& task) {
         const NodeId up = s.inputs[top.next++];
         if (up == invalidNodeId) continue;
         const Node& upNode = node(up);
-        const bool absorbable = upNode.isMerge() && !upNode.bypassed_ && !upNode.frozen_ && (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ &&
+        const bool absorbable = upNode.isMerge() && !upNode.bypassed_ && !upNode.frozen_ && (upNode.dirty_ || !upNode.hasCooked()) && up != displayNode_ &&
                                 consumerCount(up) == 1;
         if (absorbable) {
             task.absorbed.push_back(up);
@@ -683,7 +696,7 @@ Network::CookTask Network::buildTask(NodeId id) {
             if (up == invalidNodeId) break;
             const Node& upNode = *slot(up).node;
             const bool fusable = upNode.isPointwise() && !upNode.bypassed_ && !upNode.frozen_ && !upNode.anchor_ && upNode.attribClass() == task.cls &&
-                                 (upNode.dirty_ || !upNode.cooked_) && up != displayNode_ && consumerCount(up) == 1;
+                                 (upNode.dirty_ || !upNode.hasCooked()) && up != displayNode_ && consumerCount(up) == 1;
             if (!fusable) break;
             task.chain.push_back(up);
         }
@@ -724,7 +737,7 @@ void Network::planCook(NodeId root, std::map<NodeId, CookTask>& tasks) {
     };
     auto needsPlan = [&](NodeId id) {
         const Node& n = node(id);
-        return (n.dirty_ || !n.cooked_) && !tasks.count(id);
+        return (n.dirty_ || !n.hasCooked()) && !tasks.count(id);
     };
     if (!needsPlan(root)) return;
     std::vector<Frame> stack;
@@ -757,6 +770,7 @@ void Network::runTask(const CookTask& task) {
     Node& tail = node(task.tail);
     CookTimings timings;
     GeometryHandle result;
+    ImageHandle image;
 
     if (!task.chain.empty()) {
         GeometryHandle base = node(task.inputs[0]).cooked_;
@@ -791,11 +805,42 @@ void Network::runTask(const CookTask& task) {
         if (task.chain.size() > 1) ++fusedChainCount_;
         for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).stats_.fusedInto = task.tail;
     } else {
+        const bool image_out = tail.outputType() == PortType::image;
         std::vector<GeometryHandle> inputs;
-        inputs.reserve(task.inputs.size());
-        for (NodeId in : task.inputs) inputs.push_back(node(in).cooked_);
+        std::vector<Value> values;
+        if (tail.usesValues() && !tail.bypassed_) {
+            values.reserve(task.inputs.size());
+            for (NodeId in : task.inputs) {
+                const Node& source = node(in);
+                Value value;
+                value.geometry = source.cooked_;
+                value.image = source.cookedImage_;
+                values.push_back(std::move(value));
+            }
+        } else {
+            inputs.reserve(task.inputs.size());
+            for (NodeId in : task.inputs) inputs.push_back(node(in).cooked_);
+        }
         if (tail.bypassed_) {
-            result = inputs.empty() ? std::make_shared<const Geometry>() : inputs.front();
+            // A bypassed node hands its first input on when that has its own output type; otherwise it has nothing to hand on.
+            if (image_out) {
+                if (!task.inputs.empty() && node(task.inputs.front()).outputType() == PortType::image) {
+                    image = node(task.inputs.front()).cookedImage_;
+                }
+            } else {
+                result = inputs.empty() ? std::make_shared<const Geometry>() : inputs.front();
+            }
+        } else if (tail.usesValues()) {
+            CookContext ctx{compiler(), time_, pool(), &timings, this, task.tail};
+            Value cooked = tail.cookValue(ctx, values);
+            if (image_out) {
+                if (!cooked.image) {
+                    throw std::runtime_error(tail.name() + ": produced no image");
+                }
+                image = std::move(cooked.image);
+            } else {
+                result = cooked.geometry;
+            }
         } else if (tail.frozen_) {
             result = tail.frozen_;
         } else {
@@ -811,8 +856,9 @@ void Network::runTask(const CookTask& task) {
     }
 
     tail.cooked_ = result;
+    tail.cookedImage_ = image;
     tail.dirty_ = false;
-    tail.lastPoints_ = result->pointCount();
+    tail.lastPoints_ = result ? result->pointCount() : 0;
     for (size_t i = 1; i < task.chain.size(); ++i) node(task.chain[i]).lastPoints_ = tail.lastPoints_;
     ++tail.cookCount_;
 
@@ -922,13 +968,32 @@ void Network::writeTrace(const std::string& path) const {
 void Network::freezeNode(NodeId id) {
     Node& n = node(id);
     if (n.bypassed_) throw std::runtime_error(n.name() + " is bypassed, so there is nothing to freeze");
+    if (n.outputType() != PortType::geometry) throw std::runtime_error(n.name() + " outputs an image, which cannot be frozen");
     GeometryHandle result = cook(id);
     n.setFrozenGeometry(result ? result : std::make_shared<const Geometry>());
 }
 
 GeometryHandle Network::cook(NodeId id) {
+    const Node& n = node(id);
+    if (n.outputType() != PortType::geometry) {
+        throw std::runtime_error(n.name() + " outputs an image; use cookImage");
+    }
+    cookNode(id);
+    return node(id).cooked_;
+}
+
+ImageHandle Network::cookImage(NodeId id) {
+    const Node& n = node(id);
+    if (n.outputType() != PortType::image) {
+        throw std::runtime_error(n.name() + " outputs geometry; use cook");
+    }
+    cookNode(id);
+    return node(id).cookedImage_;
+}
+
+void Network::cookNode(NodeId id) {
     Node& n = node(id);
-    if (!n.dirty_ && n.cooked_) return n.cooked_;
+    if (!n.dirty_ && n.hasCooked()) return;
     requireStack("the graph");
 
     struct CookScope {
@@ -974,7 +1039,6 @@ GeometryHandle Network::cook(NodeId id) {
         }
     } reenter{hooks, token};
     for (const auto& level : levels) pool()->parallelFor(level.size(), [&](size_t i) { runTask(*level[i]); });
-    return node(id).cooked_;
 }
 
 void Network::setCookThreadHooks(CookThreadHooks hooks) {

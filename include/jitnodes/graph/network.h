@@ -132,6 +132,7 @@ void registerTopologyNodes();
 void registerGenerateNodes();
 void registerFxNodes();
 void registerPatternNodes();
+void registerStrokeNodes();
 void registerParticleNodes();
 void registerGasNodes();
 void registerFieldNodes();
@@ -232,6 +233,9 @@ public:
 
     // @scriptable release_gil
     GeometryHandle cook(NodeId id);
+    // The same for a node whose output is an image (a render node); each throws for a node of the other output type.
+    // @scriptable ignore=true
+    ImageHandle cookImage(NodeId id);
     // Cooks the node (what is upstream of it too) and keeps the result as its frozen geometry; throws for a bypassed node.
     // Node::setFrozenGeometry(nullptr) unfreezes.
     // @scriptable release_gil
@@ -375,6 +379,7 @@ private:
         AttribClass cls = AttribClass::point;
         int level = 0;
     };
+    void cookNode(NodeId id);
     CookTask buildTask(NodeId id);
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
     void appendProfileRows(std::string& out, int depth) const;

@@ -635,6 +635,137 @@ public:
     }
 };
 
+// Maps a float attribute through a curve: u = (attribute - inMin) / (inMax - inMin), value = ramp(u), written as outMin + value * (outMax - outMin).
+// The ramp holds its end values outside its points, so inputs beyond inMin and inMax clamp. A pressure curve is `remap pressure -> w`.
+class RemapNode : public Node {
+public:
+    RemapNode() : Node("remap", 1) {
+        declareString("attribute", "pressure");
+        declareString("output", "w");
+        declareRamp("ramp", "0 0 linear, 1 1 linear");
+        declareFloat("inMin", 0.0f);
+        declareFloat("inMax", 1.0f);
+        declareFloat("outMin", 0.0f);
+        declareFloat("outMax", 1.0f);
+    }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const std::string& name = getString("attribute");
+        std::string outName = getString("output");
+        if (outName.empty()) outName = name;
+        const float inMin = getFloat("inMin"), inMax = getFloat("inMax"), outMin = getFloat("outMin"), outMax = getFloat("outMax");
+        if (!(inMax != inMin)) throw std::runtime_error("remap: inMin and inMax must differ");
+        const Ramp ramp = getRamp("ramp");
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        const AttribArray* source = geo->findAttrib(AttribClass::point, name);
+        if (!source) throw std::runtime_error("remap: no point attribute '" + name + "'");
+        const size_t n = geo->pointCount();
+        std::vector<float> values(n);
+        for (size_t i = 0; i < n; ++i) values[i] = source->at(i);
+        float* out = geo->attrib(AttribClass::point, outName).floats().data();
+        const float scale = 1.0f / (inMax - inMin), span = outMax - outMin;
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) out[i] = outMin + ramp.eval((values[i] - inMin) * scale) * span;
+        });
+        return geo;
+    }
+};
+
+// Adds an attribute that follows a wave of a driver: the playhead (`driver` "time", one value for the whole geometry) or a float point attribute
+// such as a stroke's `t` or `s` (one value per point). value = offset + amplitude * wave(frequency * driver * driverScale + phase), the wave in
+// -1..1 over one cycle per unit of its argument (the `ramp` waveform is the curve in `ramp` over 0..1); `phase` is in cycles. With class "detail" the value is stored as a detail value (driver "time").
+class OscillatorNode : public Node {
+public:
+    OscillatorNode() : Node("oscillator", 1) {
+        declareString("name", "osc");
+        declareString("class", "point");
+        declareString("waveform", "sine");
+        declareString("driver", "time");
+        declareFloat("frequency", 1.0f);
+        declareFloat("amplitude", 1.0f);
+        declareFloat("offset", 0.0f);
+        declareFloat("phase", 0.0f);
+        declareFloat("pulseWidth", 0.5f);
+        declareFloat("driverScale", 1.0f);
+        declareFloat("seed", 1.0f);
+        declareRamp("ramp", "0 -1 smooth, 0.5 1 smooth, 1 -1 smooth");
+    }
+
+    bool dependsOnPlayhead() const override { return getString("driver") == "time"; }
+
+    GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& in) override {
+        const std::string& waveName = getString("waveform");
+        int wave;
+        if (waveName == "sine") wave = 0;
+        else if (waveName == "saw") wave = 1;
+        else if (waveName == "square") wave = 2;
+        else if (waveName == "triangle") wave = 3;
+        else if (waveName == "noise") wave = 4;
+        else if (waveName == "ramp") wave = 5;
+        else throw std::runtime_error("oscillator: waveform must be 'sine', 'saw', 'square', 'triangle', 'noise' or 'ramp', got '" + waveName + "'");
+        Ramp ramp;
+        if (wave == 5) ramp = getRamp("ramp");
+        const std::string& cls = getString("class");
+        if (cls != "point" && cls != "detail") throw std::runtime_error("oscillator: class must be 'point' or 'detail', got '" + cls + "'");
+        const std::string& name = getString("name");
+        if (name.empty()) throw std::runtime_error("oscillator: name must not be empty");
+        const std::string& driver = getString("driver");
+        const float frequency = getFloat("frequency"), amplitude = getFloat("amplitude"), offset = getFloat("offset"), phase = getFloat("phase");
+        const float pulseWidth = std::clamp(getFloat("pulseWidth"), 0.0f, 1.0f), driverScale = getFloat("driverScale");
+        const uint32_t seed = seedOf(getFloat("seed"));
+
+        auto value = [&](float driven) {
+            const float x = frequency * driven * driverScale + phase;
+            const float cycle = x - std::floor(x);
+            float w;
+            switch (wave) {
+                case 0: w = std::sin(twoPi * x); break;
+                case 1: w = 2.0f * cycle - 1.0f; break;
+                case 2: w = cycle < pulseWidth ? 1.0f : -1.0f; break;
+                case 3: {
+                    const float shifted = x - 0.25f;
+                    w = 4.0f * std::fabs(shifted - std::floor(shifted) - 0.5f) - 1.0f;
+                    break;
+                }
+                case 5: w = ramp.eval(cycle); break;
+                default: {
+                    const float cell = std::floor(x);
+                    const float a = random01(seed, static_cast<uint32_t>(static_cast<int64_t>(cell)), 0) * 2.0f - 1.0f;
+                    const float b = random01(seed, static_cast<uint32_t>(static_cast<int64_t>(cell) + 1), 0) * 2.0f - 1.0f;
+                    const float t = cycle * cycle * (3.0f - 2.0f * cycle);
+                    w = a + (b - a) * t;
+                    break;
+                }
+            }
+            return offset + amplitude * w;
+        };
+
+        auto geo = std::make_shared<Geometry>(*in[0]);
+        if (cls == "detail") {
+            if (driver != "time") throw std::runtime_error("oscillator: a detail value can only be driven by 'time'");
+            geo->setDetail(name, value(static_cast<float>(ctx.time)));
+            return geo;
+        }
+        const size_t n = geo->pointCount();
+        if (driver == "time") {
+            const float v = value(static_cast<float>(ctx.time));
+            float* out = geo->attrib(AttribClass::point, name).floats().data();
+            std::fill(out, out + n, v);
+            return geo;
+        }
+        const AlignedArray<float>* column = geo->findPointAttrib(driver);
+        if (column == nullptr) throw std::runtime_error("oscillator: the points have no driver attribute '" + driver + "'");
+        const std::vector<float> driven(column->data(), column->data() + n);
+        float* out = geo->attrib(AttribClass::point, name).floats().data();
+        parallelChunks(ctx.pool, n, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                out[i] = value(driven[i]);
+            }
+        });
+        return geo;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -646,6 +777,8 @@ void registerPatternNodes() {
     add<RelaxNode>("relax");
     add<AttribBlurNode>("attribBlur");
     add<WaveNode>("wave");
+    add<OscillatorNode>("oscillator");
+    add<RemapNode>("remap");
     add<AttractorNode>("attractor");
     add<FlowNode>("flow");
     add<VoronoiNode>("voronoi");

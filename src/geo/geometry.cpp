@@ -20,6 +20,13 @@ void Geometry::addPrimitive(const Primitive& p) {
     for (auto& [name, array] : primAttribs_) array.resize(primitives_.size());
 }
 
+bool Geometry::removeAttrib(AttribClass cls, const std::string& name) {
+    if (cls == AttribClass::point && (name == "x" || name == "y")) {
+        throw std::runtime_error("the point positions x and y cannot be removed");
+    }
+    return attribMap(cls).erase(name) != 0;
+}
+
 AttribArray& Geometry::attrib(AttribClass cls, const std::string& name, AttribType type) {
     auto& map = attribMap(cls);
     auto [it, inserted] = map.try_emplace(name, type);

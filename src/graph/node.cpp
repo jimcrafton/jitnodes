@@ -17,6 +17,21 @@ Node::Node(std::string typeName, int inputCount) : revision_(++revisionCounter),
 
 Node::~Node() = default;
 
+GeometryHandle ValueNode::cook(CookContext&, const std::vector<GeometryHandle>&) {
+    throw std::runtime_error(name() + ": a " + typeName() + " node cooks through cookValue");
+}
+
+Value Node::cookValue(CookContext& ctx, const std::vector<Value>& inputs) {
+    std::vector<GeometryHandle> geometries;
+    geometries.reserve(inputs.size());
+    for (const Value& input : inputs) {
+        geometries.push_back(input.geometry);
+    }
+    Value result;
+    result.geometry = cook(ctx, geometries);
+    return result;
+}
+
 std::string Node::uidText() const {
     if (uid_ == 0) return "0";
     std::string text;
@@ -85,6 +100,26 @@ bool Node::floatMaximum(const std::string& name, float& value) const {
 }
 
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
+
+void Node::declareRamp(const std::string& name, const std::string& defaultText) {
+    const std::string problem = Ramp::check(defaultText);
+    if (!problem.empty()) {
+        throw std::logic_error("declareRamp '" + name + "': " + problem);
+    }
+    strings_[name] = defaultText;
+    rampParams_.insert(name);
+}
+
+Ramp Node::getRamp(const std::string& name) const {
+    if (!isRampParam(name)) {
+        throw std::runtime_error("'" + name + "' is not a ramp parameter on " + typeName_);
+    }
+    try {
+        return Ramp::parse(getString(name));
+    } catch (const std::exception& e) {
+        throw std::runtime_error(typeName_ + " " + name + ": " + e.what());
+    }
+}
 
 void Node::declareGeometry(const std::string& name) { geometries_[name] = std::make_shared<const Geometry>(); }
 

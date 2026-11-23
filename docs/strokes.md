@@ -1,0 +1,72 @@
+# Stroke nodes
+
+Nodes for geometry that is a hand-drawn stroke: one open polyline whose points carry the pen or mouse data (`t` seconds since the stroke
+started, `pressure`, `tiltX`, ...). Curvy feeds strokes through these inside its input assets (docs/input-generator-plan.md in curvy); they work on
+any polyline with the attributes they name.
+
+## oscillator (one input)
+
+Adds an attribute that follows a wave of a driver: the playhead, or a float point attribute.
+`value = offset + amplitude * wave(frequency * driver * driverScale + phase)`, where the wave runs from -1 to 1 once per unit of its argument.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `name` | `osc` | the attribute (or detail value) written |
+| `class` | `point` | `point`: one value per point; `detail`: one value for the geometry (the driver must be `time`) |
+| `waveform` | `sine` | `sine`, `saw` (rises from -1), `square`, `triangle` (starts at 0, rising), `noise` (smooth value noise, one random value per whole cycle, blended with a smoothstep), `ramp` (the curve in the `ramp` parameter over one cycle, see [ramps.md](ramps.md)) |
+| `driver` | `time` | `time` (the network time, so the node recooks when it changes) or the name of a float point attribute such as `t` or `s` |
+| `frequency` | 1 | cycles per unit of the driver (per second for `time` or `t`) |
+| `amplitude`, `offset` | 1, 0 | scale and shift of the wave |
+| `phase` | 0 | start of the wave in cycles |
+| `pulseWidth` | 0.5 | `square`: the fraction of a cycle that is high |
+| `driverScale` | 1 | multiplies the driver before the frequency |
+| `seed` | 1 | `noise`: the random sequence |
+
+A driver attribute the points do not have is an error that names it.
+
+## pathMotion (one input)
+
+Recomputes how a stroke moves from its positions and the sample times: `s` (arc length from the start of each polyline), `dt`, the smoothed
+velocity `vx`, `vy`, `speed`, `ax`, `ay`, `accel` (the signed rate of change of speed) and `heading` (radians, the direction of the smoothed
+velocity). Use it after something moved the points (a `smooth`, a warp) so the attributes follow.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `timeAttr` | `t` | the point attribute with the sample time in seconds (an error when missing) |
+| `smoothing` | 0.3 | weight of the newest velocity in an exponential moving average, above 0 and at most 1 (1: none) |
+
+The first point takes the values of the second so a stroke does not start at rest; two samples with the same time repeat the values before them;
+the first acceleration is 0. The maths is `PathMotion::compute` (`geo/pathMotion.h`), which an application can call directly.
+
+## strokeClean (one input)
+
+Trims a stroke. Removes point attributes, and drops points that carry little. A dropped point takes its attribute values with it; the points that
+stay keep their own. `x`, `y` and the primitive attributes always stay, and so does the detail data.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `remove` | empty | names to remove, separated by spaces or commas; `*` matches any run of characters (`tilt* twist vx vy`) |
+| `keep` | empty | when not empty, every point attribute not listed (patterns allowed) is removed |
+| `simplify` | 0 | Ramer-Douglas-Peucker tolerance in geometry units: points closer than this to the line between their kept neighbours go (0: off) |
+| `minDistance` | 0 | a point nearer than this to the last kept one goes (0: off) |
+| `minTime` | 0 | a point less than this many seconds after the last kept one goes (0: off) |
+| `timeAttr` | `t` | the time attribute `minTime` reads |
+| `keepEnds` | 1 | the last point of a polyline stays (it replaces a kept point that was too close to it) |
+
+The order is: `minDistance` and `minTime`, then `simplify`, then attribute removal. Polylines with fewer than three points and cubic primitives are
+copied whole.
+
+## calligraphy (one input)
+
+A calligraphic pen. Every path (polyline or cubic; a cubic is sampled 12 times per segment) is swept by a slanted oval nib and comes out as closed
+polylines to fill. The result is one convex piece per step of the path, all wound the same way, so a non-zero fill is their union; the pieces keep
+the shape key of their path. All point attributes are dropped (the output is plain polygons).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `width` | 8 | the nib's long diameter (above 0) |
+| `angle` | 45 | the nib's tilt in degrees, counter-clockwise from horizontal |
+| `roundness` | 25 | the nib's thickness as a percentage of its length, above 0 up to 100 (100 is a round pen) |
+| `scaleAttr` | `w` | the point attribute that scales the nib along the stroke (pen pressure); ignored when the points have none or it is 0 everywhere |
+
+Ported from curvy v1's `BrushDef::nibOutline`.

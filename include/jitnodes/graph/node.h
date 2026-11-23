@@ -12,6 +12,7 @@
 #include "jitnodes/audio/audioStep.h"
 #include "jitnodes/geo/geometry.h"
 #include "jitnodes/graph/animation.h"
+#include "jitnodes/graph/ramp.h"
 #include "jitnodes/jit/kernel.h"
 
 namespace jitnodes {
@@ -20,6 +21,21 @@ using NodeId = uint32_t;
 inline constexpr NodeId invalidNodeId = 0;
 
 class Network;
+class RenderResult;   // renderer.h
+
+// What a wire carries. Every node that existed before typed wires has geometry inputs and a geometry output.
+// @scriptable ignore=true
+enum class PortType { geometry, image };
+
+// An image on a wire: the result of a render node. Shared and immutable, so caching and undo never copy pixels.
+using ImageHandle = std::shared_ptr<const RenderResult>;
+
+// A cooked result of either type; only the member that matches the port type is set.
+// @scriptable ignore=true
+struct Value {
+    GeometryHandle geometry;
+    ImageHandle image;
+};
 
 struct CookTimings {
     double compileMs = 0.0;
@@ -159,6 +175,15 @@ public:
     void setString(const std::string& name, const std::string& value);
     const std::string& getString(const std::string& name) const;
 
+    // A ramp parameter is a string parameter whose text is a Ramp (see ramp.h), declared with declareRamp. It is saved, undone, copied and sent to
+    // Python as that string; an editor that sees isRampParam shows a curve instead of a text field. A text that is not a ramp is stored as typed
+    // (Ramp::check tells an editor first) and makes the cook throw.
+    bool isRampParam(const std::string& name) const { return rampParams_.count(name) != 0; }
+    std::vector<std::string> rampNames() const { return std::vector<std::string>(rampParams_.begin(), rampParams_.end()); }
+    // The parsed ramp; throws std::runtime_error when the parameter is not a ramp parameter or its text is not a ramp.
+    // @scriptable ignore=true
+    Ramp getRamp(const std::string& name) const;
+
     // Geometry parameters hold authored geometry (a drawn curve, a point cloud): saved with the node in full, so they take part in undo
     // snapshots, clips and copies like any other parameter. A null handle and an empty geometry are the same, and read back as an empty one.
     void setGeometryParam(const std::string& name, GeometryHandle geometry);
@@ -210,11 +235,39 @@ public:
     float posX() const { return posX_; }
     float posY() const { return posY_; }
 
+    // Drops this node's cached result so the next cook runs it again. Unlike a parameter edit it touches no revision, notifies nobody and does not
+    // reach the nodes downstream: for state the node keeps outside its parameters (a renderer's view). A frozen node keeps its frozen result.
+    void invalidateCook() {
+        dirty_ = true;
+        cooked_.reset();
+        cookedImage_.reset();
+    }
     bool dirty() const { return dirty_; }
     size_t cookCount() const { return cookCount_; }
     const NodeStats& stats() const { return stats_; }
 
+    // The type of input `index` and of the output. Network::connect refuses a wire whose output type is not the input's type. Geometry unless a
+    // node type says otherwise.
+    // @scriptable ignore=true
+    virtual PortType inputType(int index) const {
+        (void)index;
+        return PortType::geometry;
+    }
+    // @scriptable ignore=true
+    virtual PortType outputType() const { return PortType::geometry; }
+    // True for a node with an image port: the network then cooks it through cookValue instead of cook.
+    // @scriptable ignore=true
+    virtual bool usesValues() const { return false; }
+
+    // The cook of a geometry-to-geometry node. A node with an image port derives from ValueNode instead and overrides cookValue.
     virtual GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>& inputs) = 0;
+    // The cook of a node with an image port: `inputs` holds one Value per cooked input, of the type inputType gives for it, and the result's
+    // member for outputType() is the output.
+    // @scriptable ignore=true
+    virtual Value cookValue(CookContext& ctx, const std::vector<Value>& inputs);
+    // The cooked image of an image-output node (null while dirty or for a geometry node).
+    // @scriptable ignore=true
+    const ImageHandle& cookedImage() const { return cookedImage_; }
 
     // Point-wise nodes have one input, keep topology, and only rewrite point channels; the
     // network can fuse chains of them into a single kernel.
@@ -264,6 +317,8 @@ protected:
     // Adds a tag to a declared float parameter (throws for an unknown one); a repeated tag is ignored.
     void tagParam(const std::string& name, const std::string& tag);
     void declareString(const std::string& name, const std::string& defaultValue);
+    // A string parameter that holds a Ramp; `defaultText` must be a valid ramp.
+    void declareRamp(const std::string& name, const std::string& defaultText);
     // Called by setString after a string parameter changed value, before the node is marked dirty. A node type whose text defines
     // parameters (the wrangle's declared ones) adds and removes spare floats here. Must not throw.
     virtual void stringChanged(const std::string& name) { (void)name; }
@@ -319,6 +374,7 @@ private:
     Network* network_ = nullptr;
     std::map<std::string, FloatParam> floats_;
     std::map<std::string, std::string> strings_;
+    std::set<std::string> rampParams_;
     std::map<std::string, GeometryHandle> geometries_;
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
@@ -334,6 +390,17 @@ private:
     size_t cookCount_ = 0;
     NodeStats stats_;
     GeometryHandle cooked_;
+    ImageHandle cookedImage_;
+    bool hasCooked() const { return outputType() == PortType::image ? cookedImage_ != nullptr : cooked_ != nullptr; }
+};
+
+// Base of the node types that have an image port. The network cooks them through cookValue, so cook() is closed off here.
+// @scriptable ignore=true
+class ValueNode : public Node {
+public:
+    using Node::Node;
+    bool usesValues() const final { return true; }
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) final;
 };
 
 }  // namespace jitnodes
