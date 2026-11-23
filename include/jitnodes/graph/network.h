@@ -75,27 +75,56 @@ public:
         return it == assets_.end() ? 0 : it->second.revision;
     }
 
+    // Parameter renames of an asset type: old name to new name, accumulated over its versions. An instance built from an older version takes the
+    // value, expression or keyframes of `old` into `new` when it is brought up to date (a chain a -> b -> c is followed). Set by registerAsset.
+    void setAssetRenames(const std::string& typeName, std::map<std::string, std::string> renames) {
+        auto it = assets_.find(typeName);
+        if (it != assets_.end()) {
+            it->second.renames = std::move(renames);
+        }
+    }
+    const std::map<std::string, std::string>* assetRenames(const std::string& typeName) const {
+        auto it = assets_.find(typeName);
+        return it == assets_.end() || it->second.renames.empty() ? nullptr : &it->second.renames;
+    }
+    // Removes an asset type: its definition, creator and migration hook. Instances already in a graph keep working (they hold their own contents)
+    // but can no longer be loaded from a file unless the file embeds the definition. False when there is no such asset.
+    bool unregisterAsset(const std::string& typeName) {
+        if (assets_.erase(typeName) == 0) {
+            return false;
+        }
+        creators_.erase(typeName);
+        migrations_.erase(typeName);
+        return true;
+    }
+
     // Migration hook of an asset type, called when an instance built from an older assetVersion is brought up to
     // date (see updateAssetInstances and loadNetwork). Independent of registerAsset; an empty function removes it.
     void setAssetMigration(const std::string& typeName, AssetMigrationFn fn) {
         if (fn) migrations_[typeName] = std::move(fn);
         else migrations_.erase(typeName);
     }
+    // The hook of the type, else the fallback (null when neither exists). The fallback is for an application that decides per call what to
+    // do for an asset (it looks the asset up itself), which also covers assets a graph file embeds and registers while it loads.
     const AssetMigrationFn* assetMigration(const std::string& typeName) const {
         auto it = migrations_.find(typeName);
-        return it == migrations_.end() ? nullptr : &it->second;
+        if (it != migrations_.end()) return &it->second;
+        return fallbackMigration_ ? &fallbackMigration_ : nullptr;
     }
+    void setAssetMigrationFallback(AssetMigrationFn fn) { fallbackMigration_ = std::move(fn); }
 
 private:
     struct Asset {
         std::string text;
         int version = 1;
         size_t revision = 0;
+        std::map<std::string, std::string> renames;
     };
 
     std::map<std::string, Creator> creators_;
     std::map<std::string, Asset> assets_;
     std::map<std::string, AssetMigrationFn> migrations_;
+    AssetMigrationFn fallbackMigration_;
 };
 
 void registerBuiltinNodes();
@@ -103,6 +132,7 @@ void registerTopologyNodes();
 void registerGenerateNodes();
 void registerFxNodes();
 void registerPatternNodes();
+void registerStrokeNodes();
 void registerParticleNodes();
 void registerGasNodes();
 void registerFieldNodes();
@@ -116,6 +146,7 @@ void registerLoopNodes();
 void registerSubnetNodes();
 void registerAudioNodes();
 
+// @scriptable
 class Network {
 public:
     // Cooking, saving and undo recurse through nested subnets, so deeper nesting is refused when the subnet node is added.
@@ -125,6 +156,15 @@ public:
     explicit Network(size_t threads = 0);
     Network(const Network&) = delete;
     Network& operator=(const Network&) = delete;
+
+    // Expires when the network is destroyed. Something that reaches the network without owning it (a script handle) holds this
+    // and checks it before every use; a nested network has its own, so it expires with its subnet node.
+    // @scriptable ignore=true
+    std::weak_ptr<void> lifetime() const { return lifetime_; }
+    // Counts clear() calls (a load clears first). Ids and uids start over after a clear, so a handle remembers the generation it was
+    // made in: otherwise a handle to the old node 3 would silently become the new node 3.
+    // @scriptable ignore=true
+    std::uint64_t generation() const { return generation_; }
 
     NodeId addNode(const std::string& typeName, const std::string& name = {});
     // Used when restoring saved graphs so node ids stay stable. Throws if the id is invalid or taken.
@@ -139,6 +179,7 @@ public:
     void removeNode(NodeId id);
     // Swaps the node for a fresh one (same id and name), keeping the wiring that still fits unless `inputs` gives
     // the new wiring. Not allowed while cooking.
+    // @scriptable ignore=true
     void replaceNode(NodeId id, std::unique_ptr<Node> fresh, const std::vector<NodeId>* inputs = nullptr);
     Node& node(NodeId id);
     const Node& node(NodeId id) const;
@@ -171,6 +212,7 @@ public:
     // The newest revision any node of this network was touched at (0 when none was).
     std::uint64_t touchRevision() const { return touchLog_.empty() ? touchedFloor_ : touchLog_.back().first; }
     // Adds the ids of the nodes touched after `watermark` to `out`; false when the log no longer reaches back that far (look at everything).
+    // @scriptable ignore=true
     bool touchedSince(std::uint64_t watermark, std::vector<NodeId>& out) const;
     // The nodes with an input wired to `id` (one entry per wired input), in no particular order.
     const std::vector<NodeId>& consumersOf(NodeId id) const {
@@ -189,14 +231,20 @@ public:
     // True when the reverse indexes agree with a scan of the graph (for tests).
     bool indexesConsistent() const;
 
+    // @scriptable release_gil
     GeometryHandle cook(NodeId id);
+    // The same for a node whose output is an image (a render node); each throws for a node of the other output type.
+    // @scriptable ignore=true
+    ImageHandle cookImage(NodeId id);
     // Cooks the node (what is upstream of it too) and keeps the result as its frozen geometry; throws for a bypassed node.
     // Node::setFrozenGeometry(nullptr) unfreezes.
+    // @scriptable release_gil
     void freezeNode(NodeId id);
     void setDisplayNode(NodeId id) {
         displayNode_ = id;
         notifyOwner();
     }
+    // @scriptable release_gil
     GeometryHandle cookDisplay() { return cook(displayNode_); }
 
     // Upstream nodes of id (inclusive) in execution order.
@@ -215,9 +263,20 @@ public:
     void setThreadCount(size_t threads);
     size_t threadCount() const { return pool()->concurrency(); }
 
+    // Called around the parallel part of every cook, on the thread that started the cook. `leave` may return a token that `enter` receives
+    // back; the Python module uses them to give up the interpreter lock while worker threads run nodes (a thread that holds the lock
+    // and waits for workers that need it would never finish). Set once at startup, not during a cook.
+    struct CookThreadHooks {
+        std::function<void*()> leave;
+        std::function<void(void*)> enter;
+    };
+    static void setCookThreadHooks(CookThreadHooks hooks);
+
     // Callable from any thread: makes the cook in progress throw CookCancelled before it starts its next node.
     // Nodes that already finished keep their results; ignored when no cook is running.
     void cancel();
+    // True from cancel() until the cook ends; a node that cannot poll (a running Python script) is stopped from another thread by it.
+    bool isCancelRequested() const { return cancelRequested(); }
 
     // Progress of the cook in progress, for a status display. Set it before cooking, not during. The callback is called on whatever thread
     // runs a node (independent branches run in parallel, so calls can overlap: keep it short and thread-safe), when a node starts (fraction 0),
@@ -242,6 +301,10 @@ public:
 
     // Records one event per cooked task (node, thread, start, duration) while enabled; a subnet's network records into its root's.
     // writeTrace emits Chrome trace JSON for chrome://tracing and Perfetto. Recording does not change any result.
+    // Off by default (geometry that never gets keys allocates nothing). When on, a node whose output has anonymous primitives gets them
+    // stamped with `<node key>#p<index>` right after it cooks, so every shape that leaves the graph can be selected and bound by key.
+    void setStampAnonymousShapes(bool enabled) { root().stampAnonymousShapes_ = enabled; }
+    bool stampAnonymousShapes() const { return root().stampAnonymousShapes_.load(); }
     void setTraceEnabled(bool enabled) { root().traceEnabled_ = enabled; }
     bool traceEnabled() const { return root().traceEnabled_.load(); }
     void clearTrace();
@@ -291,6 +354,9 @@ public:
     bool dependsOnTime(NodeId id) const;
 
 private:
+    std::shared_ptr<void> lifetime_ = std::make_shared<char>();
+    std::uint64_t generation_ = 0;
+
     struct Slot {
         std::unique_ptr<Node> node;
         std::vector<NodeId> inputs;
@@ -313,6 +379,7 @@ private:
         AttribClass cls = AttribClass::point;
         int level = 0;
     };
+    void cookNode(NodeId id);
     CookTask buildTask(NodeId id);
     void planCook(NodeId id, std::map<NodeId, CookTask>& tasks);
     void appendProfileRows(std::string& out, int depth) const;
@@ -379,6 +446,7 @@ private:
     ProgressCallback progressCallback_;
     std::unique_ptr<ThreadPool> pool_;
     std::atomic<bool> traceEnabled_{false};
+    std::atomic<bool> stampAnonymousShapes_{false};
     mutable std::mutex traceMutex_;
     std::vector<TraceEvent> traceEvents_;
 };

@@ -491,16 +491,25 @@ Image renderSplats(const Geometry& geo, const RenderSettings& settings, ThreadPo
     return image;
 }
 
-void writePng(const std::string& path, const Image& image) {
+void writePng(const std::string& path, const Image& image, bool withAlpha) {
+    const int channels = withAlpha ? 4 : 3;
     std::string raw;
-    raw.reserve(static_cast<size_t>(image.height) * (static_cast<size_t>(image.width) * 3 + 1));
+    raw.reserve(static_cast<size_t>(image.height) * (static_cast<size_t>(image.width) * static_cast<size_t>(channels) + 1));
     for (int y = 0; y < image.height; ++y) {
         raw.push_back(1);  // Sub filter: each byte minus the one a pixel to the left
-        uint8_t left[3] = {0, 0, 0};
+        uint8_t left[4] = {0, 0, 0, 0};
         for (int x = 0; x < image.width; ++x) {
             const uint32_t px = image.pixels[static_cast<size_t>(y) * static_cast<size_t>(image.width) + static_cast<size_t>(x)];
-            const uint8_t cur[3] = {static_cast<uint8_t>((px >> 16) & 255u), static_cast<uint8_t>((px >> 8) & 255u), static_cast<uint8_t>(px & 255u)};
-            for (int c = 0; c < 3; ++c) {
+            uint8_t cur[4] = {static_cast<uint8_t>((px >> 16) & 255u), static_cast<uint8_t>((px >> 8) & 255u), static_cast<uint8_t>(px & 255u),
+                              static_cast<uint8_t>((px >> 24) & 255u)};
+            if (withAlpha && cur[3] != 0 && cur[3] != 255) {
+                for (int c = 0; c < 3; ++c) {
+                    cur[c] = static_cast<uint8_t>(std::min(255u, (static_cast<unsigned>(cur[c]) * 255u + cur[3] / 2u) / cur[3]));
+                }
+            } else if (withAlpha && cur[3] == 0) {
+                cur[0] = cur[1] = cur[2] = 0;
+            }
+            for (int c = 0; c < channels; ++c) {
                 raw.push_back(static_cast<char>(static_cast<uint8_t>(cur[c] - left[c])));
                 left[c] = cur[c];
             }
@@ -520,7 +529,7 @@ void writePng(const std::string& path, const Image& image) {
     std::string header;
     putU32(header, static_cast<uint32_t>(image.width));
     putU32(header, static_cast<uint32_t>(image.height));
-    header += {8, 2, 0, 0, 0};
+    header += {8, static_cast<char>(withAlpha ? 6 : 2), 0, 0, 0};
     putChunk(out, "IHDR", header);
     putChunk(out, "IDAT", z);
     putChunk(out, "IEND", "");

@@ -1,4 +1,5 @@
 ﻿#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -228,6 +229,117 @@ TEST(parserRejectsBadInput) {
     threw = false;
     try { parseWrangle("a = 1;", {"a"}); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);
+}
+
+TEST(parserSkipsHashComments) {
+    KernelSpec plain = parseWrangle("x = x * 2; y = y + 1;", {});
+    KernelSpec commented = parseWrangle("# double x\nx = x * 2; # trailing\n  # a line of its own\ny = y + 1;\n# last line, no newline", {});
+    CHECK(commented.graph.size() == plain.graph.size());
+    CHECK(commented.stores.size() == plain.stores.size());
+    CHECK(parseWrangle("# only a comment", {}).stores.empty());
+
+    bool threw = false;
+    std::string message;
+    try { parseWrangle("x = 1; # fine\ny = (1 + ;", {}); } catch (const std::runtime_error& e) { threw = true; message = e.what(); }
+    CHECK(threw);
+    CHECK(message.find("offset 23") != std::string::npos);   // offsets still count the comment's characters
+}
+
+TEST(parserReadsParamDeclarations) {
+    std::vector<WrangleParam> declared;
+    KernelSpec spec = parseWrangle("# tweakables\n| gain = 1.5, radius = 2(-1, 10), count(1,), ratio(, 1), plain |\nlabel = x;\nx = x * gain + radius + a;", {"a"}, {}, &declared);
+    CHECK(declared.size() == 5 && spec.paramCount == 6);
+    CHECK(declared[0].name == "gain" && declared[0].value == 1.5f && !declared[0].hasMinimum && !declared[0].hasMaximum && declared[0].slot == 1);
+    CHECK(declared[1].name == "radius" && declared[1].value == 2.0f && declared[1].hasMinimum && declared[1].minimum == -1.0f &&
+          declared[1].hasMaximum && declared[1].maximum == 10.0f && declared[1].slot == 2);
+    CHECK(declared[2].name == "count" && declared[2].value == 0.0f && declared[2].hasMinimum && declared[2].minimum == 1.0f && !declared[2].hasMaximum);
+    CHECK(declared[3].name == "ratio" && !declared[3].hasMinimum && declared[3].hasMaximum && declared[3].maximum == 1.0f);
+    CHECK(declared[4].name == "plain" && declared[4].value == 0.0f && !declared[4].hasMinimum && !declared[4].hasMaximum && declared[4].slot == 5);
+
+    // several lists may stand at the top; empty parentheses set no limit
+    parseWrangle("| p |\n# next\n| q(,) |\nx = p + q;", {}, {}, &declared);
+    CHECK(declared.size() == 2 && !declared[1].hasMinimum && !declared[1].hasMaximum);
+
+    // without the out-parameter a bar is not part of the language, but || still is
+    bool threw = false;
+    try { parseWrangle("| g |\nx = g;", {}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    CHECK(parseWrangle("x = a || b;", {}, {}, &declared).stores.size() == 1 && declared.empty());
+
+    // a string literal takes a slot after the declared ones
+    parseWrangle("| p |\nok = label == \"a\";", {}, {}, &declared);
+    CHECK(declared.size() == 1 && declared[0].slot == 0);
+}
+
+TEST(parserRejectsBadParamDeclarations) {
+    for (const char* code : {"| g |\ng = 2;", "| a |", "| time |", "| g, g |", "x = 1;\n| g |", "| |", "| g = |", "| g = x |", "| _t |", "| n.x |", "| g",
+                             "| g(1 |", "| g(5, 2) |", "| g(1) |", "| g, |", "| g = 1 2 |", "|| g |"}) {
+        std::vector<WrangleParam> declared;
+        bool threw = false;
+        try { parseWrangle(code, {"a"}, {}, &declared); } catch (const std::runtime_error&) { threw = true; }
+        CHECK(threw);
+    }
+}
+
+TEST(wrangleDeclaredParametersAreNodeParameters) {
+    Network net;
+    const NodeId line = net.addNode("line", "ln");
+    const NodeId wr = net.addNode("wrangle", "wr");
+    net.node(line).setFloat("count", 5.0f);
+    net.node(line).setFloat("length", 4.0f);
+    net.connect(line, wr);
+    net.setDisplayNode(wr);
+    Node& node = net.node(wr);
+    node.setString("code", "| gain = 2(0, 10) |\nx = x * gain;");
+    CHECK(node.hasFloat("gain") && node.isSpare("gain") && node.getFloat("gain") == 2.0f);
+    float limit = -1.0f;
+    CHECK(node.floatMinimum("gain", limit) && limit == 0.0f);
+    CHECK(node.floatMaximum("gain", limit) && limit == 10.0f);
+    CHECK(!node.floatMinimum("a", limit) && !node.floatMaximum("nothing", limit));
+    GeometryHandle g = net.cookDisplay();
+    CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 4.0f);
+
+    node.setFloat("gain", 3.0f);
+    g = net.cookDisplay();
+    CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 6.0f);
+
+    // editing the code keeps the value, an expression survives, a new declaration appears, a dropped one goes
+    node.setExpression("gain", "time + 1");
+    node.setString("code", "| gain = 9, extra(1,) |\n# comment\nx = x * gain + extra;");
+    CHECK(node.hasFloat("extra") && node.expression("gain") == "time + 1" && node.baseFloat("gain") == 3.0f);
+    CHECK(!node.floatMinimum("gain", limit) && !node.floatMaximum("gain", limit));   // the limits follow the code
+    CHECK(node.floatMinimum("extra", limit) && limit == 1.0f && !node.floatMaximum("extra", limit));
+    node.setString("code", "x = x * a;");
+    CHECK(!node.hasFloat("gain") && !node.hasFloat("extra"));
+
+    // a parse error leaves the parameters alone; the cook reports it
+    node.setString("code", "| keep = 4 | x = x * keep;");
+    node.setString("code", "| keep = 4 | x = x * (keep;");
+    CHECK(node.hasFloat("keep"));
+    bool threw = false;
+    try { net.cookDisplay(); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+
+    // a user-added spare is never removed by code edits
+    node.addSpareFloat("mine", 1.0f);
+    node.setString("code", "x = x;");
+    CHECK(node.hasFloat("mine") && !node.hasFloat("keep"));
+}
+
+TEST(wrangleDeclaredParametersSurviveSaveAndLoad) {
+    Network net;
+    const NodeId wr = net.addNode("wrangle", "wr");
+    net.node(wr).setString("code", "| gain = 2(0, 10) |\nx = x * gain;");
+    net.node(wr).setFloat("gain", 7.0f);
+    const std::string text = saveNetwork(net);
+    Network loaded;
+    loadNetwork(loaded, text);
+    Node& node = loaded.node(loaded.findNode("wr"));
+    float limit = 0.0f;
+    CHECK(node.hasFloat("gain") && node.baseFloat("gain") == 7.0f);
+    CHECK(node.floatMaximum("gain", limit) && limit == 10.0f);
+    node.setString("code", "x = x;");
+    CHECK(!node.hasFloat("gain"));
 }
 
 TEST(exprGraphSharesSubexpressions) {
@@ -3460,6 +3572,64 @@ TEST(assetMigrationHooksUpgradeInstancesInPlaceAndOnLoad) {
     registry.setAssetMigration("migAsset", nullptr);
 }
 
+TEST(assetMigrationFallbackServesTypesWithoutAHookOfTheirOwn) {
+    auto define = [](int version, const std::string& param) {
+        SubnetRig rig;
+        SubnetNode& s = subnetOf(rig.net, rig.sub);
+        s.addSpareFloat(param, 1.0f);
+        rig.inner().node(rig.xf).setExpression("tx", "parent." + param);
+        registerAsset(saveAsset(rig.net, rig.sub, "fallbackAsset", version));
+    };
+    NodeRegistry& registry = NodeRegistry::instance();
+    int fallbackCalls = 0;
+    int ownCalls = 0;
+    registry.setAssetMigrationFallback([&](AssetUpgrade& up) {
+        ++fallbackCalls;
+        up.fresh.setFloat("gain", up.old.baseFloat("amount") * 10.0f);
+    });
+    define(1, "amount");
+    Network net;
+    const NodeId a = net.addNode("fallbackAsset", "a");
+    net.node(a).setFloat("amount", 2.0f);
+    const std::string oldText = saveNetwork(net);
+
+    define(2, "gain");
+    CHECK(updateAssetInstances(net) == 1 && fallbackCalls == 1);
+    CHECK_NEAR(net.node(a).baseFloat("gain"), 20.0f);
+
+    Network loaded(1);
+    loadNetwork(loaded, oldText);
+    const int afterLoad = fallbackCalls;   // a load runs the hook twice (once to validate)
+    CHECK(afterLoad >= 2);
+    CHECK_NEAR(loaded.node(loaded.findNode("a")).baseFloat("gain"), 20.0f);
+
+    registry.setAssetMigration("fallbackAsset", [&](AssetUpgrade&) { ++ownCalls; });
+    define(3, "gain");
+    CHECK(updateAssetInstances(net) == 1 && ownCalls == 1 && fallbackCalls == afterLoad);
+
+    registry.setAssetMigration("fallbackAsset", nullptr);
+    registry.setAssetMigrationFallback(nullptr);
+    CHECK(registry.assetMigration("fallbackAsset") == nullptr);
+}
+
+TEST(copyNodeParametersCopiesWhatTheTargetHasAndOptionallyTheRest) {
+    Network net;
+    const NodeId from = net.addNode("null", "from");
+    const NodeId to = net.addNode("null", "to");
+    net.node(from).addSpareFloat("scale", 5.0f);
+    net.node(from).addSpareFloat("kept", 1.0f);
+    net.node(from).setExpression("kept", "frame");
+    net.node(to).addSpareFloat("kept", 0.0f);
+
+    copyNodeParameters(net.node(from), net.node(to), false);
+    CHECK(!net.node(to).hasFloat("scale"));
+    CHECK(net.node(to).expression("kept") == "frame");
+
+    copyNodeParameters(net.node(from), net.node(to), true);
+    CHECK(net.node(to).hasFloat("scale") && net.node(to).isSpare("scale"));
+    CHECK_NEAR(net.node(to).baseFloat("scale"), 5.0f);
+}
+
 TEST(nodePositionsRoundTripAndFollowUndo) {
     Network net(1);
     NodeId a = net.addNode("line", "a");
@@ -6291,6 +6461,7 @@ TEST(everyNodeTypeKeepsStringAttributesConsistent) {
         net.setExternalInputs({std::make_shared<Geometry>(input)});
         const NodeId in = net.addNode("subnetInput", "in");
         const NodeId node = net.addNode(type, "under");
+        if (net.node(node).usesValues()) continue;  // image ports: geometry cannot be wired in
         const int inputs = net.node(node).inputCount();  // a node with variable inputs grows one with each connection
         for (int i = 0; i < inputs; ++i) net.connect(in, node, i);
         GeometryHandle out;
@@ -6332,6 +6503,32 @@ bool wrangleThrows(const std::string& code, const Geometry& input) {
 }
 
 }  // namespace
+
+TEST(wrangleDeclaredParametersWorkInFusedChains) {
+    for (bool jit : {true, false}) {
+        Network net(2);
+        net.setFusionEnabled(true);
+        net.compiler().setJitEnabled(jit);
+        net.setExternalInputs({std::make_shared<Geometry>(labelled({"q", "r", "q", "q", "r"}, {"q", "r"}))});
+        const NodeId in = net.addNode("subnetInput", "in");
+        const NodeId w1 = net.addNode("wrangle", "w1");
+        const NodeId w2 = net.addNode("wrangle", "w2");
+        net.node(w1).setString("code", "| gain = 2 |\nx = x * gain;");
+        net.node(w2).setString("code", "| off = 10, gain = 3 |\nok = label == \"q\"; x = x * gain + off + a;");
+        net.node(w2).setFloat("a", 100.0f);
+        net.connect(in, w1);
+        net.connect(w1, w2);
+        net.setDisplayNode(w2);
+        GeometryHandle g = net.cookDisplay();
+        CHECK(net.fusedChainCount() >= 1);
+        CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 2.0f * 2.0f * 3.0f + 10.0f + 100.0f);
+        CHECK(g->findAttrib(AttribClass::point, "ok")->at(1) == 0.0f && g->findAttrib(AttribClass::point, "ok")->at(2) == 1.0f);
+        net.node(w1).setFloat("gain", 1.0f);
+        net.node(w2).setFloat("gain", 2.0f);
+        g = net.cookDisplay();
+        CHECK(g->findAttrib(AttribClass::point, "x")->at(2) == 2.0f * 1.0f * 2.0f + 10.0f + 100.0f);
+    }
+}
 
 TEST(wrangleComparesStringAttributesWithLiterals) {
     const Geometry input = labelled({"tree", "rock", "", "tree", "bush", "rock"}, {"rock", "tree"});
@@ -7618,6 +7815,1499 @@ TEST(solverCarriesItsStateFromStepToStepAndRestartsOnEdits) {
     rig.net.setTime(0.4);
     CHECK_NEAR(rig.net.cookDisplay()->x()[0], 10.0f);
     CHECK(rig.net.node(rig.loop).getFloat("step") == 0.0f);
+}
+
+TEST(networkLifetimeExpiresWhenTheNetworkIsDestroyed) {
+    auto net = std::make_unique<Network>(1);
+    const std::weak_ptr<void> lifetime = net->lifetime();
+    CHECK(!lifetime.expired());
+    CHECK(!net->lifetime().expired());
+    net.reset();
+    CHECK(lifetime.expired());
+}
+
+TEST(generationChangesOnClearAndNotOnOtherEdits) {
+    Network net(1);
+    const std::uint64_t first = net.generation();
+    const NodeId a = net.addNode("line");
+    net.node(a).setFloat("count", 4.0f);
+    net.removeNode(a);
+    CHECK(net.generation() == first);
+    net.clear();
+    CHECK(net.generation() != first);
+    // The ids start over, which is why a handle remembers the generation.
+    CHECK(net.addNode("line") == a);
+}
+
+TEST(aNestedNetworkLifetimeExpiresWithItsSubnetNode) {
+    Network net(1);
+    const NodeId sub = net.addNode("subnet", "sub");
+    const std::weak_ptr<void> inner = subnetOf(net, sub).network().lifetime();
+    const std::weak_ptr<void> outer = net.lifetime();
+    CHECK(!inner.expired());
+    net.removeNode(sub);
+    CHECK(inner.expired());
+    CHECK(!outer.expired());
+}
+
+// Asset definitions as values, the library, parameter renames.
+
+TEST(assetDefinitionsRoundTripAndKeepUnknownKeys) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "defRoundTripAsset", 3);
+    CHECK(d.name == "defRoundTripAsset" && d.version == 3 && d.inputs == 1);
+    CHECK(d.params.size() == 1 && d.params[0].name == "amount" && d.params[0].defaultValue == 2.0f);
+    CHECK(!d.graphText.empty());
+
+    d.label = "Round trip";
+    d.category = "Test";
+    d.help = "Moves things.";
+    d.inputLabels = {"geometry"};
+    d.params[0].label = "Amount";
+    d.params[0].minimum = 0.0f;
+    d.params[0].maximum = 5.0f;
+    d.params[0].group = "Main";
+    d.params[0].tooltip = "How much";
+    d.scripts["onCreated"] = "print('hi')";
+    d.renames["old"] = "amount";
+    d.files["notes.txt"] = "text";
+    CHECK(d.validate().empty());
+
+    std::string text = d.toText();
+    const size_t close = text.rfind('}');
+    text.insert(close, ", \"futureKey\": { \"a\": [1, 2] }");
+    const AssetDefinition back = AssetDefinition::fromText(text);
+    CHECK(back.label == d.label && back.category == d.category && back.help == d.help && back.inputLabels == d.inputLabels);
+    CHECK(back.params == d.params && back.scripts == d.scripts && back.renames == d.renames && back.files == d.files);
+    CHECK(back.version == 3 && back.graphText == d.graphText);
+    CHECK(back.unknown.count("futureKey") == 1);
+    CHECK(back.toText().find("futureKey") != std::string::npos);
+    CHECK(AssetDefinition::fromText(back.toText()).toText() == back.toText());
+}
+
+TEST(assetFilesFromBeforeParamsStillRead) {
+    const std::string path = std::string(JITNODES_SOURCE_DIR) + "/examples/assets/wobble.asset.json";
+    std::ifstream in(path, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const AssetDefinition d = AssetDefinition::fromText(text);
+    CHECK(d.name == "wobbleAsset" && d.params.size() == 2 && d.params[0].name == "amount" && d.params[1].name == "speed");
+    CHECK(std::fabs(d.params[0].defaultValue - 0.3f) < 1e-6f && d.params[1].defaultValue == 3.0f);
+    CHECK(d.validate().empty());
+    CHECK(d.toText().find("\"promote\"") != std::string::npos && d.toText().find("\"params\"") != std::string::npos);
+}
+
+TEST(assetDefinitionValidationReportsEachProblem) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    const AssetDefinition good = AssetDefinition::fromNode(rig.net, rig.sub, "validateGoodAsset");
+    CHECK(good.validate().empty());
+
+    auto problem = [&](const std::function<void(AssetDefinition&)>& change) {
+        AssetDefinition d = good;
+        change(d);
+        return d.validate();
+    };
+    CHECK(problem([](AssetDefinition& d) { d.name = ""; }).find("type name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.name = "9lives"; }).find("valid type name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.name = "line"; }).find("built-in") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.inputs = 99; }).find("between 0 and 16") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.inputLabels = {"a", "b"}; }).find("input label") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params.push_back(d.params[0]); }).find("twice") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].name = "bad name"; }).find("parameter name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].minimum = 5.0f; d.params[0].maximum = 1.0f; }).find("minimum is above") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.params[0].maximum = 1.0f; }).find("outside its limits") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.renames["a"] = "a"; }).find("rename") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onSomethingElse"] = "x"; }).find("script name") != std::string::npos);
+    CHECK(problem([](AssetDefinition& d) { d.graphText = "{ nodes: [ { id: 1, type: 'noSuchNodeType', name: 'x', inputs: [] } ] }"; }).find("noSuchNodeType") != std::string::npos);
+
+    AssetDefinition::setScriptValidator([](const AssetDefinition& d) { return d.scripts.count("onFrameChanged") ? std::string("onFrameChanged 3:5 cannot change the asset") : std::string(); });
+    CHECK(problem([](AssetDefinition&) {}).empty());
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onFrameChanged"] = "x"; }) == "onFrameChanged 3:5 cannot change the asset");
+    AssetDefinition::setScriptValidator({});
+    CHECK(problem([](AssetDefinition& d) { d.scripts["onFrameChanged"] = "x"; }).empty());
+}
+
+TEST(assetParameterLimitsAndLabelsReachInstances) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("other", 1.0f);
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "limitsAsset");
+    d.params[0].minimum = 0.0f;
+    d.params[0].maximum = 5.0f;
+    d.params[0].group = "Main";
+    registerAsset(d.toText());
+
+    Network net(1);
+    const NodeId a = net.addNode("limitsAsset");
+    float value = -1.0f;
+    CHECK(net.node(a).floatMinimum("amount", value) && value == 0.0f);
+    CHECK(net.node(a).floatMaximum("amount", value) && value == 5.0f);
+    CHECK(!net.node(a).floatMinimum("other", value));
+    const auto& asset = dynamic_cast<const AssetNode&>(net.node(a));
+    CHECK(asset.assetParam("amount") && asset.assetParam("amount")->group == "Main" && asset.assetParam("nope") == nullptr);
+    CHECK(net.node(a).baseFloat("amount") == 2.0f);
+}
+
+TEST(renamedAssetParametersKeepValuesAcrossVersions) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("scale", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.scale * 10");
+    registerAsset(AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 1).toText());
+
+    Network net(1);
+    const NodeId line = net.addNode("line");
+    const NodeId a = net.addNode("renameChainAsset", "inst");
+    net.connect(line, a);
+    net.node(a).setFloat("scale", 3.0f);
+    net.node(a).setKeyframes("scale", {{0.0, 3.0f, KeyInterp::linear}, {2.0, 5.0f, KeyInterp::linear}});
+    const std::string oldGraph = saveNetwork(net);
+
+    // Version 2 renames scale to gain; the contents follow.
+    CHECK(renameSpareParameter(rig.net, rig.sub, "scale", "gain") == 1);
+    AssetDefinition v2 = AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 2);
+    v2.renames["scale"] = "gain";
+    registerAsset(v2.toText());
+    CHECK(updateAssetInstances(net) == 1);
+    CHECK(net.node(a).hasFloat("gain") && !net.node(a).hasFloat("scale"));
+    CHECK(net.node(a).keyframes("gain").size() == 2 && net.node(a).keyframes("gain")[1].value == 5.0f);
+
+    // Version 3 renames it again: an instance of version 1 follows the chain.
+    CHECK(renameSpareParameter(rig.net, rig.sub, "gain", "strength") == 1);
+    AssetDefinition v3 = AssetDefinition::fromNode(rig.net, rig.sub, "renameChainAsset", 3);
+    v3.renames["scale"] = "gain";
+    v3.renames["gain"] = "strength";
+    registerAsset(v3.toText());
+
+    // A graph file saved with version 1 migrates by the renames when it is loaded.
+    Network loaded(1);
+    loadNetwork(loaded, oldGraph);
+    const NodeId b = loaded.findNode("inst");
+    CHECK(loaded.node(b).hasFloat("strength") && loaded.node(b).keyframes("strength").size() == 2);
+    CHECK(updateAssetInstances(net) == 1 && net.node(a).hasFloat("strength"));
+}
+
+TEST(renamingAPromotedParameterRewritesTheExpressionsThatReadIt) {
+    SubnetRig rig;
+    SubnetNode& sub = subnetOf(rig.net, rig.sub);
+    sub.addSpareFloat("amount", 0.5f);
+    sub.addSpareFloat("amountMore", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    rig.inner().node(rig.xf).setExpression("ty", "parent.amountMore + parent.amount");
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+
+    std::string message;
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "nope", "x"); }, &message) && message.find("not a promoted") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "amount", "amountMore"); }, &message) && message.find("already exists") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { renameSpareParameter(rig.net, rig.sub, "amount", "bad name"); }));
+    CHECK(rig.inner().node(rig.xf).expression("tx") == "parent.amount * 10");
+
+    CHECK(renameSpareParameter(rig.net, rig.sub, "amount", "size") == 2);
+    CHECK(rig.inner().node(rig.xf).expression("tx") == "parent.size * 10");
+    CHECK(rig.inner().node(rig.xf).expression("ty") == "parent.amountMore + parent.size");
+    CHECK(sub.isSpare("size") && !sub.isSpare("amount") && sub.baseFloat("size") == 0.5f);
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 5.0f);
+}
+
+TEST(renamingAParameterOfADefinitionRewritesItsContentsAndRecordsTheRename) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("other", 1.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount * 10");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "renameParamAsset");
+    d.renames["first"] = "amount";
+
+    CHECK(d.renameParam("amount", "size") == 1);
+    CHECK(d.params[0].name == "size" && d.renames["amount"] == "size" && d.renames["first"] == "size");
+    CHECK(d.graphText.find("parent.size * 10") != std::string::npos && d.graphText.find("parent.amount") == std::string::npos);
+    CHECK(d.validate().empty());
+
+    AssetDefinition fresh = d;
+    CHECK(fresh.renameParam("size", "span", false) == 1 && fresh.renames.count("size") == 0 && fresh.renames["amount"] == "size");
+    std::string message;
+    CHECK(throwsRuntimeError([&] { d.renameParam("nope", "x"); }, &message) && message.find("not a parameter") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { d.renameParam("size", "other"); }, &message) && message.find("already exists") != std::string::npos);
+    CHECK(throwsRuntimeError([&] { d.renameParam("size", "bad name"); }));
+    CHECK(d.params[0].name == "size");
+}
+
+TEST(applyingADefinitionReplacesTheContentsAndParametersOfASubnet) {
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    subnetOf(rig.net, rig.sub).addSpareFloat("gone", 1.0f);
+    SubnetRig other;
+    subnetOf(other.net, other.sub).addSpareFloat("amount", 7.0f);
+    subnetOf(other.net, other.sub).addSpareFloat("added", 4.0f);
+    other.inner().node(other.xf).setFloat("tx", 9.0f);
+    const AssetDefinition d = AssetDefinition::fromNode(other.net, other.sub, "applyToAsset");
+
+    d.applyTo(rig.net, rig.sub);
+    CHECK(subnetOf(rig.net, rig.sub).isSpare("added") && !subnetOf(rig.net, rig.sub).isSpare("gone"));
+    CHECK(subnetOf(rig.net, rig.sub).baseFloat("amount") == 2.0f);   // an existing parameter keeps its value
+    CHECK(subnetOf(rig.net, rig.sub).baseFloat("added") == 4.0f);
+    CHECK_NEAR(rig.net.cook(rig.out)->x()[0], 9.0f);
+    CHECK(throwsRuntimeError([&] { d.applyTo(rig.net, rig.line); }));
+}
+
+TEST(theAssetLibraryInstallsSavesUpdatesAndUninstalls) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jitnodes_asset_library_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    AssetLibrary& library = AssetLibrary::instance();
+    int notified = 0;
+    const int listener = library.addListener([&] { ++notified; });
+
+    SubnetRig rig;
+    subnetOf(rig.net, rig.sub).addSpareFloat("amount", 2.0f);
+    rig.inner().node(rig.xf).setExpression("tx", "parent.amount");
+    AssetDefinition d = AssetDefinition::fromNode(rig.net, rig.sub, "libraryTestAsset");
+    d.label = "Library test";
+    const std::string path = (dir / "libraryTestAsset.asset.json").string();
+    library.save(d, path);
+    CHECK(library.has("libraryTestAsset") && d.version == 1 && d.source == path && fs::exists(path) && notified == 1);
+
+    Network net(1);
+    const NodeId line = net.addNode("line");
+    const NodeId a = net.addNode("libraryTestAsset");
+    net.connect(line, a);
+    std::vector<AssetEntry> entries = library.list(&net);
+    const auto find = [&](const std::string& name) {
+        return std::find_if(entries.begin(), entries.end(), [&](const AssetEntry& e) { return e.name == name; });
+    };
+    CHECK(find("libraryTestAsset") != entries.end());
+    CHECK(find("libraryTestAsset")->instances == 1 && find("libraryTestAsset")->outdated == 0 && !find("libraryTestAsset")->embedded);
+    CHECK(find("libraryTestAsset")->label == "Library test" && find("libraryTestAsset")->params == std::vector<std::string>{"amount"});
+
+    // Saving again writes the next version and leaves the instance outdated until it is updated.
+    AssetDefinition edited = library.definition("libraryTestAsset");
+    edited.params[0].defaultValue = 4.0f;
+    library.save(edited, path);
+    CHECK(edited.version == 2 && NodeRegistry::instance().assetVersion("libraryTestAsset") == 2);
+    entries = library.list(&net);
+    CHECK(find("libraryTestAsset")->outdated == 1);
+    CHECK(library.updateInstances(net, "libraryTestAsset") == 1);
+    entries = library.list(&net);
+    CHECK(find("libraryTestAsset")->outdated == 0);
+
+    std::string message;
+    CHECK(throwsRuntimeError([&] { library.uninstall("libraryTestAsset", &net); }, &message) && message.find("1 instance") != std::string::npos);
+    net.removeNode(a);
+    library.uninstall("libraryTestAsset", &net);
+    CHECK(!library.has("libraryTestAsset") && fs::exists(path));
+    CHECK(throwsRuntimeError([&] { library.uninstall("libraryTestAsset"); }));
+
+    // Reinstalling from the file, reloading, and the directory scan.
+    library.installFile(path);
+    CHECK(library.has("libraryTestAsset") && library.source("libraryTestAsset") == path);
+    library.reload("libraryTestAsset");
+    {
+        AssetDefinition second = AssetDefinition::fromNode(rig.net, rig.sub, "libraryTestAssetTwo");
+        std::ofstream(dir / "two.asset.json", std::ios::binary) << second.toText();
+        std::ofstream(dir / "broken.asset.json", std::ios::binary) << "{ not an asset";
+        std::ofstream(dir / "ignored.txt", std::ios::binary) << "x";
+    }
+    size_t installed = 0;
+    const std::string error = library.installDirectory(dir.string(), &installed);
+    CHECK(installed == 2 && error.find("broken.asset.json") != std::string::npos);   // the broken file is reported, the others still load
+    CHECK(library.has("libraryTestAssetTwo"));
+    CHECK(library.installDirectory((dir / "missing").string()).empty());
+
+    // Apply registers in memory: the asset is "embedded" (no file) until it is saved.
+    AssetDefinition memory = AssetDefinition::fromNode(rig.net, rig.sub, "libraryMemoryAsset");
+    library.apply(memory);
+    entries = library.list();
+    CHECK(find("libraryMemoryAsset")->embedded);
+    AssetDefinition invalid = memory;
+    invalid.name = "line";
+    CHECK(throwsRuntimeError([&] { library.apply(invalid); }));
+    CHECK(throwsRuntimeError([&] { library.save(invalid, (dir / "line.asset.json").string()); }) && !fs::exists(dir / "line.asset.json"));
+    CHECK(throwsRuntimeError([&] { library.reload("libraryMemoryAsset"); }));
+
+    library.removeListener(listener);
+    const int before = notified;
+    library.uninstall("libraryMemoryAsset");
+    CHECK(notified == before);
+    for (const char* name : {"libraryTestAsset", "libraryTestAssetTwo"}) {
+        library.uninstall(name);
+    }
+    fs::remove_all(dir);
+}
+
+// One open polyline whose points are (x, y, t); extra point attributes are added by the caller.
+std::shared_ptr<Geometry> strokeOf(const std::vector<std::array<float, 3>>& samples) {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(samples.size());
+    float* t = geo->attrib(AttribClass::point, "t").floats().data();
+    for (size_t i = 0; i < samples.size(); ++i) {
+        geo->x()[i] = samples[i][0];
+        geo->y()[i] = samples[i][1];
+        t[i] = samples[i][2];
+    }
+    Primitive prim;
+    prim.start = 0;
+    prim.count = static_cast<uint32_t>(samples.size());
+    geo->addPrimitive(prim);
+    return geo;
+}
+
+NodeId strokeSource(Network& net, std::shared_ptr<Geometry> geo) {
+    NodeId id = net.addNode("geometry");
+    net.node(id).setGeometryParam("geometry", geo);
+    return id;
+}
+
+TEST(oscillatorWaveformsAtKnownPhases) {
+    Network net(1);
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(5);
+    float* d = geo->attrib(AttribClass::point, "d").floats().data();
+    for (int i = 0; i < 5; ++i) {
+        d[i] = 0.25f * static_cast<float>(i);  // 0, 1/4, 1/2, 3/4, 1 cycle
+    }
+    NodeId src = strokeSource(net, geo);
+    NodeId osc = net.addNode("oscillator");
+    net.connect(src, osc);
+    net.node(osc).setString("driver", "d");
+    net.node(osc).setString("name", "o");
+
+    auto values = [&](const char* wave) {
+        net.node(osc).setString("waveform", wave);
+        auto out = net.cook(osc);
+        const AttribArray* o = out->findAttrib(AttribClass::point, "o");
+        CHECK(o != nullptr);
+        std::vector<float> v;
+        for (size_t i = 0; i < 5; ++i) {
+            v.push_back(o->at(i));
+        }
+        return v;
+    };
+    auto sine = values("sine");
+    CHECK_NEAR(sine[0], 0.0f);
+    CHECK_NEAR(sine[1], 1.0f);
+    CHECK_NEAR(sine[3], -1.0f);
+    auto saw = values("saw");
+    CHECK_NEAR(saw[0], -1.0f);
+    CHECK_NEAR(saw[2], 0.0f);
+    CHECK_NEAR(saw[4], -1.0f);
+    auto square = values("square");
+    CHECK_NEAR(square[0], 1.0f);
+    CHECK_NEAR(square[1], 1.0f);
+    CHECK_NEAR(square[2], -1.0f);
+    auto triangle = values("triangle");
+    CHECK_NEAR(triangle[0], 0.0f);
+    CHECK_NEAR(triangle[1], 1.0f);
+    CHECK_NEAR(triangle[3], -1.0f);
+
+    net.node(osc).setFloat("amplitude", 2.0f);
+    net.node(osc).setFloat("offset", 10.0f);
+    net.node(osc).setFloat("phase", 0.25f);
+    net.node(osc).setString("waveform", "sine");
+    CHECK_NEAR(net.cook(osc)->findAttrib(AttribClass::point, "o")->at(0), 12.0f);
+
+    net.node(osc).setString("waveform", "noise");
+    net.node(osc).setFloat("amplitude", 1.0f);
+    net.node(osc).setFloat("offset", 0.0f);
+    net.node(osc).setFloat("phase", 0.0f);
+    auto noise = values("noise");
+    for (float v : noise) {
+        CHECK(v >= -1.0f && v <= 1.0f);
+    }
+    CHECK(values("noise") == noise);
+}
+
+TEST(oscillatorDriverTimeDetailAndErrors) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0}, {1, 0, 1}, {2, 0, 2}});
+    NodeId src = strokeSource(net, geo);
+    NodeId osc = net.addNode("oscillator");
+    net.connect(src, osc);
+    CHECK(net.node(osc).dependsOnPlayhead());
+    net.setTime(0.25);
+    auto out = net.cook(osc);  // sine of 0.25 cycles, one value on every point
+    for (size_t i = 0; i < 3; ++i) {
+        CHECK_NEAR(out->findAttrib(AttribClass::point, "osc")->at(i), 1.0f);
+    }
+
+    net.node(osc).setString("class", "detail");
+    net.setTime(0.5);
+    CHECK_NEAR(net.cook(osc)->detail("osc", 99.0f), 0.0f);
+
+    net.node(osc).setString("class", "point");
+    net.node(osc).setString("driver", "t");
+    CHECK(!net.node(osc).dependsOnPlayhead());
+    net.node(osc).setFloat("frequency", 0.25f);
+    CHECK_NEAR(net.cook(osc)->findAttrib(AttribClass::point, "osc")->at(1), 1.0f);
+
+    net.node(osc).setString("driver", "missing");
+    bool threw = false;
+    try {
+        net.cook(osc);
+    } catch (const std::exception& e) {
+        threw = std::string(e.what()).find("missing") != std::string::npos;
+    }
+    CHECK(threw);
+    net.node(osc).setString("driver", "t");
+    net.node(osc).setString("waveform", "wobble");
+    threw = false;
+    try {
+        net.cook(osc);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(oscillatorSurvivesSerialisation) {
+    Network net(1);
+    NodeId osc = net.addNode("oscillator");
+    net.node(osc).setString("waveform", "triangle");
+    net.node(osc).setString("driver", "s");
+    net.node(osc).setFloat("frequency", 4.0f);
+    Network loaded(1);
+    loadNetwork(loaded, saveNetwork(net));
+    CHECK(loaded.nodeIds().size() == 1);
+    NodeId again = loaded.nodeIds()[0];
+    CHECK(loaded.node(again).getString("waveform") == "triangle" && loaded.node(again).getString("driver") == "s");
+    CHECK_NEAR(loaded.node(again).getFloat("frequency"), 4.0f);
+}
+
+TEST(pathMotionOfASteadyStroke) {
+    // 10 units per second along x, then a stop with no time between two samples, then a turn upwards.
+    auto geo = strokeOf({{0, 0, 0.0f}, {1, 0, 0.1f}, {2, 0, 0.2f}, {3, 0, 0.3f}});
+    PathMotionParams params;
+    params.smoothing = 1.0f;
+    PathMotion::compute(*geo, params);
+    const auto& s = geo->pointAttrib("s");
+    const auto& speed = geo->pointAttrib("speed");
+    const auto& heading = geo->pointAttrib("heading");
+    CHECK_NEAR(s[3], 3.0f);
+    for (size_t i = 0; i < 4; ++i) {
+        CHECK_NEAR(speed[i], 10.0f);  // the first point takes the second's values
+        CHECK_NEAR(heading[i], 0.0f);
+        CHECK_NEAR(geo->pointAttrib("accel")[i], 0.0f);
+    }
+    CHECK_NEAR(geo->pointAttrib("dt")[0], 0.0f);
+    CHECK_NEAR(geo->pointAttrib("dt")[2], 0.1f);
+
+    auto turn = strokeOf({{0, 0, 0.0f}, {1, 0, 0.1f}, {1, 1, 0.2f}});
+    PathMotion::compute(*turn, params);
+    CHECK_NEAR(turn->pointAttrib("heading")[2], 1.5707963f);
+    CHECK_NEAR(turn->pointAttrib("vy")[2], 10.0f);
+    CHECK_NEAR(turn->pointAttrib("ax")[2], -100.0f);
+}
+
+TEST(pathMotionSmoothsAndHandlesStops) {
+    auto geo = strokeOf({{0, 0, 0.0f}, {1, 0, 0.1f}, {1, 0, 0.1f}, {1, 0, 0.2f}});
+    PathMotionParams params;
+    params.smoothing = 0.5f;
+    PathMotion::compute(*geo, params);
+    const auto& speed = geo->pointAttrib("speed");
+    CHECK_NEAR(speed[1], 10.0f);
+    CHECK_NEAR(speed[2], 10.0f);   // no time between samples 1 and 2: repeats
+    CHECK_NEAR(speed[3], 5.0f);    // 0.5 * 0 + 0.5 * 10
+    CHECK(geo->pointAttrib("accel")[3] < 0.0f);
+
+    auto noTime = std::make_shared<Geometry>();
+    noTime->resizePoints(2);
+    bool threw = false;
+    try {
+        PathMotion::compute(*noTime, params);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("'t'") != std::string::npos;
+    }
+    CHECK(threw);
+    params.smoothing = 0.0f;
+    threw = false;
+    try {
+        PathMotion::compute(*geo, params);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(pathMotionNodeWritesTheAttributes) {
+    Network net(1);
+    NodeId src = strokeSource(net, strokeOf({{0, 0, 0.0f}, {2, 0, 0.5f}, {4, 0, 1.0f}}));
+    NodeId motion = net.addNode("pathMotion");
+    net.connect(src, motion);
+    auto out = net.cook(motion);
+    CHECK_NEAR(out->findAttrib(AttribClass::point, "speed")->at(2), 4.0f);
+    CHECK_NEAR(out->findAttrib(AttribClass::point, "s")->at(2), 4.0f);
+}
+
+TEST(removeAttribKeepsPositions) {
+    Geometry geo;
+    geo.resizePoints(2);
+    geo.attrib(AttribClass::point, "a");
+    CHECK(geo.removeAttrib(AttribClass::point, "a"));
+    CHECK(!geo.removeAttrib(AttribClass::point, "a"));
+    bool threw = false;
+    try {
+        geo.removeAttrib(AttribClass::point, "x");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(strokeCleanRemovesAndKeepsAttributes) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0}, {1, 0, 1}, {2, 0, 2}});
+    for (const char* name : {"tiltX", "tiltY", "twist", "pressure"}) {
+        geo->attrib(AttribClass::point, name);
+    }
+    NodeId src = strokeSource(net, geo);
+    NodeId clean = net.addNode("strokeClean");
+    net.connect(src, clean);
+
+    auto untouched = net.cook(clean);
+    CHECK(untouched->pointCount() == 3 && untouched->hasPointAttrib("tiltX"));
+
+    net.node(clean).setString("remove", "tilt* twist");
+    auto out = net.cook(clean);
+    CHECK(!out->hasPointAttrib("tiltX") && !out->hasPointAttrib("tiltY") && !out->hasPointAttrib("twist"));
+    CHECK(out->hasPointAttrib("pressure") && out->hasPointAttrib("t") && out->pointCount() == 3);
+
+    net.node(clean).setString("remove", "");
+    net.node(clean).setString("keep", "pressure");
+    out = net.cook(clean);
+    CHECK(out->hasPointAttrib("pressure") && !out->hasPointAttrib("t") && !out->hasPointAttrib("tiltX"));
+    CHECK(out->hasPointAttrib("x") && out->hasPointAttrib("y"));
+
+    net.node(clean).setString("remove", "x");  // positions are never removed
+    CHECK(net.cook(clean)->hasPointAttrib("x"));
+}
+
+TEST(strokeCleanSimplifiesWithinTolerance) {
+    // A line with a tiny bump, then a circle.
+    std::vector<std::array<float, 3>> samples;
+    for (int i = 0; i <= 20; ++i) {
+        samples.push_back({static_cast<float>(i), i == 10 ? 0.05f : 0.0f, 0.01f * static_cast<float>(i)});
+    }
+    Network net(1);
+    NodeId src = strokeSource(net, strokeOf(samples));
+    NodeId clean = net.addNode("strokeClean");
+    net.connect(src, clean);
+    net.node(clean).setFloat("simplify", 0.1f);
+    auto out = net.cook(clean);
+    CHECK(out->pointCount() == 2);
+    CHECK(out->primitiveCount() == 1 && out->primitives()[0].count == 2);
+    CHECK_NEAR(out->x()[0], 0.0f);
+    CHECK_NEAR(out->x()[1], 20.0f);
+    CHECK_NEAR(out->findAttrib(AttribClass::point, "t")->at(1), 0.2f);  // the kept end keeps its own value
+
+    net.node(clean).setFloat("simplify", 0.01f);
+    const size_t tighter = net.cook(clean)->pointCount();
+    CHECK(tighter > 2 && tighter < 21);  // the bump survives a tighter tolerance
+
+    samples.clear();
+    for (int i = 0; i <= 100; ++i) {
+        const float a = 6.2831853f * static_cast<float>(i) / 100.0f;
+        samples.push_back({10.0f * std::cos(a), 10.0f * std::sin(a), static_cast<float>(i)});
+    }
+    Network circle(1);
+    NodeId source = strokeSource(circle, strokeOf(samples));
+    NodeId cleaned = circle.addNode("strokeClean");
+    circle.connect(source, cleaned);
+    circle.node(cleaned).setFloat("simplify", 0.2f);
+    auto kept = circle.cook(cleaned);
+    CHECK(kept->pointCount() < 101 && kept->pointCount() > 10);
+    // Every original point lies within the tolerance of the simplified polyline.
+    for (const auto& sample : samples) {
+        float best = 1e9f;
+        for (size_t i = 0; i + 1 < kept->pointCount(); ++i) {
+            const float ax = kept->x()[i], ay = kept->y()[i], bx = kept->x()[i + 1], by = kept->y()[i + 1];
+            const float dx = bx - ax, dy = by - ay;
+            const float t = std::clamp(((sample[0] - ax) * dx + (sample[1] - ay) * dy) / (dx * dx + dy * dy), 0.0f, 1.0f);
+            best = std::min(best, std::hypot(sample[0] - ax - t * dx, sample[1] - ay - t * dy));
+        }
+        CHECK(best <= 0.2f + 1e-3f);
+    }
+}
+
+TEST(strokeCleanDropsCloseAndQuickPointsButKeepsTheEnds) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0.00f}, {0.1f, 0, 0.01f}, {0.2f, 0, 0.02f}, {5, 0, 0.5f}, {5.05f, 0, 0.51f}});
+    NodeId src = strokeSource(net, geo);
+    NodeId clean = net.addNode("strokeClean");
+    net.connect(src, clean);
+    net.node(clean).setFloat("minDistance", 1.0f);
+    auto out = net.cook(clean);
+    CHECK(out->pointCount() == 2);
+    CHECK_NEAR(out->x()[0], 0.0f);
+    CHECK_NEAR(out->x()[1], 5.05f);  // the end replaces the point before it that was too close
+
+    net.node(clean).setFloat("keepEnds", 0.0f);
+    out = net.cook(clean);
+    CHECK(out->pointCount() == 2);
+    CHECK_NEAR(out->x()[1], 5.0f);
+
+    net.node(clean).setFloat("keepEnds", 1.0f);
+    net.node(clean).setFloat("minDistance", 0.0f);
+    net.node(clean).setFloat("minTime", 0.1f);
+    out = net.cook(clean);
+    CHECK(out->pointCount() == 2);
+    CHECK_NEAR(out->findAttrib(AttribClass::point, "t")->at(1), 0.51f);
+
+    net.node(clean).setString("timeAttr", "nothing");
+    bool threw = false;
+    try {
+        net.cook(clean);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(strokeCleanLeavesShortAndCurvedPrimitivesWhole) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0.0f}, {0.01f, 0, 0.1f}});  // two points: never thinned
+    NodeId src = strokeSource(net, geo);
+    NodeId clean = net.addNode("strokeClean");
+    net.connect(src, clean);
+    net.node(clean).setFloat("minDistance", 5.0f);
+    net.node(clean).setFloat("simplify", 5.0f);
+    CHECK(net.cook(clean)->pointCount() == 2);
+}
+
+TEST(rampParsesPrintsAndSorts) {
+    Ramp ramp = Ramp::parse("1 1 linear, 0 0 monotone; 0.5 0.25");
+    CHECK(ramp.size() == 3);
+    CHECK_NEAR(ramp.points()[0].pos, 0.0f);
+    CHECK(ramp.points()[0].interp == RampInterp::monotone);
+    CHECK(ramp.points()[1].interp == RampInterp::linear);  // omitted: linear
+    CHECK(ramp.toText() == "0 0 monotone, 0.5 0.25 linear, 1 1 linear");
+    CHECK(Ramp::parse(ramp.toText()).toText() == ramp.toText());
+    CHECK(Ramp::interpFromName("Catmull-Rom") == RampInterp::catmullRom);
+    CHECK(Ramp().toText() == "0 0 linear, 1 1 linear");
+
+    for (const char* bad : {"", "0", "a b", "0 1 wobbly", "0 1 linear extra", "0 nan"}) {
+        CHECK(!Ramp::check(bad).empty());
+    }
+    CHECK(Ramp::check("0 0, 1 1").empty());
+    bool threw = false;
+    try {
+        Ramp::parse("0 0, 1 oops");
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("point 2") != std::string::npos;
+    }
+    CHECK(threw);
+}
+
+TEST(rampInterpolationKinds) {
+    CHECK_NEAR(Ramp::parse("0 0 linear, 1 10").eval(0.25f), 2.5f);
+    CHECK_NEAR(Ramp::parse("0 0 linear, 1 10").eval(-5.0f), 0.0f);   // the ends hold
+    CHECK_NEAR(Ramp::parse("0 0 linear, 1 10").eval(5.0f), 10.0f);
+    CHECK_NEAR(Ramp::parse("0 3 constant, 1 10").eval(0.99f), 3.0f);
+    CHECK_NEAR(Ramp::parse("0 0 smooth, 1 10").eval(0.5f), 5.0f);
+    CHECK_NEAR(Ramp::parse("0 0 smooth, 1 10").eval(0.25f), 1.5625f);  // 3t^2 - 2t^3 at 0.25 is 0.15625
+
+    // A step: two points at one position.
+    Ramp step = Ramp::parse("0 0 constant, 0.5 0 linear, 0.5 1 linear, 1 1");
+    CHECK_NEAR(step.eval(0.49f), 0.0f);
+    CHECK_NEAR(step.eval(0.5f), 1.0f);
+
+    // Through every point, whatever the interpolation.
+    for (const char* kind : {"catmullRom", "monotone", "smooth"}) {
+        Ramp r = Ramp::parse(std::string("0 0 ") + kind + ", 0.3 0.8 " + kind + ", 0.6 0.9 " + kind + ", 1 0.2");
+        CHECK_NEAR(r.eval(0.3f), 0.8f);
+        CHECK_NEAR(r.eval(0.6f), 0.9f);
+    }
+
+    // Monotone data never overshoots under monotone interpolation; Catmull-Rom does.
+    Ramp monotone = Ramp::parse("0 0 monotone, 0.5 0.95 monotone, 1 1");
+    Ramp cardinal = Ramp::parse("0 0 catmullRom, 0.5 0.95 catmullRom, 1 1");
+    float highest = 0.0f, previous = 0.0f;
+    bool rises = true;
+    for (int i = 0; i <= 200; ++i) {
+        const float v = monotone.eval(static_cast<float>(i) / 200.0f);
+        highest = std::max(highest, v);
+        rises = rises && v >= previous - 1e-6f;
+        previous = v;
+    }
+    CHECK(highest <= 1.0f + 1e-5f && rises);
+    float cardinalHighest = 0.0f;
+    for (int i = 0; i <= 200; ++i) {
+        cardinalHighest = std::max(cardinalHighest, cardinal.eval(static_cast<float>(i) / 200.0f));
+    }
+    CHECK(cardinalHighest > 1.0f);
+
+    // A flat stretch stays flat under monotone interpolation.
+    Ramp flat = Ramp::parse("0 0 monotone, 0.4 0.5 monotone, 0.6 0.5 monotone, 1 1");
+    CHECK_NEAR(flat.eval(0.5f), 0.5f);
+
+    CHECK(Ramp().bake(5) == std::vector<float>({0.0f, 0.25f, 0.5f, 0.75f, 1.0f}));
+    CHECK(Ramp::parse("0.5 7").size() == 1);
+    CHECK_NEAR(Ramp::parse("0.5 7").eval(100.0f), 7.0f);
+}
+
+TEST(rampParameterIsAStringThatSurvivesSerialisation) {
+    Network net(1);
+    NodeId remap = net.addNode("remap");
+    CHECK(net.node(remap).isRampParam("ramp") && !net.node(remap).isRampParam("attribute"));
+    CHECK(net.node(remap).rampNames() == std::vector<std::string>({"ramp"}));
+    net.node(remap).setString("ramp", "0 0 monotone, 0.4 0.9 monotone, 1 1");
+    Network loaded(1);
+    loadNetwork(loaded, saveNetwork(net));
+    NodeId again = loaded.nodeIds()[0];
+    CHECK(loaded.node(again).isRampParam("ramp"));
+    CHECK(loaded.node(again).getRamp("ramp").size() == 3);
+    bool threw = false;
+    try {
+        loaded.node(again).getRamp("attribute");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(remapShapesPressureAndClamps) {
+    Network net(1);
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(5);
+    float* pressure = geo->attrib(AttribClass::point, "pressure").floats().data();
+    const float given[] = {-1.0f, 0.0f, 0.5f, 1.0f, 2.0f};
+    for (int i = 0; i < 5; ++i) {
+        pressure[i] = given[i];
+    }
+    NodeId src = strokeSource(net, geo);
+    NodeId remap = net.addNode("remap");
+    net.connect(src, remap);
+    auto out = net.cook(remap);  // defaults: pressure -> w through a straight ramp
+    const AttribArray* w = out->findAttrib(AttribClass::point, "w");
+    CHECK(w != nullptr);
+    CHECK_NEAR(w->at(0), 0.0f);  // clamped by the ramp ends
+    CHECK_NEAR(w->at(2), 0.5f);
+    CHECK_NEAR(w->at(4), 1.0f);
+
+    net.node(remap).setString("ramp", "0 0.2 linear, 0.5 1 linear, 1 0.2");
+    net.node(remap).setFloat("outMin", 1.0f);
+    net.node(remap).setFloat("outMax", 11.0f);
+    w = net.cook(remap)->findAttrib(AttribClass::point, "w");
+    CHECK_NEAR(w->at(1), 3.0f);    // 1 + 0.2 * 10
+    CHECK_NEAR(w->at(2), 11.0f);
+
+    net.node(remap).setFloat("outMin", 0.0f);
+    net.node(remap).setFloat("outMax", 1.0f);
+    net.node(remap).setFloat("inMin", 1.0f);  // an inverted range reverses the curve's direction
+    net.node(remap).setFloat("inMax", 0.0f);
+    net.node(remap).setString("ramp", "0 0, 1 1");
+    w = net.cook(remap)->findAttrib(AttribClass::point, "w");
+    CHECK_NEAR(w->at(1), 1.0f);
+    CHECK_NEAR(w->at(3), 0.0f);
+
+    net.node(remap).setString("output", "");  // empty: overwrite the input attribute
+    CHECK_NEAR(net.cook(remap)->findAttrib(AttribClass::point, "pressure")->at(1), 1.0f);
+    net.node(remap).setString("output", "w");
+
+    net.node(remap).setFloat("inMax", 1.0f);
+    for (const char* problem : {"nothing", "0"}) {
+        bool threw = false;
+        try {
+            if (std::string(problem) == "nothing") {
+                net.node(remap).setString("attribute", "nothing");
+            } else {
+                net.node(remap).setString("attribute", "pressure");
+                net.node(remap).setString("ramp", "0");
+            }
+            net.cook(remap);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
+TEST(oscillatorRampWaveformIsTheDrawnCurve) {
+    Network net(1);
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(3);
+    float* d = geo->attrib(AttribClass::point, "d").floats().data();
+    d[0] = 0.0f;
+    d[1] = 0.5f;
+    d[2] = 1.25f;  // a second cycle: 0.25 into it
+    NodeId src = strokeSource(net, geo);
+    NodeId osc = net.addNode("oscillator");
+    net.connect(src, osc);
+    net.node(osc).setString("driver", "d");
+    net.node(osc).setString("waveform", "ramp");
+    net.node(osc).setString("ramp", "0 0 linear, 0.5 4 linear, 1 0");
+    auto out = net.cook(osc);
+    const AttribArray* o = out->findAttrib(AttribClass::point, "osc");
+    CHECK_NEAR(o->at(0), 0.0f);
+    CHECK_NEAR(o->at(1), 4.0f);
+    CHECK_NEAR(o->at(2), 2.0f);
+    net.node(osc).setFloat("amplitude", 0.5f);
+    net.node(osc).setFloat("offset", 1.0f);
+    CHECK_NEAR(net.cook(osc)->findAttrib(AttribClass::point, "osc")->at(1), 3.0f);
+}
+
+// The extent of a geometry's points in x and y.
+std::array<float, 4> pointBox(const Geometry& g) {
+    std::array<float, 4> box{1e9f, 1e9f, -1e9f, -1e9f};
+    for (uint32_t i = 0; i < g.pointCount(); ++i) {
+        box[0] = std::min(box[0], g.x()[i]);
+        box[1] = std::min(box[1], g.y()[i]);
+        box[2] = std::max(box[2], g.x()[i]);
+        box[3] = std::max(box[3], g.y()[i]);
+    }
+    return box;
+}
+
+TEST(calligraphySweepsAPathIntoClosedOutlinesOfTheNibsSize) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0}, {50, 0, 1}, {100, 0, 2}});
+    NodeId src = strokeSource(net, geo);
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    net.node(pen).setFloat("width", 10.0f);
+    net.node(pen).setFloat("angle", 0.0f);
+    net.node(pen).setFloat("roundness", 100.0f);
+    auto out = net.cook(pen);
+    CHECK(out->primitiveCount() == 2);
+    for (const Primitive& prim : out->primitives()) {
+        CHECK(prim.closed && prim.count >= 3);
+    }
+    const auto box = pointBox(*out);
+    CHECK_NEAR(box[0], -5.0f);
+    CHECK_NEAR(box[2], 105.0f);
+    CHECK_NEAR(box[1], -5.0f);
+    CHECK_NEAR(box[3], 5.0f);
+    CHECK(!out->hasPointAttrib("t"));
+}
+
+TEST(calligraphyFlatNibIsThinAcrossItsAngle) {
+    Network net(1);
+    NodeId src = strokeSource(net, strokeOf({{0, 0, 0}, {100, 0, 1}}));
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    net.node(pen).setFloat("width", 20.0f);
+    net.node(pen).setFloat("angle", 0.0f);
+    net.node(pen).setFloat("roundness", 10.0f);
+    auto box = pointBox(*net.cook(pen));
+    CHECK(box[3] - box[1] < 3.0f);   // a horizontal nib drawing a horizontal line is thin
+    net.node(pen).setFloat("angle", 90.0f);
+    box = pointBox(*net.cook(pen));
+    CHECK(box[3] - box[1] > 19.0f);  // turned upright it is as tall as it is long
+}
+
+TEST(calligraphyNibFollowsThePressureAttribute) {
+    Network net(1);
+    auto geo = strokeOf({{0, 0, 0}, {100, 0, 1}});
+    float* w = geo->attrib(AttribClass::point, "w").floats().data();
+    w[0] = 0.25f;
+    w[1] = 1.0f;
+    NodeId src = strokeSource(net, geo);
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    net.node(pen).setFloat("width", 20.0f);
+    net.node(pen).setFloat("roundness", 100.0f);
+    auto box = pointBox(*net.cook(pen));
+    CHECK_NEAR(box[0], -2.5f);    // the thin start
+    CHECK_NEAR(box[2], 110.0f);   // the full end
+}
+
+TEST(calligraphyKeepsShapeKeysAndSweepsCubics) {
+    Network net(1);
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(4);
+    const float px[4] = {0, 30, 60, 90}, py[4] = {0, 40, 40, 0};
+    for (int i = 0; i < 4; ++i) {
+        geo->x()[i] = px[i];
+        geo->y()[i] = py[i];
+    }
+    Primitive prim;
+    prim.count = 4;
+    prim.kind = PrimKind::cubic;
+    geo->addShapePrimitive(prim, "pathA");
+    NodeId src = strokeSource(net, geo);
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    auto out = net.cook(pen);
+    CHECK(out->primitiveCount() > 4);
+    CHECK(out->shapes().size() == 1);
+    CHECK(out->shapes()[0].key == "pathA");
+    out->checkShapes();
+    net.node(pen).setFloat("width", 0.0f);
+    bool refused = false;
+    try {
+        net.cook(pen);
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
+class ProbeRenderer : public RendererNode {
+public:
+    ProbeRenderer() : RendererNode("testProbeRenderer", 1) {}
+    Value cookValue(CookContext&, const std::vector<Value>& inputs) override {
+        const RenderView view = viewToRender(renderView());
+        Image pixels;
+        pixels.width = view.width;
+        pixels.height = view.height;
+        const uint32_t points = inputs[0].geometry ? static_cast<uint32_t>(inputs[0].geometry->pointCount()) : 0u;
+        pixels.pixels.assign(static_cast<size_t>(view.width) * static_cast<size_t>(view.height), 0xFF000000u + points);
+        auto result = std::make_shared<ImageResult>(view, std::move(pixels));
+        setResult(result);
+        Value value;
+        value.image = result;
+        return value;
+    }
+};
+
+class ImageSinkNode : public ValueNode {
+public:
+    ImageSinkNode() : ValueNode("testImageSink", 1) {}
+    PortType inputType(int) const override { return PortType::image; }
+    PortType outputType() const override { return PortType::image; }
+    Value cookValue(CookContext&, const std::vector<Value>& inputs) override { return inputs[0]; }
+};
+
+void registerImageTestNodes() {
+    static const bool registered = (NodeRegistry::instance().registerType("testProbeRenderer", [] { return std::make_unique<ProbeRenderer>(); }),
+                                    NodeRegistry::instance().registerType("testImageSink", [] { return std::make_unique<ImageSinkNode>(); }), true);
+    (void)registered;
+}
+
+RenderView testWindow(double shiftX = 0.0) {
+    RenderView view;
+    view.transform = Matrix2D::translation(shiftX, 0.0);
+    view.width = 10;
+    view.height = 10;
+    return view;
+}
+
+NodeId pointSource(Network& net, size_t points) {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(points);
+    return strokeSource(net, geo);
+}
+
+TEST(typedWiresRefuseAMismatchAndAcceptAMatch) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 3);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    const NodeId sink = net.addNode("testImageSink");
+    const NodeId merge = net.addNode("merge");
+
+    net.connect(src, probe);
+    net.connect(probe, sink);
+    CHECK(net.inputOf(sink, 0) == probe);
+
+    bool refused = false;
+    try {
+        net.connect(src, sink);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+    CHECK(net.inputOf(sink, 0) == probe);
+
+    refused = false;
+    try {
+        net.connect(probe, merge);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+    CHECK(net.inputOf(merge, 0) == invalidNodeId);
+}
+
+TEST(imageOutputIsCookedThroughCookImageAndCached) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 3);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    net.connect(src, probe);
+    static_cast<RendererNode&>(net.node(probe)).setView(testWindow());
+
+    ImageHandle first = net.cookImage(probe);
+    CHECK(first != nullptr);
+    CHECK(net.node(probe).cookCount() == 1);
+    CHECK(first->drawnAt().width == 20);
+    Image pixels;
+    CHECK(first->readPixels(pixels));
+    CHECK(pixels.pixels[0] == 0xFF000003u);
+
+    CHECK(net.cookImage(probe) == first);
+    CHECK(net.node(probe).cookCount() == 1);
+
+    auto more = std::make_shared<Geometry>();
+    more->resizePoints(5);
+    net.node(src).setGeometryParam("geometry", more);
+    ImageHandle second = net.cookImage(probe);
+    CHECK(net.node(probe).cookCount() == 2);
+    CHECK(second != first);
+    CHECK(second->readPixels(pixels));
+    CHECK(pixels.pixels[0] == 0xFF000005u);
+}
+
+TEST(cookAndCookImageRefuseTheOtherOutputType) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 1);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    net.connect(src, probe);
+    static_cast<RendererNode&>(net.node(probe)).setView(testWindow());
+
+    bool refused = false;
+    try {
+        net.cook(probe);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+    refused = false;
+    try {
+        net.cookImage(src);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+    refused = false;
+    try {
+        net.freezeNode(probe);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
+TEST(aPanInsideTheDrawnRegionDoesNotCookAgain) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 2);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    net.connect(src, probe);
+    RendererNode& renderer = static_cast<RendererNode&>(net.node(probe));
+    renderer.setView(testWindow());
+    net.cookImage(probe);
+
+    renderer.setView(testWindow(-2.0));
+    CHECK(!net.node(probe).dirty());
+    net.cookImage(probe);
+    CHECK(net.node(probe).cookCount() == 1);
+
+    renderer.setView(testWindow(-50.0));
+    CHECK(net.node(probe).dirty());
+    net.cookImage(probe);
+    CHECK(net.node(probe).cookCount() == 2);
+}
+
+TEST(aBypassedImageNodePassesItsImageOn) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 2);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    const NodeId sink = net.addNode("testImageSink");
+    net.connect(src, probe);
+    net.connect(probe, sink);
+    static_cast<RendererNode&>(net.node(probe)).setView(testWindow());
+    net.node(sink).setBypassed(true);
+    CHECK(net.cookImage(sink) == net.cookImage(probe));
+}
+
+TEST(imageWiresSurviveSaveAndLoad) {
+    registerImageTestNodes();
+    Network net(1);
+    const NodeId src = pointSource(net, 2);
+    const NodeId probe = net.addNode("testProbeRenderer");
+    const NodeId sink = net.addNode("testImageSink");
+    net.connect(src, probe);
+    net.connect(probe, sink);
+    const std::string text = saveNetwork(net);
+
+    Network loaded(1);
+    loadNetwork(loaded, text);
+    CHECK(loaded.nodeCount() == 3);
+    CHECK(loaded.inputOf(sink, 0) == probe);
+    CHECK(loaded.inputOf(probe, 0) == src);
+    CHECK(loaded.cookImage(sink) != nullptr);
+}
+
+std::string exrTestPath(const char* name) { return (std::filesystem::temp_directory_path() / (std::string("jitnodesExr_") + name + ".exr")).string(); }
+
+FloatImage hdrTestImage(int width, int height) {
+    FloatImage image;
+    image.width = width;
+    image.height = height;
+    image.linear = true;
+    image.rgba.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+    for (size_t i = 0; i < image.rgba.size() / 4; ++i) {
+        image.rgba[i * 4 + 0] = 0.001f * static_cast<float>(i) - 0.25f;   // goes below zero
+        image.rgba[i * 4 + 1] = static_cast<float>(i % 7) * 5.5f;          // above 1: HDR light
+        image.rgba[i * 4 + 2] = 1e-6f * static_cast<float>(i + 1);         // very small
+        image.rgba[i * 4 + 3] = static_cast<float>(i % 5) / 4.0f;          // alpha 0..1
+    }
+    return image;
+}
+
+TEST(exrRoundTripsFloatColourExactly) {
+    const FloatImage image = hdrTestImage(40, 20);
+    const std::string path = exrTestPath("float");
+    ExrImage::fromFloatImage(image).write(path);
+    const ExrImage back = ExrImage::read(path);
+    std::filesystem::remove(path);
+
+    CHECK(back.width == 40 && back.height == 20);
+    CHECK(back.channels.size() == 4);
+    CHECK(back.find("R") && back.find("G") && back.find("B") && back.find("A"));
+    CHECK(back.find("R")->type == ExrSampleType::float32);
+    const FloatImage again = back.toFloatImage();
+    CHECK(again.linear);
+    CHECK(again.rgba == image.rgba);
+}
+
+TEST(exrHalfChannelsKeepHalfPrecisionAndReadBackAsFloats) {
+    const FloatImage image = hdrTestImage(40, 20);
+    const std::string path = exrTestPath("half");
+    ExrImage::fromFloatImage(image, true).write(path);
+    const ExrImage back = ExrImage::read(path);
+    std::filesystem::remove(path);
+
+    CHECK(back.find("G")->type == ExrSampleType::float16);
+    const FloatImage again = back.toFloatImage();
+    CHECK(again.rgba.size() == image.rgba.size());
+    for (size_t i = 0; i < image.rgba.size(); ++i) {
+        const float tolerance = std::fabs(image.rgba[i]) * 1e-3f + 1e-7f;   // a half has 11 significant bits
+        CHECK(std::fabs(again.rgba[i] - image.rgba[i]) <= tolerance);
+    }
+}
+
+TEST(exrCarriesNamedChannelsOfEveryType) {
+    const int w = 24, h = 18;
+    const size_t count = static_cast<size_t>(w) * h;
+    ExrImage image;
+    image.width = w;
+    image.height = h;
+    ExrChannel depth;
+    depth.name = "Z";
+    depth.values.resize(count);
+    ExrChannel id;
+    id.name = "id";
+    id.type = ExrSampleType::uint32;
+    id.ids.resize(count);
+    ExrChannel mask;
+    mask.name = "mask";
+    mask.type = ExrSampleType::float16;
+    mask.values.resize(count);
+    ExrChannel red;
+    red.name = "R";
+    red.values.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        depth.values[i] = 1000.0f + 0.5f * static_cast<float>(i);
+        id.ids[i] = 16777217u + static_cast<uint32_t>(i) * 100000u;   // 2^24 + 1: a float cannot hold it
+        mask.values[i] = (i % 2) ? 1.0f : 0.0f;
+        red.values[i] = static_cast<float>(i);
+    }
+    image.channels = {mask, red, id, depth};   // not in alphabetical order on purpose
+
+    for (bool compress : {true, false}) {
+        const std::string path = exrTestPath(compress ? "named" : "namedRaw");
+        image.write(path, compress);
+        const ExrImage back = ExrImage::read(path);
+        std::filesystem::remove(path);
+        CHECK(back.channels.size() == 4);
+        CHECK(back.find("Z") && back.find("id") && back.find("mask") && back.find("R"));
+        CHECK(back.find("Z")->values == depth.values);
+        CHECK(back.find("R")->values == red.values);
+        CHECK(back.find("mask")->values == mask.values);
+        CHECK(back.find("id")->type == ExrSampleType::uint32);
+        CHECK(back.find("id")->ids == id.ids);
+        CHECK(back.find("mask")->type == ExrSampleType::float16);
+    }
+}
+
+TEST(exrSmallPicturesAndSingleChannelsRoundTrip) {
+    ExrImage image;
+    image.width = 3;
+    image.height = 2;
+    ExrChannel luma;
+    luma.name = "Y";
+    luma.values = {0.0f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
+    image.channels.push_back(luma);
+    const std::string path = exrTestPath("single");
+    image.write(path);
+    const ExrImage back = ExrImage::read(path);
+    std::filesystem::remove(path);
+    CHECK(back.channels.size() == 1);
+    CHECK(back.find("Y")->values == luma.values);
+    bool refused = false;
+    try {
+        back.toFloatImage();
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
+TEST(exrRefusesWhatIsNotAnExrFile) {
+    bool refused = false;
+    try {
+        ExrImage::read(exrTestPath("doesNotExist"));
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+
+    Image png;
+    png.width = 2;
+    png.height = 2;
+    png.pixels.assign(4, 0xFF336699u);
+    const std::string path = exrTestPath("notExr");
+    writePng(path, png);
+    refused = false;
+    try {
+        ExrImage::read(path);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    std::filesystem::remove(path);
+    CHECK(refused);
+
+    ExrImage empty;
+    refused = false;
+    try {
+        empty.write(exrTestPath("empty"));
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
+TEST(everyRenderResultReadsAsFloatAndAFloatResultKeepsItsRange) {
+    Image bytes;
+    bytes.width = 1;
+    bytes.height = 1;
+    bytes.pixels = {0xFF336699u};
+    const ImageResult eightBit(testWindow(), bytes);
+    FloatImage widened;
+    CHECK(eightBit.readFloatPixels(widened));
+    CHECK(!widened.linear);
+    CHECK_NEAR(widened.rgba[0], 0x33 / 255.0f);
+    CHECK_NEAR(widened.rgba[1], 0x66 / 255.0f);
+    CHECK_NEAR(widened.rgba[2], 0x99 / 255.0f);
+    CHECK_NEAR(widened.rgba[3], 1.0f);
+
+    const FloatImage hdr = hdrTestImage(20, 20);
+    const FloatImageResult floatResult(testWindow(), hdr);
+    FloatImage kept;
+    CHECK(floatResult.readFloatPixels(kept));
+    CHECK(kept.rgba == hdr.rgba);
+    Image shown;
+    CHECK(floatResult.readPixels(shown));
+    CHECK(shown.pixels.size() == 400);
+
+    const std::string path = exrTestPath("result");
+    ExrImage::fromFloatImage(kept.asLinear()).write(path);
+    const FloatImage fromFile = ExrImage::read(path).toFloatImage();
+    std::filesystem::remove(path);
+    CHECK(fromFile.rgba == hdr.rgba);
+}
+
+TEST(floatImageConvertsBetweenSrgbAndLinear) {
+    CHECK_NEAR(FloatImage::srgbToLinear(0.5f), 0.21404f);
+    CHECK_NEAR(FloatImage::linearToSrgb(FloatImage::srgbToLinear(0.73f)), 0.73f);
+
+    Image bytes;
+    bytes.width = 2;
+    bytes.height = 1;
+    bytes.pixels = {0xFF808080u, 0x80402010u};   // an opaque grey, and a half transparent premultiplied colour
+    const FloatImage encoded = FloatImage::fromArgb8(bytes);
+    const FloatImage linear = encoded.asLinear();
+    CHECK(linear.linear);
+    CHECK_NEAR(linear.rgba[0], FloatImage::srgbToLinear(128.0f / 255.0f));
+    CHECK_NEAR(linear.rgba[3], 1.0f);
+    CHECK_NEAR(linear.rgba[7], encoded.rgba[7]);   // alpha is never converted
+    const FloatImage back = linear.asSrgb();
+    for (size_t i = 0; i < back.rgba.size(); ++i) {
+        CHECK(std::fabs(back.rgba[i] - encoded.rgba[i]) < 1e-5f);
+    }
+    CHECK(linear.toArgb8().pixels == bytes.pixels);
+}
+
+TEST(matrix2dComposesInDrawingOrderAndInverts) {
+    const Matrix2D move = Matrix2D::translation(10.0, 20.0);
+    const Matrix2D grow = Matrix2D::scaling(2.0);
+    const auto moved = move.then(grow).apply(1.0, 1.0);   // move first, then scale
+    CHECK_NEAR(static_cast<float>(moved.first), 22.0f);
+    CHECK_NEAR(static_cast<float>(moved.second), 42.0f);
+    const auto scaled = grow.then(move).apply(1.0, 1.0);
+    CHECK_NEAR(static_cast<float>(scaled.first), 12.0f);
+    CHECK_NEAR(static_cast<float>(scaled.second), 22.0f);
+
+    const Matrix2D mixed = Matrix2D::rotation(0.7).then(Matrix2D::scaling(3.0, 2.0)).then(Matrix2D::translation(-4.0, 9.0));
+    const auto there = mixed.apply(5.0, -3.0);
+    const auto back = mixed.inverse().apply(there.first, there.second);
+    CHECK_NEAR(static_cast<float>(back.first), 5.0f);
+    CHECK_NEAR(static_cast<float>(back.second), -3.0f);
+    CHECK(mixed.then(mixed.inverse()).isTranslateScale(1e-9));
+
+    const auto vector = move.applyVector(1.0, 2.0);   // a vector ignores the move
+    CHECK_NEAR(static_cast<float>(vector.first), 1.0f);
+    CHECK(!Matrix2D::scaling(0.0, 1.0).invertible());
+    CHECK(Matrix2D::scaling(0.0, 1.0).inverse() == Matrix2D());
+    CHECK(!Matrix2D::rotation(0.3).isTranslateScale());
+    CHECK(!Matrix2D::scaling(1.0, -1.0).isTranslateScale());   // a flip needs a new render
+}
+
+TEST(renderViewMarginPlacesTheWindowInTheMiddleOfTheDrawnPicture) {
+    const RenderView window = testWindow();
+    const RenderView drawn = RenderView::withMargin(window, 0.5);
+    CHECK(drawn.width == 20 && drawn.height == 20);
+    const auto origin = drawn.transform.apply(0.0, 0.0);   // the document origin, which the window shows at its corner
+    CHECK_NEAR(static_cast<float>(origin.first), 5.0f);
+    CHECK_NEAR(static_cast<float>(origin.second), 5.0f);
+    const auto place = drawn.fromWindow(window).apply(0.0, 0.0);   // where the window's corner lands in the drawn picture
+    CHECK_NEAR(static_cast<float>(place.first), 5.0f);
+    CHECK_NEAR(static_cast<float>(place.second), 5.0f);
+    CHECK(drawn.covers(window));
+    CHECK(RenderView::withMargin(window, 0.0) == window);
+}
+
+TEST(renderViewCoversPansWithinTheMarginAndSmallZoomsOnly) {
+    const RenderView window = testWindow();
+    const RenderView drawn = RenderView::withMargin(window, 0.5);
+    CHECK(drawn.covers(testWindow(-4.0)));    // panned 4 of the 5 pixels of margin
+    CHECK(drawn.covers(testWindow(5.0)));     // exactly to the edge
+    CHECK(!drawn.covers(testWindow(-6.0)));   // past the margin
+    CHECK(!drawn.covers(testWindow(7.0)));
+
+    RenderView zoomed = window;
+    zoomed.transform = Matrix2D::scaling(1.1).then(Matrix2D::translation(0.0, 0.0));
+    CHECK(drawn.covers(zoomed));              // 10% is within the 15% tolerance and the window still lies inside
+    zoomed.transform = Matrix2D::scaling(1.4);
+    CHECK(!drawn.covers(zoomed));
+    CHECK(drawn.covers(zoomed, 0.5));         // a looser tolerance accepts the same zoom if it fits
+
+    RenderView turned = window;
+    turned.transform = Matrix2D::rotation(0.1);
+    CHECK(!drawn.covers(turned));
+    RenderView flipped = window;
+    flipped.transform = Matrix2D::scaling(1.0, -1.0);
+    CHECK(!drawn.covers(flipped));
+
+    RenderView transparent = window;
+    transparent.transparentPage = true;
+    CHECK(!drawn.covers(transparent));        // another kind of page
+    RenderView empty;
+    CHECK(!empty.valid());
+    CHECK(!drawn.covers(empty));
+    CHECK(!empty.covers(window));
+}
+
+std::string imageOutTestPath(const char* name, const char* extension) {
+    return (std::filesystem::temp_directory_path() / (std::string("jitnodesOut_") + name + extension)).string();
+}
+
+struct ImageOutRig {
+    Network net{1};
+    NodeId src = invalidNodeId, probe = invalidNodeId, out = invalidNodeId;
+    explicit ImageOutRig(const std::string& path) {
+        registerImageTestNodes();
+        src = pointSource(net, 3);
+        probe = net.addNode("testProbeRenderer");
+        out = net.addNode("imageOut");
+        net.connect(src, probe);
+        net.connect(probe, out);
+        static_cast<RendererNode&>(net.node(probe)).setView(testWindow());
+        net.node(out).setString("path", path);
+    }
+    ImageOutNode& node() { return static_cast<ImageOutNode&>(net.node(out)); }
+};
+
+std::string readFileBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+TEST(imageOutPassesTheImageOnAndCookingWritesNothing) {
+    const std::string path = imageOutTestPath("cookOnly", ".png");
+    std::filesystem::remove(path);
+    ImageOutRig rig(path);
+    CHECK(rig.net.cookImage(rig.out) == rig.net.cookImage(rig.probe));
+    CHECK(!std::filesystem::exists(path));
+}
+
+TEST(imageOutRenderWritesAPngWithOrWithoutAlpha) {
+    const std::string path = imageOutTestPath("png", ".png");
+    ImageOutRig rig(path);
+    CHECK(rig.node().render(rig.net).get() == path);
+    std::string bytes = readFileBytes(path);
+    CHECK(bytes.size() > 40 && bytes.compare(1, 3, "PNG") == 0);
+    CHECK(static_cast<unsigned char>(bytes[25]) == 6);   // RGBA
+
+    rig.net.node(rig.out).setFloat("alpha", 0.0f);
+    rig.node().render(rig.net).get();
+    bytes = readFileBytes(path);
+    std::filesystem::remove(path);
+    CHECK(static_cast<unsigned char>(bytes[25]) == 2);   // RGB
+}
+
+TEST(imageOutRenderWritesAnExrInLinearLightAndExpandsTheFrameToken) {
+    const std::string base = imageOutTestPath("frame", "");
+    ImageOutRig rig(base + "$F4.exr");
+    rig.net.setTime(1.0 / rig.net.fps());
+    const std::string written = rig.node().render(rig.net).get();
+    CHECK(written == base + "0001.exr");
+
+    FloatImage linear = ExrImage::read(written).toFloatImage();
+    CHECK(linear.width == 20 && linear.height == 20);
+    CHECK_NEAR(linear.rgba[2], FloatImage::srgbToLinear(3.0f / 255.0f));
+    CHECK_NEAR(linear.rgba[3], 1.0f);
+
+    rig.net.node(rig.out).setFloat("linear", 0.0f);
+    rig.node().render(rig.net).get();
+    FloatImage encoded = ExrImage::read(written).toFloatImage();
+    std::filesystem::remove(written);
+    CHECK_NEAR(encoded.rgba[2], 3.0f / 255.0f);
+}
+
+TEST(imageOutHalfAndTheFormatParameterOverrideTheExtension) {
+    const std::string path = imageOutTestPath("forced", ".img");
+    ImageOutRig rig(path);
+    rig.net.node(rig.out).setString("format", "exr");
+    rig.net.node(rig.out).setFloat("half", 1.0f);
+    rig.node().render(rig.net).get();
+    const ExrImage back = ExrImage::read(path);
+    std::filesystem::remove(path);
+    CHECK(back.find("B")->type == ExrSampleType::float16);
+}
+
+TEST(imageOutRefusesAnEmptyPathABadFormatAndNothingWiredIn) {
+    ImageOutRig rig("");
+    bool refused = false;
+    try {
+        rig.node().render(rig.net);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+
+    rig.net.node(rig.out).setString("path", imageOutTestPath("bad", ".png"));
+    rig.net.node(rig.out).setString("format", "bmp");
+    refused = false;
+    try {
+        rig.node().render(rig.net);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+
+    rig.net.node(rig.out).setString("format", "auto");
+    rig.net.disconnect(rig.out, 0);
+    refused = false;
+    try {
+        rig.node().render(rig.net);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
 }
 
 }  // namespace

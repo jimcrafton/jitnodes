@@ -12,6 +12,7 @@ namespace jitnodes {
 // edit. States share the serialized text of unchanged nodes, and restoring only changes the nodes that
 // differ, so the rest keep their cooked results. Node ids are preserved and the playhead is untouched.
 // Uncommitted edits are discarded by undo/redo. Asset definitions are not part of the history.
+// @scriptable
 class History {
 public:
     explicit History(Network& net, size_t maxStates = 100);

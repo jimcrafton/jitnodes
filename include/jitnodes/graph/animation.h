@@ -4,9 +4,11 @@
 
 namespace jitnodes {
 
+// @scriptable
 enum class KeyInterp { constant, linear, smooth };
 
 // The interpolation mode of a key applies to the segment that starts at that key.
+// @scriptable
 struct Keyframe {
     double time = 0.0;
     float value = 0.0f;

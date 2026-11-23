@@ -47,6 +47,9 @@ public:
         declareFloat("radius", 1.0f);
         declareFloat("cx", 0.0f);
         declareFloat("cy", 0.0f);
+        for (const char* length : {"radius", "cx", "cy"}) {
+            tagParam(length, "quantity:length");
+        }
     }
 
     GeometryHandle cook(CookContext& ctx, const std::vector<GeometryHandle>&) override {

@@ -18,8 +18,10 @@ namespace jitnodes {
 // points (n segments); a closed one has 3n, and the last segment returns to the first anchor. Handles are ordinary points, so nodes that move
 // points (transform, wrangle, noise) move them with their anchors, and a point attribute on an anchor can ride on its handles too. Nodes that
 // only understand polylines flatten curves first (flattenCurves).
+// @scriptable
 enum class PrimKind : uint8_t { polyline, cubic };
 
+// @scriptable ignore=true
 struct Primitive {
     uint32_t start = 0;
     uint32_t count = 0;
@@ -38,6 +40,7 @@ inline uint32_t cubicSegments(const Primitive& p) {
 // path (a letter and its counter) is one shape of several primitives. The empty key is anonymous: each such primitive is a shape of its own,
 // so geometry that was never given keys has one shape per primitive. `key` points into the geometry's string table: a range is valid until
 // the geometry is modified. See docs/shape-structure.md in curvy.
+// @scriptable ignore=true
 struct ShapeRange {
     uint32_t first = 0;  // the first primitive
     uint32_t count = 0;  // how many primitives
@@ -60,6 +63,8 @@ inline bool shapeKeyMatches(std::string_view key, std::string_view binding) {
     return next == '/' || next == '#' || next == '@';
 }
 
+// A script gets cooked geometry shared with the node cache, so only the const methods are bound.
+// @scriptable holder=shared readonly
 class Geometry {
 public:
     Geometry();
@@ -80,6 +85,8 @@ public:
     // Creates an attribute of the same type as `like` (a string attribute starts with like's table) unless the name exists. Use it, not
     // attrib(..., like.type()), to make an attribute that will receive like's values, so string ids keep their meaning.
     AttribArray& attribLike(AttribClass cls, const std::string& name, const AttribArray& like);
+    // Removes an attribute; false when there is none. The point attributes x and y cannot be removed (std::runtime_error).
+    bool removeAttrib(AttribClass cls, const std::string& name);
     // Throws when a string attribute holds an id that is not in its table.
     void checkStrings() const;
     const AttribArray* findAttrib(AttribClass cls, const std::string& name) const;
@@ -97,6 +104,11 @@ public:
     // "" when the primitive is anonymous, has no key attribute, or does not exist.
     const std::string& shapeKey(size_t prim) const;
     bool hasShapeKeys() const { return findAttrib(AttribClass::primitive, shapeKeyAttrib) != nullptr; }
+    // True when some primitive has no key (a geometry without primitives has none).
+    bool hasAnonymousPrimitives() const;
+    // Gives every anonymous primitive the key `base` + "#p" + its index, so each becomes a shape of its own with a key that stays the same
+    // while the node keeps making the same primitives. Returns how many it stamped.
+    size_t stampAnonymousShapes(const std::string& base);
     // The shapes in primitive order: one pass over the key column.
     std::vector<ShapeRange> shapes() const;
     // The shape (an index into shapes()) of every primitive.
@@ -112,12 +124,18 @@ public:
     bool inGroup(AttribClass cls, const std::string& name, size_t index) const;
 
     bool hasPointAttrib(const std::string& name) const { return hasAttrib(AttribClass::point, name); }
+    // @scriptable ignore=true
     AlignedArray<float>& pointAttrib(const std::string& name) { return attrib(AttribClass::point, name).floats(); }
+    // @scriptable ignore=true
     const AlignedArray<float>* findPointAttrib(const std::string& name) const;
 
+    // @scriptable ignore=true
     float* x() { return pointAttrib("x").data(); }
+    // @scriptable ignore=true
     float* y() { return pointAttrib("y").data(); }
+    // @scriptable ignore=true
     const float* x() const { return findPointAttrib("x")->data(); }
+    // @scriptable ignore=true
     const float* y() const { return findPointAttrib("y")->data(); }
 
     void setDetail(const std::string& name, float value) { detail_[name] = value; }

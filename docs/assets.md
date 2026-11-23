@@ -134,6 +134,54 @@ unlockAssetInstance(net, a);                                     // now an ordin
 Asset type names must start with a letter or underscore and contain only letters, digits and underscores (the editor
 enforces this; hand-written names should follow it so that they stay usable in graph files and menus).
 
+## Definitions as values, and the library (C++)
+
+`AssetDefinition` (`graph/assetDefinition.h`) is the definition file as an editable value; `AssetLibrary` (`graph/assetLibrary.h`) is the
+registry with a source file per asset, uninstalling and change notification. They are what the Asset Manager in curvy is built on.
+
+```cpp
+AssetDefinition d = AssetDefinition::fromNode(net, subnet, "scaler");   // or fromText(fileText), or AssetLibrary::instance().definition("scaler")
+d.label = "Scaler";
+d.category = "Deform";
+d.params[0].minimum = 0.0f;                                              // limits an editor keeps a typed or dragged value within
+d.params[0].maximum = 10.0f;
+d.renames["scale"] = "gain";                                            // see "Changing an asset later"
+std::string problem = d.validate();                                      // "" when it can be registered
+AssetLibrary::instance().save(d, "scaler.asset.json");                  // validate, write, register; the version becomes registered + 1
+```
+
+**Optional file keys** (all may be left out; an older file without them reads as before):
+
+| Key | Meaning |
+|---|---|
+| `label`, `category`, `description`, `author`, `icon`, `help` | text for a library browser |
+| `inputLabels` | one name per input (or none) |
+| `params` | array of `{ name, label, default, min, max, step, group, tooltip }`. When it is missing the names and defaults of `promote` are used. `promote` is still written, so a reader from before `params` works |
+| `renames` | `{ oldName: newName }`, accumulated over the versions |
+| `scripts` | `{ module, onCreated, onVersionUpdated, onInputChanged, onParamChanged, onFrameChanged, onDeleted, onInstalled }`: source text the application runs (the core only stores it and checks the names) |
+| `files` | array of `{ name, text }` extra files |
+
+Members of a file that this version does not know are kept in `AssetDefinition::unknown` and written back.
+
+**Instances.** An instance exposes the limits of its parameters through `Node::floatMinimum / floatMaximum`, and the labels, groups and
+tooltips through `AssetNode::assetParam(name)`.
+
+**Validation.** `validate()` checks the name (letters, digits, underscore; not a built-in node), inputs 0 to 16, parameter names, duplicates and
+limits, renames, script names, builds one instance of the contents, and last calls the application's script validator
+(`AssetDefinition::setScriptValidator`), which is how a host rejects scripts that break its rules. Nothing is registered by `validate()`, except
+assets the contents embed, as when a graph file loads. `checkAsset(text)` is the same check on definition text.
+
+**Library.** `list(net)` (entries with version, source, embedded, instance and outdated counts), `definition(name)`, `installFile`,
+`installDirectory`, `reload`, `apply` (register in memory only; the asset counts as embedded until it is saved), `save`, `uninstall`
+(refuses while the given network still holds instances), `updateInstances`, `addListener`. `NodeRegistry::unregisterAsset` is the underlying
+removal.
+
+**Renaming a promoted parameter.** `renameSpareParameter(net, subnet, from, to)` renames it, keeps its value, expression and keyframes, and
+rewrites `parent.<from>` in the expressions of the nodes inside (whole names only: `parent.amountMore` is left alone when renaming `amount`).
+`AssetDefinition::applyTo(net, subnet)` puts a definition's contents and parameters back into an unlocked subnet.
+`AssetDefinition::renameParam(from, to, recordRename = true)` does the rename on a definition (through a scratch subnet): the contents follow, and
+with `recordRename` the old name goes into `renames` (earlier entries that ended in it follow).
+
 ## Using assets in a graph
 
 - **As a node.** After registration `net.addNode("scaler")` works like any type; so does a graph file with
@@ -185,7 +233,10 @@ this for you, or `updateAssetInstances(net)` in code).
   value, expression or keyframes; parameters that are gone are dropped; new ones start at their defaults.
 - **Versions.** Give a changed definition a higher `assetVersion`. Instances remember the version they were built from
   (saved as `assetVersion` on the node). The editor picks "registered version + 1" for you.
-- **Renamed or rescaled parameters** need a migration hook, because matching is by name:
+- **Renamed parameters** are handled by the definition's `renames` list: an instance built from an older version takes the value, expression or
+  keyframes of the old name into the new one (a chain a -> b -> c is followed), in `updateAssetInstances` and when a graph file saved with an
+  older version loads. No code is needed for a plain rename.
+- **Rescaled parameters, or anything else a rename cannot express,** need a migration hook, because matching is by name:
   `NodeRegistry::setAssetMigration(type, fn)`. The hook gets an `AssetUpgrade` with `fromVersion`, `toVersion`, the `old`
   node (saved parameters only), the `fresh` node (already holding every same-named parameter) and the `inputs` wiring
   (reorderable). It runs once per instance, when its version differs: in `updateAssetInstances` and when a graph file

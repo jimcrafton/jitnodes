@@ -62,6 +62,7 @@ private:
 // attribute is missing or is not a string attribute.
 void resolveStringParams(const KernelSpec& spec, const Geometry& geo, AttribClass cls, std::vector<float>& params);
 
+// @scriptable ignore=true
 class KernelCompiler {
 public:
     KernelCompiler();

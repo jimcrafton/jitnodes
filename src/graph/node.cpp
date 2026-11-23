@@ -17,6 +17,21 @@ Node::Node(std::string typeName, int inputCount) : revision_(++revisionCounter),
 
 Node::~Node() = default;
 
+GeometryHandle ValueNode::cook(CookContext&, const std::vector<GeometryHandle>&) {
+    throw std::runtime_error(name() + ": a " + typeName() + " node cooks through cookValue");
+}
+
+Value Node::cookValue(CookContext& ctx, const std::vector<Value>& inputs) {
+    std::vector<GeometryHandle> geometries;
+    geometries.reserve(inputs.size());
+    for (const Value& input : inputs) {
+        geometries.push_back(input.geometry);
+    }
+    Value result;
+    result.geometry = cook(ctx, geometries);
+    return result;
+}
+
 std::string Node::uidText() const {
     if (uid_ == 0) return "0";
     std::string text;
@@ -43,7 +58,68 @@ void Node::addSpareFloat(const std::string& name, float defaultValue) {
     touch();
 }
 
+bool Node::removeSpareFloat(const std::string& name) {
+    if (spare_.erase(name) == 0) {
+        return false;
+    }
+    floats_.erase(name);
+    rebuildReferences();
+    touch();
+    return true;
+}
+
+void Node::renameSpareFloat(const std::string& from, const std::string& to) {
+    if (spare_.count(from) == 0) {
+        throw std::runtime_error("'" + from + "' is not a spare parameter of '" + name_ + "'");
+    }
+    if (from == to) {
+        return;
+    }
+    if (floats_.count(to) != 0) {
+        throw std::runtime_error("parameter '" + to + "' already exists on '" + name_ + "'");
+    }
+    auto entry = floats_.extract(from);
+    entry.key() = to;
+    floats_.insert(std::move(entry));
+    spare_.erase(from);
+    spare_.insert(to);
+    rebuildReferences();
+    touch();
+}
+
+bool Node::floatMinimum(const std::string& name, float& value) const {
+    (void)name;
+    (void)value;
+    return false;
+}
+
+bool Node::floatMaximum(const std::string& name, float& value) const {
+    (void)name;
+    (void)value;
+    return false;
+}
+
 void Node::declareString(const std::string& name, const std::string& defaultValue) { strings_[name] = defaultValue; }
+
+void Node::declareRamp(const std::string& name, const std::string& defaultText) {
+    const std::string problem = Ramp::check(defaultText);
+    if (!problem.empty()) {
+        throw std::logic_error("declareRamp '" + name + "': " + problem);
+    }
+    strings_[name] = defaultText;
+    rampParams_.insert(name);
+}
+
+Ramp Node::getRamp(const std::string& name) const {
+    if (!isRampParam(name)) {
+        throw std::runtime_error("'" + name + "' is not a ramp parameter on " + typeName_);
+    }
+    try {
+        return Ramp::parse(getString(name));
+    } catch (const std::exception& e) {
+        throw std::runtime_error(typeName_ + " " + name + ": " + e.what());
+    }
+}
 
 void Node::declareGeometry(const std::string& name) { geometries_[name] = std::make_shared<const Geometry>(); }
 
@@ -200,6 +276,7 @@ void Node::setString(const std::string& name, const std::string& value) {
     if (it == strings_.end()) throw std::runtime_error("unknown string parameter '" + name + "' on " + typeName_);
     if (it->second == value) return;
     it->second = value;
+    stringChanged(name);
     markChanged();
 }
 

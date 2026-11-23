@@ -1,6 +1,9 @@
 # Plan: parameters declared in wrangle code
 
-Status: planned 2026-10-27, nothing implemented yet. Goal: variables in wrangle code can be exposed in the editor as parameters
+Status: planned 2026-10-27. Phases 1 and 2 (parser, node plumbing, library tests) done 2026-11-16 in jitnodes. The syntax below was
+replaced the same day, at the user's request, by `| name = default(min, max), ... |` at the top of the code (see wrangle.md "Declared
+parameters"); a limit may be left out, limits are floatMinimum / floatMaximum on the node, a slider needs both; phase 3 (the jitnodes editor's slider rows) is not done; curvy's NodePanel shows the rows
+instead. Not covered by tests yet: undo/redo and copy/paste of a wrangle with declarations. Goal: variables in wrangle code can be exposed in the editor as parameters
 that the user adjusts with a slider, a typed number, an expression or keyframes.
 
 ## Findings

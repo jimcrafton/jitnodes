@@ -11,6 +11,7 @@ option(JITNODES_BUILD_EXAMPLES "Build jitnodes examples"    ON)
 option(JITNODES_BUILD_TOOLS    "Build the jitnodesCli tool"  ON)
 option(JITNODES_SANITIZE       "Build the library and tests with AddressSanitizer (and UBSan on clang/gcc)" OFF)
 option(JITNODES_BUILD_EDITOR   "Build the newui based editor (Windows, builds newui as an external project)" OFF)
+option(JITNODES_BUILD_PYTHON   "Build the Python module (needs pybind11, a Python 3.13 SDK and newui's scriptgen; see python/CMakeLists.txt)" OFF)
 set(JITNODES_NEWUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../newui" CACHE PATH "newui source checkout used by the editor")
 
 # json5 (P-i-N/json5, MIT, header-only) is used for graph files; vendored under 3rdparty.
@@ -36,8 +37,11 @@ add_library(jitnodes STATIC
   src/core/stackGuard.cpp
   src/geo/geometry.cpp
   src/geo/topology.cpp
+  src/geo/pathMotion.cpp
   src/geo/svgExport.cpp
   src/geo/raster.cpp
+  src/geo/floatImage.cpp
+  src/geo/exrFile.cpp
   src/geo/geoFile.cpp
   src/jit/expr.cpp
   src/jit/exprParser.cpp
@@ -55,6 +59,8 @@ add_library(jitnodes STATIC
   src/graph/generateNodes.cpp
   src/graph/fxNodes.cpp
   src/graph/patternNodes.cpp
+  src/graph/strokeNodes.cpp
+  src/graph/ramp.cpp
   src/graph/particleNodes.cpp
   src/graph/gasSolver.cpp
   src/graph/gasNodes.cpp
@@ -68,6 +74,8 @@ add_library(jitnodes STATIC
   src/graph/loopNodes.cpp
   src/graph/subnet.cpp
   src/graph/serialize.cpp
+  src/graph/assetDefinition.cpp
+  src/graph/assetLibrary.cpp
   src/graph/history.cpp
 )
 add_library(jitnodes::jitnodes ALIAS jitnodes)
@@ -75,7 +83,7 @@ add_library(jitnodes::jitnodes ALIAS jitnodes)
 target_include_directories(jitnodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(jitnodes PUBLIC asmjit::asmjit)
-target_include_directories(jitnodes SYSTEM PRIVATE ${JITNODES_JSON5_DIR})
+target_include_directories(jitnodes SYSTEM PRIVATE ${JITNODES_JSON5_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tinyexr)
 
 if(MSVC)
   target_compile_options(jitnodes PRIVATE /W4 /permissive- /utf-8)
@@ -114,4 +122,8 @@ endif()
 
 if(JITNODES_BUILD_EDITOR)
   add_subdirectory(editor)
+endif()
+
+if(JITNODES_BUILD_PYTHON)
+  add_subdirectory(python)
 endif()

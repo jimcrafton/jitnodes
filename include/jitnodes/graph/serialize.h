@@ -41,6 +41,11 @@ void saveAssetToFile(const Network& net, NodeId subnet, const std::string& typeN
 // Existing instances keep the definition they were built from until updateAssetInstances is called.
 void registerAsset(const std::string& definitionText);
 void registerAssetFromFile(const std::string& path);
+// Everything registerAsset checks, without registering the asset: an empty string when the text is a valid definition, else the problem.
+// Assets the definition embeds are registered, as loading a graph file does.
+std::string checkAsset(const std::string& definitionText);
+// Replaces the contents of net from the JSON of a graph body (the "graph" member of an asset definition). Throws std::runtime_error.
+void loadGraphText(Network& net, const std::string& graphText);
 
 // Rebuilds the instances (also inside subnets and assets) whose registered definition changed since they were
 // created, optionally only for one type. Parameters with the same name keep their value, expression or keyframes,
@@ -48,6 +53,10 @@ void registerAssetFromFile(const std::string& path);
 // Not undoable and not allowed while the network is cooking.
 size_t updateAssetInstances(Network& net, const std::string& typeName = {});
 size_t outdatedAssetInstances(const Network& net, const std::string& typeName = {});
+
+// Copies the float parameters of `from` (value, user tags, expression or keyframes) and the string parameters that `to` has onto `to`. A float that
+// `to` lacks is skipped, or with `addMissing` added to it as a spare parameter. Used to hand a migration script scratch copies of two nodes.
+void copyNodeParameters(const Node& from, Node& to, bool addMissing);
 
 // Replaces an asset instance by an ordinary subnet (same id, name and wiring) holding a copy of the asset's contents and
 // promoted parameters with the instance's values, so the contents can be edited. Throws std::runtime_error when the node is
@@ -176,6 +185,7 @@ struct GraphSnapshot {
     std::vector<NodeId> volatileNodes;  // subnets and asset instances: their contents change without touching the node
 };
 
+// @scriptable ignore=true
 struct RestoreStats {
     size_t added = 0;
     size_t removed = 0;

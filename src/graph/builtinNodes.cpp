@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <stdexcept>
 
 #include "jitnodes/graph/network.h"
@@ -79,6 +80,12 @@ public:
         declareFloat("skew", 0.0f);
         declareFloat("px", 0.0f);
         declareFloat("py", 0.0f);
+        for (const char* length : {"tx", "ty", "px", "py"}) {
+            tagParam(length, "quantity:length");
+        }
+        for (const char* angle : {"rot", "skew"}) {
+            tagParam(angle, "quantity:angle");
+        }
         spec_ = parseWrangle("_nx = a * x + c * y + e; _ny = b * x + d * y + f; x = _nx; y = _ny;", {"a", "b", "c", "d", "e", "f"});
     }
 
@@ -116,18 +123,88 @@ public:
     bool pointKernel(PointKernel& out) override {
         const std::string& code = getString("code");
         if (!parsed_ || code != parsedCode_) {
-            spec_ = parseWrangle(code, {"a", "b", "c", "d"});
-            parsedCode_ = code;
-            parsed_ = true;
+            parse(code);
         }
         out.spec = spec_;
         out.params = {getFloat("a"), getFloat("b"), getFloat("c"), getFloat("d")};
         out.params.resize(static_cast<size_t>(out.spec.paramCount), 0.0f);  // the slots after the named ones belong to string literals
+        for (const WrangleParam& p : declared_) {
+            out.params[static_cast<size_t>(p.slot)] = getFloat(p.name);
+        }
         return true;
     }
 
+    bool floatMinimum(const std::string& name, float& value) const override {
+        for (const WrangleParam& p : declared_) {
+            if (p.name == name && p.hasMinimum) {
+                value = p.minimum;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool floatMaximum(const std::string& name, float& value) const override {
+        for (const WrangleParam& p : declared_) {
+            if (p.name == name && p.hasMaximum) {
+                value = p.maximum;
+                return true;
+            }
+        }
+        return false;
+    }
+
+protected:
+    // A parse error leaves the declared parameters as they are; the next cook reports it.
+    void stringChanged(const std::string& name) override {
+        if (name != "code") {
+            return;
+        }
+        try {
+            parse(getString("code"));
+            syncDeclared();
+        } catch (const std::exception&) {
+            parsed_ = false;
+        }
+    }
+
 private:
+    void parse(const std::string& code) {
+        std::vector<WrangleParam> declared;
+        KernelSpec spec = parseWrangle(code, {"a", "b", "c", "d"}, {}, &declared);
+        for (const WrangleParam& p : declared) {
+            if (hasFloat(p.name) && !isSpare(p.name)) {
+                throw std::runtime_error("wrangle parse error: cannot declare parameter '" + p.name + "', the node has one of that name");
+            }
+        }
+        spec_ = std::move(spec);
+        declared_ = std::move(declared);
+        parsedCode_ = code;
+        parsed_ = true;
+    }
+
+    // Adds the spare floats of new declarations and drops those of declarations that are gone; one that stays keeps its value, expression and keys.
+    void syncDeclared() {
+        std::set<std::string> now;
+        for (const WrangleParam& p : declared_) {
+            now.insert(p.name);
+        }
+        for (const std::string& name : declaredNames_) {
+            if (now.count(name) == 0) {
+                removeSpareFloat(name);
+            }
+        }
+        for (const WrangleParam& p : declared_) {
+            if (!hasFloat(p.name)) {
+                addSpareFloat(p.name, p.value);
+            }
+        }
+        declaredNames_ = std::move(now);
+    }
+
     KernelSpec spec_;
+    std::vector<WrangleParam> declared_;
+    std::set<std::string> declaredNames_;   // the spare floats this node made from `param` statements, so user-added ones are never removed
     std::string parsedCode_;
     bool parsed_ = false;
 };
@@ -239,6 +316,7 @@ void registerBuiltinNodes() {
     registerGenerateNodes();
     registerFxNodes();
     registerPatternNodes();
+    registerStrokeNodes();
     registerParticleNodes();
     registerGasNodes();
     registerFieldNodes();

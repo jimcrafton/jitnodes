@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -7,7 +8,10 @@
 #include <string>
 #include <vector>
 
+#include "jitnodes/geo/exrFile.h"
 #include "jitnodes/geo/geoFile.h"
+#include "jitnodes/geo/raster.h"
+#include "jitnodes/graph/imageOut.h"
 #include "jitnodes/graph/network.h"
 
 namespace jitnodes {
@@ -224,7 +228,92 @@ public:
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>&) override { return geometryParam("geometry"); }
 };
 
+ImageOutNode::ImageOutNode() : ValueNode("imageOut", 1) {
+    declareString("path", "");
+    declareString("format", "auto");
+    declareFloat("linear", 1.0f);
+    declareFloat("half", 0.0f);
+    declareFloat("compress", 1.0f);
+    declareFloat("alpha", 1.0f);
+}
+
+Value ImageOutNode::cookValue(CookContext&, const std::vector<Value>& inputs) {
+    Value out;
+    if (!inputs.empty()) {
+        out.image = inputs.front().image;
+    }
+    if (!out.image) {
+        throw std::runtime_error(name() + ": no image is connected");
+    }
+    return out;
+}
+
+ImageOutNode::Settings ImageOutNode::settings(double time, const Network* network) const {
+    Settings s;
+    s.path = FileReadNode::pathAt(getString("path"), time, network);
+    if (s.path.empty()) {
+        throw std::runtime_error(name() + ": path is empty");
+    }
+    std::string format = getString("format");
+    std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (format == "auto" || format.empty()) {
+        std::string extension = std::filesystem::path(s.path).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        s.exr = extension == ".exr";
+    } else if (format == "exr") {
+        s.exr = true;
+    } else if (format != "png") {
+        throw std::runtime_error(name() + ": format '" + format + "' is not auto, png or exr");
+    }
+    s.linear = getFloat("linear") >= 0.5f;
+    s.half = getFloat("half") >= 0.5f;
+    s.compress = getFloat("compress") >= 0.5f;
+    s.alpha = getFloat("alpha") >= 0.5f;
+    return s;
+}
+
+std::future<std::string> ImageOutNode::render(Network& network) {
+    const NodeId source = network.inputOf(id(), 0);
+    if (source == invalidNodeId) {
+        throw std::runtime_error(name() + ": no image is connected");
+    }
+    const Settings s = settings(network.time(), &network);
+    const ImageHandle image = network.cookImage(source);
+    if (!image) {
+        throw std::runtime_error(name() + ": nothing was rendered");
+    }
+    return std::async(std::launch::async, [image, s]() {
+        write(*image, s);
+        return s.path;
+    });
+}
+
+void ImageOutNode::write(const RenderResult& image, const Settings& settings) {
+    const std::filesystem::path folder = std::filesystem::path(settings.path).parent_path();
+    if (!folder.empty()) {
+        std::error_code ignored;
+        std::filesystem::create_directories(folder, ignored);
+    }
+    if (settings.exr) {
+        FloatImage pixels;
+        if (!image.readFloatPixels(pixels)) {
+            throw std::runtime_error("the image cannot be read");
+        }
+        if (settings.linear) {
+            pixels = pixels.asLinear();
+        }
+        ExrImage::fromFloatImage(pixels, settings.half).write(settings.path, settings.compress);
+        return;
+    }
+    Image pixels;
+    if (!image.readPixels(pixels)) {
+        throw std::runtime_error("the image cannot be read");
+    }
+    writePng(settings.path, pixels, settings.alpha);
+}
+
 void registerFileNodes() {
+    add<ImageOutNode>("imageOut");
     add<GeometryNode>("geometry");
     add<FileReadNode>("fileRead");
     add<FileCacheNode>("fileCache");

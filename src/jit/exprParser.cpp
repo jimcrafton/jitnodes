@@ -13,18 +13,34 @@ namespace {
 
 class Parser {
 public:
-    Parser(const std::string& src, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants)
-        : src_(src), paramNames_(paramNames), constants_(constants) {
+    Parser(const std::string& src, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants,
+           std::vector<WrangleParam>* declared)
+        : src_(src), paramNames_(paramNames), constants_(constants), declared_(declared) {
         spec_.paramCount = static_cast<int>(paramNames.size());
+        if (declared_ != nullptr) {
+            declared_->clear();
+        }
     }
 
     KernelSpec run() {
         skipSpace();
         while (pos_ < src_.size()) {
+            if (declared_ != nullptr && src_[pos_] == '|') {
+                if (assigned_) {
+                    fail("declarations must come before the first assignment");
+                }
+                declarations();
+                skipSpace();
+                continue;
+            }
+            assigned_ = true;
             std::string name = identifier();
             if (name.empty()) fail("expected assignment target");
             for (const auto& p : paramNames_)
                 if (p == name) fail("cannot assign to parameter '" + name + "'");
+            if (declaredSlots_.count(name) != 0) {
+                fail("cannot assign to parameter '" + name + "'");
+            }
             expect('=');
             int value = asValue(expr());
             expect(';');
@@ -46,11 +62,96 @@ private:
         throw std::runtime_error("wrangle parse error at offset " + std::to_string(pos_) + ": " + msg);
     }
 
+    bool peekIs(char c) {
+        skipSpace();
+        return pos_ < src_.size() && src_[pos_] == c;
+    }
+
+    float signedNumber() {
+        skipSpace();
+        const bool negative = accept("-");
+        skipSpace();
+        char* end = nullptr;
+        const char* start = src_.c_str() + pos_;
+        if (pos_ >= src_.size() || !(std::isdigit(static_cast<unsigned char>(*start)) || *start == '.')) {
+            fail("expected a number");
+        }
+        const float v = std::strtof(start, &end);
+        if (end == start) {
+            fail("bad number");
+        }
+        pos_ = static_cast<size_t>(end - src_.c_str());
+        return negative ? -v : v;
+    }
+
+    // `| name [= value] [(min, max)], ... |`: pos_ is on the opening bar.
+    void declarations() {
+        ++pos_;
+        do {
+            declaration();
+        } while (accept(","));
+        expect('|');
+    }
+
+    // One item of a list: `gain`, `gain = 1.5`, `radius = 2(0, 10)`, `count(1,)`, `ratio(,1)`. A bound left empty is not set.
+    void declaration() {
+        const std::string name = identifier();
+        if (name.empty()) {
+            fail("expected a parameter name");
+        }
+        static const char* const reserved[] = {"code", "class", "time", "frame", "pi", "parent", "sampleIndex"};
+        bool taken = declaredSlots_.count(name) != 0 || constants_.count(name) != 0 || isLocal(name) || name.find('.') != std::string::npos ||
+                     name.compare(0, 2, "__") == 0;
+        for (const auto& p : paramNames_) {
+            taken = taken || p == name;
+        }
+        for (const char* r : reserved) {
+            taken = taken || name == r;
+        }
+        if (taken) {
+            fail("cannot declare parameter '" + name + "'");
+        }
+        WrangleParam param;
+        param.name = name;
+        if (accept("=")) {
+            param.value = signedNumber();
+        }
+        if (accept("(")) {
+            if (!peekIs(',')) {
+                param.minimum = signedNumber();
+                param.hasMinimum = true;
+            }
+            expect(',');
+            if (!peekIs(')')) {
+                param.maximum = signedNumber();
+                param.hasMaximum = true;
+            }
+            expect(')');
+            if (param.hasMinimum && param.hasMaximum && param.minimum > param.maximum) {
+                fail("the limits of '" + name + "' have the minimum above the maximum");
+            }
+        }
+        param.slot = spec_.paramCount++;
+        declaredSlots_[name] = param.slot;
+        declared_->push_back(param);
+    }
+
     // '__' is reserved (the scalar-expression wrapper stores to `__result`).
     static bool isLocal(const std::string& name) { return name.size() > 1 && name[0] == '_' && name[1] != '_'; }
 
+    // A '#' starts a comment that runs to the end of the line; strings never reach here, so a '#' inside one is text.
     void skipSpace() {
-        while (pos_ < src_.size() && std::isspace(static_cast<unsigned char>(src_[pos_]))) ++pos_;
+        for (;;) {
+            while (pos_ < src_.size() && std::isspace(static_cast<unsigned char>(src_[pos_]))) {
+                ++pos_;
+            }
+            if (pos_ >= src_.size() || src_[pos_] != '#') {
+                return;
+            }
+            while (pos_ < src_.size() && src_[pos_] != '\n') {
+                ++pos_;
+            }
+        }
     }
 
     bool accept(const char* tok) {
@@ -250,6 +351,10 @@ private:
         if (accept("(")) return call(name);
         for (size_t i = 0; i < paramNames_.size(); ++i)
             if (paramNames_[i] == name) return spec_.graph.param(static_cast<int>(i));
+        const auto declaredSlot = declaredSlots_.find(name);
+        if (declaredSlot != declaredSlots_.end()) {
+            return spec_.graph.param(declaredSlot->second);
+        }
         const auto constant = constants_.find(name);
         if (constant != constants_.end()) return spec_.graph.constant(constant->second);
         if (name == "sampleIndex") return spec_.graph.index();
@@ -306,6 +411,9 @@ private:
     const std::string& src_;
     const std::vector<std::string>& paramNames_;
     const std::map<std::string, float>& constants_;
+    std::vector<WrangleParam>* declared_ = nullptr;
+    std::map<std::string, int> declaredSlots_;
+    bool assigned_ = false;   // an assignment was seen: declarations must come before it
     int depth_ = 0;
     size_t pos_ = 0;
     KernelSpec spec_;
@@ -315,8 +423,9 @@ private:
 
 }  // namespace
 
-KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants) {
-    return Parser(source, paramNames, constants).run();
+KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames, const std::map<std::string, float>& constants,
+                        std::vector<WrangleParam>* declared) {
+    return Parser(source, paramNames, constants, declared).run();
 }
 
 }  // namespace jitnodes

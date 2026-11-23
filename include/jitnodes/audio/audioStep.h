@@ -10,6 +10,7 @@ namespace jitnodes {
 // A sequential, stateful audio operation on the x channel that cannot be a point-wise kernel (a delay line, an IIR filter). An
 // AudioProgram runs it between kernel stages with a StateBlock of stateBytes() zeroed bytes that it owns, so a block-by-block run and
 // one run over the whole signal give the same result. process() must not allocate or lock.
+// @scriptable ignore=true
 class AudioStep {
 public:
     virtual ~AudioStep() = default;

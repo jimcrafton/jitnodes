@@ -3,6 +3,9 @@
 #include <json5/json5.hpp>
 #include <json5/json5_builder.hpp>
 
+#include <vector>
+
+#include "jitnodes/graph/assetDefinition.h"
 #include "jitnodes/graph/network.h"
 
 namespace jitnodes {
@@ -18,5 +21,9 @@ namespace jitnodes {
 // does, and leaves `net` untouched on failure.
 json5::value saveNetworkValue(json5::builder& b, const Network& net, bool includeTime = true, bool compact = false);
 void loadNetworkValue(Network& net, const json5::value& graph);
+
+// The promoted parameters of an asset definition: its "params" array, or for an older file the names and defaults of "promote".
+std::vector<AssetParam> readAssetParams(const json5::value& def);
+json5::value writeAssetParams(json5::builder& b, const std::vector<AssetParam>& params);
 
 }  // namespace jitnodes

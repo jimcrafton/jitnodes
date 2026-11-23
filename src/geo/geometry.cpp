@@ -20,6 +20,13 @@ void Geometry::addPrimitive(const Primitive& p) {
     for (auto& [name, array] : primAttribs_) array.resize(primitives_.size());
 }
 
+bool Geometry::removeAttrib(AttribClass cls, const std::string& name) {
+    if (cls == AttribClass::point && (name == "x" || name == "y")) {
+        throw std::runtime_error("the point positions x and y cannot be removed");
+    }
+    return attribMap(cls).erase(name) != 0;
+}
+
 AttribArray& Geometry::attrib(AttribClass cls, const std::string& name, AttribType type) {
     auto& map = attribMap(cls);
     auto [it, inserted] = map.try_emplace(name, type);
@@ -86,6 +93,24 @@ const std::string& Geometry::shapeKey(size_t prim) const {
     const AttribArray* a = findAttrib(AttribClass::primitive, shapeKeyAttrib);
     if (!a || prim >= a->size()) return none;
     return a->stringAt(prim);
+}
+
+bool Geometry::hasAnonymousPrimitives() const {
+    if (primitives_.empty()) return false;
+    if (!hasShapeKeys()) return true;
+    for (size_t i = 0; i < primitives_.size(); ++i)
+        if (shapeKey(i).empty()) return true;
+    return false;
+}
+
+size_t Geometry::stampAnonymousShapes(const std::string& base) {
+    size_t stamped = 0;
+    for (size_t i = 0; i < primitives_.size(); ++i) {
+        if (!shapeKey(i).empty()) continue;
+        setShapeKey(i, base + "#p" + std::to_string(i));
+        ++stamped;
+    }
+    return stamped;
 }
 
 std::vector<ShapeRange> Geometry::shapes() const {
