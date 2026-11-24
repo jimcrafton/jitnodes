@@ -234,6 +234,57 @@ private:
     }
 };
 
+struct PathSample {
+    double x = 0.0, y = 0.0, scale = 1.0;
+};
+
+// The path as points `steps` apart along each cubic segment, each with a scale (interpolated between the anchors of a segment).
+std::vector<PathSample> flatten(const Geometry& src, const Primitive& prim, const AlignedArray<float>* scale) {
+    std::vector<PathSample> out;
+    if (prim.count < 2) {
+        return out;
+    }
+    const float* x = src.x();
+    const float* y = src.y();
+    const auto at = [&](uint32_t k) {
+        const uint32_t i = prim.start + k % prim.count;
+        return PathSample{x[i], y[i], scale != nullptr ? std::max(double((*scale)[i]), 0.02) : 1.0};
+    };
+    const uint32_t segments = cubicSegments(prim);
+    if (prim.kind == PrimKind::cubic && segments > 0) {
+        constexpr int kSteps = 12;
+        out.push_back(at(0));
+        for (uint32_t seg = 0; seg < segments; ++seg) {
+            const PathSample p0 = at(seg * 3), p1 = at(seg * 3 + 1), p2 = at(seg * 3 + 2), p3 = at(seg * 3 + 3);
+            for (int st = 1; st <= kSteps; ++st) {
+                const double t = double(st) / kSteps, u = 1.0 - t;
+                const double b0 = u * u * u, b1 = 3.0 * u * u * t, b2 = 3.0 * u * t * t, b3 = t * t * t;
+                out.push_back({b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x, b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.y,
+                               p0.scale + (p3.scale - p0.scale) * t});
+            }
+        }
+        return out;
+    }
+    for (uint32_t k = 0; k < prim.count; ++k) {
+        out.push_back(at(k));
+    }
+    if (prim.closed) {
+        out.push_back(at(0));
+    }
+    return out;
+}
+
+// 0 <= value < 1, the same for the same key, so scattered copies do not shimmer when the graph is cooked again.
+double scatterNoise(uint32_t key) {
+    key *= 2654435761u;
+    key ^= key >> 15;
+    key *= 2246822519u;
+    key ^= key >> 13;
+    key *= 3266489917u;
+    key ^= key >> 16;
+    return double(key & 0xFFFFFFu) / 16777216.0;
+}
+
 // A calligraphic pen: every path (polyline or cubic) is swept by a slanted oval nib and comes out as closed outlines to fill. `width` is the nib's
 // long diameter, `angle` its tilt in degrees (counter-clockwise from horizontal), `roundness` its thickness as a percentage of its length (100 is a
 // round pen). The point attribute named by `scaleAttr` (pen pressure `w`, when the points have it) scales the nib along the stroke. The outlines are
@@ -275,13 +326,13 @@ public:
         std::vector<Primitive> prims;
         std::vector<uint32_t> srcPrim;
         for (uint32_t pi = 0; pi < src.primitiveCount(); ++pi) {
-            std::vector<Sample> samples = flatten(src, src.primitives()[pi], scaled ? scale : nullptr);
+            std::vector<PathSample> samples = flatten(src, src.primitives()[pi], scaled ? scale : nullptr);
             if (samples.size() < 2) {
                 continue;
             }
-            Sample last = samples.front();
+            PathSample last = samples.front();
             for (size_t i = 1; i < samples.size(); ++i) {
-                const Sample& next = samples[i];
+                const PathSample& next = samples[i];
                 if (std::hypot(next.x - last.x, next.y - last.y) < 0.05 && i + 1 < samples.size()) {
                     continue;
                 }
@@ -330,46 +381,6 @@ public:
     }
 
 private:
-    struct Sample {
-        double x = 0.0, y = 0.0, scale = 1.0;
-    };
-
-    // The path as points `steps` apart along each cubic segment, each with the nib scale (interpolated between the anchors of a segment).
-    static std::vector<Sample> flatten(const Geometry& src, const Primitive& prim, const AlignedArray<float>* scale) {
-        std::vector<Sample> out;
-        if (prim.count < 2) {
-            return out;
-        }
-        const float* x = src.x();
-        const float* y = src.y();
-        const auto at = [&](uint32_t k) {
-            const uint32_t i = prim.start + k % prim.count;
-            return Sample{x[i], y[i], scale != nullptr ? std::max(double((*scale)[i]), 0.02) : 1.0};
-        };
-        const uint32_t segments = cubicSegments(prim);
-        if (prim.kind == PrimKind::cubic && segments > 0) {
-            constexpr int kSteps = 12;
-            out.push_back(at(0));
-            for (uint32_t seg = 0; seg < segments; ++seg) {
-                const Sample p0 = at(seg * 3), p1 = at(seg * 3 + 1), p2 = at(seg * 3 + 2), p3 = at(seg * 3 + 3);
-                for (int st = 1; st <= kSteps; ++st) {
-                    const double t = double(st) / kSteps, u = 1.0 - t;
-                    const double b0 = u * u * u, b1 = 3.0 * u * u * t, b2 = 3.0 * u * t * t, b3 = t * t * t;
-                    out.push_back({b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x, b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.y,
-                                   p0.scale + (p3.scale - p0.scale) * t});
-                }
-            }
-            return out;
-        }
-        for (uint32_t k = 0; k < prim.count; ++k) {
-            out.push_back(at(k));
-        }
-        if (prim.closed) {
-            out.push_back(at(0));
-        }
-        return out;
-    }
-
     static double cross(const std::pair<double, double>& o, const std::pair<double, double>& a, const std::pair<double, double>& b) {
         return (a.first - o.first) * (b.second - o.second) - (a.second - o.second) * (b.first - o.first);
     }
@@ -396,6 +407,118 @@ private:
     }
 };
 
+// A scatter brush: copies of the artwork (input 1) stand along the paths of input 0. `size` is the stroke weight (1 draws the artwork at its own
+// size), `spacing` the distance between copies as a percentage of the artwork width (100: side by side), `scatter` how far a copy strays from the
+// path as a percentage of the artwork height, `sizeVariation` the random change of size in percent, `rotation` the random turn in degrees either
+// way, `followPath` (0 or 1) whether the copies turn with the path. The point attribute named by `scaleAttr` (pen pressure `w`) scales the copies
+// along the stroke. The randomness depends only on `seed` and the copy's number. The artwork is centred on its box; every copy takes the shape key
+// of the first path (so the stroke stays one shape, as with calligraphy) and carries the point and primitive attribute `copyIndex`.
+class StrokeScatterNode : public Node {
+public:
+    StrokeScatterNode() : Node("strokeScatter", 2) {
+        declareFloat("size", 1.0f);
+        declareFloat("spacing", 100.0f);
+        declareFloat("scatter", 0.0f);
+        declareFloat("sizeVariation", 0.0f);
+        declareFloat("rotation", 0.0f);
+        declareFloat("followPath", 1.0f);
+        declareFloat("seed", 1.0f);
+        declareString("scaleAttr", "w");
+    }
+
+    GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
+        const Geometry& path = *in[0];
+        const Geometry& art = *in[1];
+        const double size = getFloat("size"), spacing = getFloat("spacing");
+        if (!(size > 0.0) || !(spacing > 0.0)) {
+            throw std::runtime_error("strokeScatter: size and spacing must be above 0");
+        }
+        if (art.pointCount() == 0) {
+            throw std::runtime_error("strokeScatter: the artwork input has no points");
+        }
+
+        double x0 = art.x()[0], x1 = x0, y0 = art.y()[0], y1 = y0;
+        for (uint32_t i = 1; i < art.pointCount(); ++i) {
+            x0 = std::min(x0, double(art.x()[i]));
+            x1 = std::max(x1, double(art.x()[i]));
+            y0 = std::min(y0, double(art.y()[i]));
+            y1 = std::max(y1, double(art.y()[i]));
+        }
+        const double w = std::max(x1 - x0, 1e-3), h = std::max(y1 - y0, 1e-3), cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
+        Geometry centred = art;
+        for (uint32_t i = 0; i < centred.pointCount(); ++i) {
+            centred.x()[i] -= static_cast<float>(cx);
+            centred.y()[i] -= static_cast<float>(cy);
+        }
+
+        const double step = std::max(w * size * spacing / 100.0, 0.5);
+        const double scatter = getFloat("scatter") / 100.0, variation = getFloat("sizeVariation") / 100.0;
+        const double rotation = getFloat("rotation") * 3.14159265358979323846 / 180.0;
+        const bool follow = getFloat("followPath") >= 0.5f;
+        uint32_t seed = static_cast<uint32_t>(std::max(0.0f, getFloat("seed"))) * 7919u + 1u;
+        const AlignedArray<float>* weights = path.findPointAttrib(getString("scaleAttr"));
+        bool weighted = false;
+        for (uint32_t i = 0; weights != nullptr && i < path.pointCount() && !weighted; ++i) {
+            weighted = (*weights)[i] > 0.0f;
+        }
+
+        std::vector<float> px, py, pscale, pangle;
+        for (uint32_t pi = 0; pi < path.primitiveCount(); ++pi) {
+            const std::vector<PathSample> line = flatten(path, path.primitives()[pi], weighted ? weights : nullptr);
+            if (line.size() < 2) {
+                continue;
+            }
+            std::vector<double> at(line.size(), 0.0);
+            for (size_t k = 1; k < line.size(); ++k) {
+                at[k] = at[k - 1] + std::hypot(line[k].x - line[k - 1].x, line[k].y - line[k - 1].y);
+            }
+            const double total = at.back();
+            const int count = std::min(5000, int(std::floor(total / step)) + 1);
+            size_t seg = 1;
+            for (int i = 0; i < count; ++i, ++seed) {
+                const double d = step * i;
+                while (seg + 1 < line.size() && at[seg] < d) {
+                    ++seg;
+                }
+                const PathSample& a = line[seg - 1];
+                const PathSample& b = line[seg];
+                const double length = at[seg] - at[seg - 1];
+                const double u = length > 0.0 ? std::clamp((d - at[seg - 1]) / length, 0.0, 1.0) : 0.0;
+                const double tx = length > 0.0 ? (b.x - a.x) / length : 1.0, ty = length > 0.0 ? (b.y - a.y) / length : 0.0;
+                const double across = (scatterNoise(seed * 3u) - 0.5) * 2.0 * scatter * h * size;
+                const double here = a.scale + (b.scale - a.scale) * u;
+                const double scale = size * here * (1.0 + (scatterNoise(seed * 3u + 1u) - 0.5) * 2.0 * variation);
+                double turn = (scatterNoise(seed * 3u + 2u) - 0.5) * 2.0 * rotation;
+                if (follow) {
+                    turn += std::atan2(ty, tx);
+                }
+                px.push_back(static_cast<float>(a.x + (b.x - a.x) * u + ty * across));
+                py.push_back(static_cast<float>(a.y + (b.y - a.y) * u - tx * across));
+                pscale.push_back(static_cast<float>(scale));
+                pangle.push_back(static_cast<float>(turn));
+            }
+        }
+
+        Geometry targets;
+        targets.resizePoints(px.size());
+        float* scaleOut = targets.attrib(AttribClass::point, "scale").floats().data();
+        float* angleOut = targets.attrib(AttribClass::point, "angle").floats().data();
+        for (size_t i = 0; i < px.size(); ++i) {
+            targets.x()[i] = px[i];
+            targets.y()[i] = py[i];
+            scaleOut[i] = pscale[i];
+            angleOut[i] = pangle[i];
+        }
+        auto out = std::make_shared<Geometry>(copyToPoints(centred, targets, 1.0f, 0.0f));
+        if (path.primitiveCount() > 0 && path.hasShapeKeys() && !path.shapeKey(0).empty()) {
+            for (size_t i = 0; i < out->primitiveCount(); ++i) {
+                out->setShapeKey(i, path.shapeKey(0));
+            }
+        }
+        return out;
+    }
+};
+
 template <class T>
 void add(const char* typeName) {
     NodeRegistry::instance().registerType(typeName, [] { return std::make_unique<T>(); });
@@ -407,6 +530,7 @@ void registerStrokeNodes() {
     add<PathMotionNode>("pathMotion");
     add<StrokeCleanNode>("strokeClean");
     add<CalligraphyNode>("calligraphy");
+    add<StrokeScatterNode>("strokeScatter");
 }
 
 }  // namespace jitnodes

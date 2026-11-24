@@ -70,3 +70,22 @@ the shape key of their path. All point attributes are dropped (the output is pla
 | `scaleAttr` | `w` | the point attribute that scales the nib along the stroke (pen pressure); ignored when the points have none or it is 0 everywhere |
 
 Ported from curvy v1's `BrushDef::nibOutline`.
+
+## strokeScatter (two inputs)
+
+A scatter brush. Input 0 is the path, input 1 the artwork; copies of the artwork (centred on its bounding box) stand along every path (polyline or
+cubic). Each copy keeps the artwork's primitives, takes the shape key of the first path (the stroke stays one shape) and carries the point and primitive attribute
+`copyIndex`. The randomness depends only on `seed` and the copy's number, so cooking again gives the same picture. Built on `copyToPoints`.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `size` | 1 | the stroke weight: 1 draws the artwork at its own size, 2 twice as big (above 0) |
+| `spacing` | 100 | distance between copies as a percentage of the artwork width times `size` (100: side by side; above 0) |
+| `scatter` | 0 | how far a copy strays across the path, as a percentage of the artwork height times `size` |
+| `sizeVariation` | 0 | random change of size, percent either way |
+| `rotation` | 0 | random turn in degrees either way |
+| `followPath` | 1 | 1 turns the copies with the path |
+| `seed` | 1 | changes the random numbers |
+| `scaleAttr` | `w` | point attribute that scales the copies along the stroke (pen pressure) |
+
+Ported from curvy v1's `BrushDef::placements`. At most 5000 copies per path.

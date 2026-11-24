@@ -8741,6 +8741,122 @@ TEST(calligraphyKeepsShapeKeysAndSweepsCubics) {
     CHECK(refused);
 }
 
+// A square of side `side` centred on the origin, one closed polygon.
+std::shared_ptr<Geometry> squareArt(float side) {
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(4);
+    const float h = side * 0.5f;
+    const float px[4] = {-h, h, h, -h}, py[4] = {-h, -h, h, h};
+    for (int i = 0; i < 4; ++i) {
+        geo->x()[i] = px[i];
+        geo->y()[i] = py[i];
+    }
+    Primitive prim;
+    prim.start = 0;
+    prim.count = 4;
+    prim.closed = true;
+    geo->addPrimitive(prim);
+    return geo;
+}
+
+struct ScatterRig {
+    Network net{1};
+    NodeId scatter;
+    ScatterRig(std::shared_ptr<Geometry> path, std::shared_ptr<Geometry> art) {
+        NodeId p = strokeSource(net, path);
+        NodeId a = strokeSource(net, art);
+        scatter = net.addNode("strokeScatter");
+        net.connect(p, scatter, 0);
+        net.connect(a, scatter, 1);
+    }
+};
+
+TEST(strokeScatterPutsCopiesAtTheSpacingAlongThePath) {
+    ScatterRig rig(strokeOf({{0, 0, 0}, {100, 0, 1}}), squareArt(10.0f));
+    rig.net.node(rig.scatter).setFloat("spacing", 200.0f);   // 20 apart: copies at 0, 20, ... 100
+    auto out = rig.net.cook(rig.scatter);
+    CHECK(out->primitiveCount() == 6);
+    const auto box = pointBox(*out);
+    CHECK_NEAR(box[0], -5.0f);
+    CHECK_NEAR(box[2], 105.0f);
+    CHECK_NEAR(box[1], -5.0f);
+    CHECK_NEAR(box[3], 5.0f);
+}
+
+TEST(strokeScatterSizeScalesTheCopiesAndTheSpacing) {
+    ScatterRig rig(strokeOf({{0, 0, 0}, {100, 0, 1}}), squareArt(10.0f));
+    rig.net.node(rig.scatter).setFloat("size", 2.0f);
+    auto out = rig.net.cook(rig.scatter);
+    CHECK(out->primitiveCount() == 6);   // 20 apart again: size 2 doubles the artwork and the step
+    const auto box = pointBox(*out);
+    CHECK_NEAR(box[3] - box[1], 20.0f);
+}
+
+TEST(strokeScatterTurnsCopiesWithThePathOnlyWhenAsked) {
+    ScatterRig rig(strokeOf({{0, 0, 0}, {0, 100, 1}}), squareArt(10.0f));
+    rig.net.node(rig.scatter).setFloat("spacing", 2000.0f);   // 200 apart on a 100 long path: one copy at the start
+    auto out = rig.net.cook(rig.scatter);
+    CHECK(out->primitiveCount() == 1);
+    auto box = pointBox(*out);
+    CHECK_NEAR(box[2] - box[0], 10.0f);   // a square turned a quarter is still a square
+    rig.net.node(rig.scatter).setFloat("followPath", 0.0f);
+    rig.net.node(rig.scatter).setFloat("rotation", 45.0f);
+    out = rig.net.cook(rig.scatter);
+    box = pointBox(*out);
+    CHECK(box[2] - box[0] <= 14.15f);
+}
+
+TEST(strokeScatterIsRepeatableAndTheSeedChangesIt) {
+    ScatterRig rig(strokeOf({{0, 0, 0}, {100, 0, 1}}), squareArt(10.0f));
+    Node& node = rig.net.node(rig.scatter);
+    node.setFloat("scatter", 100.0f);
+    node.setFloat("sizeVariation", 50.0f);
+    auto first = rig.net.cook(rig.scatter);
+    node.setFloat("size", 1.0f);
+    auto again = rig.net.cook(rig.scatter);
+    CHECK(sameGeometry(*first, *again));
+    node.setFloat("seed", 2.0f);
+    CHECK(!sameGeometry(*first, *rig.net.cook(rig.scatter)));
+}
+
+TEST(strokeScatterCopiesFollowThePressureAttribute) {
+    auto path = strokeOf({{0, 0, 0}, {100, 0, 1}});
+    float* w = path->attrib(AttribClass::point, "w").floats().data();
+    w[0] = 0.5f;
+    w[1] = 0.5f;
+    ScatterRig rig(path, squareArt(10.0f));
+    rig.net.node(rig.scatter).setFloat("spacing", 1000.0f);
+    const auto box = pointBox(*rig.net.cook(rig.scatter));
+    CHECK_NEAR(box[3] - box[1], 5.0f);
+}
+
+TEST(strokeScatterCopiesTakeThePathsShapeKey) {
+    auto path = strokeOf({{0, 0, 0}, {100, 0, 1}});
+    path->setShapeKey(0, "pathA");
+    ScatterRig rig(path, squareArt(10.0f));
+    auto out = rig.net.cook(rig.scatter);
+    CHECK(out->primitiveCount() > 1);
+    CHECK(out->shapes().size() == 1);
+    CHECK(out->shapes()[0].key == "pathA");
+    out->checkShapes();
+}
+
+TEST(strokeScatterRefusesNoArtworkAndZeroSize) {
+    auto refused = [](ScatterRig& rig) {
+        try {
+            rig.net.cook(rig.scatter);
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    ScatterRig empty(strokeOf({{0, 0, 0}, {100, 0, 1}}), std::make_shared<Geometry>());
+    CHECK(refused(empty));
+    ScatterRig flat(strokeOf({{0, 0, 0}, {100, 0, 1}}), squareArt(10.0f));
+    flat.net.node(flat.scatter).setFloat("size", 0.0f);
+    CHECK(refused(flat));
+}
+
 class ProbeRenderer : public RendererNode {
 public:
     ProbeRenderer() : RendererNode("testProbeRenderer", 1) {}
