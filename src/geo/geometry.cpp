@@ -263,6 +263,20 @@ Geometry Geometry::concat(const std::vector<const Geometry*>& parts, ThreadPool*
     return out;
 }
 
+size_t Geometry::memoryBytes() const {
+    size_t bytes = primitives_.capacity() * sizeof(Primitive);
+    for (const std::map<std::string, AttribArray>* map : {&pointAttribs_, &primAttribs_}) {
+        for (const auto& entry : *map) {
+            const AttribArray& a = entry.second;
+            bytes += a.paddedSize() * sizeof(float);   // floats and ints are both four bytes
+            if (a.type() == AttribType::string) {
+                for (const std::string& text : a.table().strings) bytes += text.capacity() + sizeof(std::string);
+            }
+        }
+    }
+    return bytes;
+}
+
 bool sameGeometry(const Geometry& a, const Geometry& b) {
     if (a.pointCount() != b.pointCount() || a.primitiveCount() != b.primitiveCount() || a.details() != b.details()) return false;
     for (size_t i = 0; i < a.primitiveCount(); ++i) {

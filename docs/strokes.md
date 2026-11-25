@@ -62,12 +62,17 @@ A calligraphic pen. Every path (polyline or cubic; a cubic is sampled 12 times p
 polylines to fill. The result is one convex piece per step of the path, all wound the same way, so a non-zero fill is their union; the pieces keep
 the shape key of their path. All point attributes are dropped (the output is plain polygons).
 
+Samples are not one piece each: a run of samples that lie within `tolerance` of the straight line between the run's ends, with a pressure scale that
+changes by under 10 %, becomes one piece (the nib swept along a chord is the nib swept along a path that stays close to it). `tolerance` 0 keeps a
+piece for every sample. A mouse's samples are whole pixels, so their jitter is about 0.5 and a tolerance of 0.25 merges only part of it.
+
 | Parameter | Default | Meaning |
 |---|---|---|
 | `width` | 8 | the nib's long diameter (above 0) |
 | `angle` | 45 | the nib's tilt in degrees, counter-clockwise from horizontal |
 | `roundness` | 25 | the nib's thickness as a percentage of its length, above 0 up to 100 (100 is a round pen) |
 | `scaleAttr` | `w` | the point attribute that scales the nib along the stroke (pen pressure); ignored when the points have none or it is 0 everywhere |
+| `tolerance` | 0.25 | how far (document units) a skipped sample may lie from the chord that replaces it; 0 keeps every sample |
 
 Ported from curvy v1's `BrushDef::nibOutline`.
 

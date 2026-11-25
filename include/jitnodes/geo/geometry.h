@@ -74,6 +74,9 @@ public:
     void resizePoints(size_t n);
 
     size_t primitiveCount() const { return primitives_.size(); }
+    // The bytes this geometry holds: attribute columns (padded), primitives and string tables. Columns shared with another geometry are counted
+    // in full, so a sum over several geometries can exceed what is allocated.
+    size_t memoryBytes() const;
     void addPrimitive(const Primitive& p);
     const std::vector<Primitive>& primitives() const { return primitives_; }
 

@@ -298,6 +298,10 @@ public:
     // Per-node timings of the latest cooks; see Node::stats().
     std::string profileReport() const;
     void resetProfile();
+    // Wall-clock milliseconds of the root's latest cook pass (a cook that found something dirty; a request answered from the cache is not a
+    // pass), and of all passes since this network was made or resetProfile.
+    double lastCookMillis() const;
+    double totalCookMillis() const;
 
     // Records one event per cooked task (node, thread, start, duration) while enabled; a subnet's network records into its root's.
     // writeTrace emits Chrome trace JSON for chrome://tracing and Perfetto. Recording does not change any result.
@@ -441,6 +445,8 @@ private:
     bool fusionEnabled_ = true;
     std::atomic<size_t> fusedChainCount_{0};
     std::atomic<bool> cooking_{false};
+    double lastPassMs_ = 0.0;   // the root's; see lastCookMillis
+    double totalPassMs_ = 0.0;
     std::atomic<bool> cancelRequested_{false};
     std::atomic<size_t> progressDone_{0}, progressTotal_{0};   // the root's; nested networks add to it
     ProgressCallback progressCallback_;

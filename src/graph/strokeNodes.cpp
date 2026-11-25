@@ -289,7 +289,9 @@ double scatterNoise(uint32_t key) {
 // long diameter, `angle` its tilt in degrees (counter-clockwise from horizontal), `roundness` its thickness as a percentage of its length (100 is a
 // round pen). The point attribute named by `scaleAttr` (pen pressure `w`, when the points have it) scales the nib along the stroke. The outlines are
 // one convex piece per step of the path, all wound alike, so filling them non-zero is their union; they keep the shape key of their path. The point
-// attributes are dropped: the result is plain polygons.
+// attributes are dropped: the result is plain polygons. Samples that lie within `tolerance` (document units) of the straight line between their
+// neighbours are skipped and one piece covers the run, so a path of many close samples (a pen's, a mouse's) is not one piece per sample; 0 keeps a
+// piece for every sample.
 class CalligraphyNode : public Node {
 public:
     CalligraphyNode() : Node("calligraphy", 1) {
@@ -297,6 +299,7 @@ public:
         declareFloat("angle", 45.0f);
         declareFloat("roundness", 25.0f);
         declareString("scaleAttr", "w");
+        declareFloat("tolerance", 0.25f);
     }
 
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
@@ -308,6 +311,7 @@ public:
         const double major = width * 0.5, minor = std::max(major * roundness / 100.0, 0.05);
         const double turn = -double(getFloat("angle")) * 3.14159265358979323846 / 180.0, c = std::cos(turn), s = std::sin(turn);
         constexpr int kSides = 16;
+        const double tolerance = std::max(0.0, double(getFloat("tolerance")));
         std::vector<std::pair<double, double>> nib;
         for (int k = 0; k < kSides; ++k) {
             const double t = 2.0 * 3.14159265358979323846 * k / kSides, x = major * std::cos(t), y = minor * std::sin(t);
@@ -331,9 +335,34 @@ public:
                 continue;
             }
             PathSample last = samples.front();
-            for (size_t i = 1; i < samples.size(); ++i) {
-                const PathSample& next = samples[i];
-                if (std::hypot(next.x - last.x, next.y - last.y) < 0.05 && i + 1 < samples.size()) {
+            size_t lastIndex = 0;
+            for (size_t i = 1; i < samples.size();) {
+                // One hull can stand for a run of samples: the nib swept along a chord is the nib swept along a path that stays close to it. The
+                // run grows while the skipped samples lie within `tolerance` of the chord, the pressure scale hardly changes, and the chord is no
+                // longer than the nib's radius.
+                size_t reach = i;
+                while (tolerance > 0.0 && reach + 1 < samples.size()) {
+                    const PathSample& candidate = samples[reach + 1];
+                    const double dx = candidate.x - last.x, dy = candidate.y - last.y;
+                    const double length = std::hypot(dx, dy);
+                    if (std::abs(candidate.scale - last.scale) > 0.1 * std::max(double(last.scale), 1e-3)) {
+                        break;
+                    }
+                    bool straight = true;
+                    for (size_t k = lastIndex + 1; k <= reach && straight; ++k) {
+                        const double ox = samples[k].x - last.x, oy = samples[k].y - last.y;
+                        const double off = length > 1e-9 ? std::abs(ox * dy - oy * dx) / length : std::hypot(ox, oy);
+                        straight = off <= tolerance;
+                    }
+                    if (!straight) {
+                        break;
+                    }
+                    ++reach;
+                }
+                const PathSample& next = samples[reach];
+                const size_t nextIndex = reach;
+                i = reach + 1;
+                if (std::hypot(next.x - last.x, next.y - last.y) < 0.05 && nextIndex + 1 < samples.size()) {
                     continue;
                 }
                 std::vector<std::pair<double, double>> both;
@@ -355,6 +384,7 @@ public:
                     srcPrim.push_back(pi);
                 }
                 last = next;
+                lastIndex = nextIndex;
             }
         }
 

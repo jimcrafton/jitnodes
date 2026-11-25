@@ -998,6 +998,7 @@ void Network::cookNode(NodeId id) {
 
     struct CookScope {
         Network& net;
+        std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         explicit CookScope(Network& n) : net(n) {
             if (!net.parent_) {
                 net.cooking_ = true;
@@ -1009,6 +1010,8 @@ void Network::cookNode(NodeId id) {
             if (!net.parent_) {
                 net.cooking_ = false;
                 net.cancelRequested_ = false;
+                net.lastPassMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                net.totalPassMs_ += net.lastPassMs_;
             }
         }
     } scope(*this);
@@ -1055,6 +1058,10 @@ void Network::cancel() {
 void Network::setThreadCount(size_t threads) { pool_ = std::make_unique<ThreadPool>(threads > 1 ? threads - 1 : 0); }
 
 void Network::resetProfile() {
+    if (!parent_) {
+        lastPassMs_ = 0.0;
+        totalPassMs_ = 0.0;
+    }
     for (auto& entry : slots_) {
         entry.second.node->stats_ = NodeStats{};
         if (Network* child = entry.second.node->childNetwork()) child->resetProfile();
@@ -1075,6 +1082,14 @@ void Network::appendProfileRows(std::string& out, int depth) const {
         out += line;
         if (const Network* child = n.childNetwork()) child->appendProfileRows(out, depth + 1);
     }
+}
+
+double Network::lastCookMillis() const {
+    return root().lastPassMs_;
+}
+
+double Network::totalCookMillis() const {
+    return root().totalPassMs_;
 }
 
 std::string Network::profileReport() const {

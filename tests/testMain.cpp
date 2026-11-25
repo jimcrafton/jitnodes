@@ -8666,6 +8666,7 @@ TEST(calligraphySweepsAPathIntoClosedOutlinesOfTheNibsSize) {
     net.node(pen).setFloat("width", 10.0f);
     net.node(pen).setFloat("angle", 0.0f);
     net.node(pen).setFloat("roundness", 100.0f);
+    net.node(pen).setFloat("tolerance", 0.0f);
     auto out = net.cook(pen);
     CHECK(out->primitiveCount() == 2);
     for (const Primitive& prim : out->primitives()) {
@@ -8677,6 +8678,54 @@ TEST(calligraphySweepsAPathIntoClosedOutlinesOfTheNibsSize) {
     CHECK_NEAR(box[1], -5.0f);
     CHECK_NEAR(box[3], 5.0f);
     CHECK(!out->hasPointAttrib("t"));
+}
+
+TEST(calligraphySkipsSamplesOnAStraightRunAndKeepsTheOnesThatTurn) {
+    Network net(1);
+    std::vector<std::array<float, 3>> points;
+    for (int i = 0; i <= 40; ++i) {
+        points.push_back({float(i) * 2.0f, 0.0f, float(i)});   // 40 steps along a line
+    }
+    for (int i = 1; i <= 40; ++i) {
+        points.push_back({80.0f, float(i) * 2.0f, float(40 + i)});   // then a right-angle turn and 40 more
+    }
+    NodeId src = strokeSource(net, strokeOf(points));
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    net.node(pen).setFloat("width", 6.0f);
+    net.node(pen).setFloat("roundness", 100.0f);
+
+    net.node(pen).setFloat("tolerance", 0.0f);
+    const size_t everySample = net.cook(pen)->primitiveCount();
+    CHECK(everySample == 80);
+
+    net.node(pen).setFloat("tolerance", 0.25f);
+    auto merged = net.cook(pen);
+    CHECK(merged->primitiveCount() == 2);   // one piece per straight leg
+    const auto box = pointBox(*merged);
+    CHECK_NEAR(box[0], -3.0f);   // the sweep is as wide and as long as before
+    CHECK_NEAR(box[2], 83.0f);
+    CHECK_NEAR(box[3], 83.0f);
+}
+
+TEST(calligraphyTolerancePassesAJitteredStraightLineButNotACurve) {
+    Network net(1);
+    std::vector<std::array<float, 3>> line, arc;
+    for (int i = 0; i <= 60; ++i) {
+        line.push_back({float(i) * 3.0f, (i % 2 == 0 ? 0.1f : -0.1f), float(i)});   // a line with 0.1 jitter
+        arc.push_back({float(i) * 3.0f, 40.0f * std::sin(float(i) * 0.1f), float(i)});   // a bend
+    }
+    Network lineNet(1), arcNet(1);
+    NodeId lineSrc = strokeSource(lineNet, strokeOf(line));
+    NodeId arcSrc = strokeSource(arcNet, strokeOf(arc));
+    NodeId linePen = lineNet.addNode("calligraphy");
+    NodeId arcPen = arcNet.addNode("calligraphy");
+    lineNet.connect(lineSrc, linePen);
+    arcNet.connect(arcSrc, arcPen);
+    CHECK(lineNet.cook(linePen)->primitiveCount() <= 2);
+    CHECK(arcNet.cook(arcPen)->primitiveCount() > 6);   // the bend keeps its pieces
+    arcNet.node(arcPen).setFloat("tolerance", 0.0f);
+    CHECK(arcNet.cook(arcPen)->primitiveCount() == 60);
 }
 
 TEST(calligraphyFlatNibIsThinAcrossItsAngle) {
