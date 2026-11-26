@@ -37,6 +37,7 @@ protected:
 private:
     Network inner_{1};
     std::vector<float> lastSpare_;
+    std::vector<std::string> lastSpareRamps_;
     bool cooked_ = false;
 };
 

@@ -7,7 +7,12 @@
 #include <utility>
 #include <vector>
 
+#include "jitnodes/geo/brushEnvelope.h"
+#include "jitnodes/geo/curveFit.h"
+#include "jitnodes/geo/nibBrush.h"
+#include "jitnodes/geo/outlineFit.h"
 #include "jitnodes/geo/pathMotion.h"
+#include "jitnodes/geo/trajectoryFit.h"
 #include "jitnodes/geo/topology.h"
 #include "jitnodes/graph/network.h"
 
@@ -285,13 +290,13 @@ double scatterNoise(uint32_t key) {
     return double(key & 0xFFFFFFu) / 16777216.0;
 }
 
-// A calligraphic pen: every path (polyline or cubic) is swept by a slanted oval nib and comes out as closed outlines to fill. `width` is the nib's
-// long diameter, `angle` its tilt in degrees (counter-clockwise from horizontal), `roundness` its thickness as a percentage of its length (100 is a
-// round pen). The point attribute named by `scaleAttr` (pen pressure `w`, when the points have it) scales the nib along the stroke. The outlines are
-// one convex piece per step of the path, all wound alike, so filling them non-zero is their union; they keep the shape key of their path. The point
-// attributes are dropped: the result is plain polygons. Samples that lie within `tolerance` (document units) of the straight line between their
-// neighbours are skipped and one piece covers the run, so a path of many close samples (a pen's, a mouse's) is not one piece per sample; 0 keeps a
-// piece for every sample.
+// A calligraphic pen: every path (polyline or cubic) is swept by a slanted oval nib and comes out as one closed cubic outline to fill (a closed path
+// gives two, a ring: the outer and the inner loop, wound opposite ways under the one shape key so the inside stays open). `width` is the nib's long
+// diameter, `angle` its tilt in degrees (counter-clockwise from horizontal), `roundness` its thickness as a percentage of its length (100 is a round
+// pen). The point attribute named by `scaleAttr` (pen pressure `w`, when the points have it) scales the nib along the stroke. The path is first
+// fitted to cubics within `trajectoryTolerance` of its samples (0: a quarter of the width, at most 1; a mouse path is a coarse polyline, and following every corner of it costs a cubic or two per sample), the nib is swept along the fitted curve, and
+// the border of the sweep is fitted to cubics within `outlineTolerance` (0: 7.5% of the width or 30% of the nib's thickness at the stroke's thinnest scale (at least 0.3), whichever is less, at least 0.05). The outlines keep the shape
+// key of their path; the point attributes are dropped. See TrajectoryFit, BrushEnvelope and OutlineFit.
 class CalligraphyNode : public Node {
 public:
     CalligraphyNode() : Node("calligraphy", 1) {
@@ -299,7 +304,8 @@ public:
         declareFloat("angle", 45.0f);
         declareFloat("roundness", 25.0f);
         declareString("scaleAttr", "w");
-        declareFloat("tolerance", 0.25f);
+        declareFloat("trajectoryTolerance", 0.0f);
+        declareFloat("outlineTolerance", 0.0f);
     }
 
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
@@ -308,15 +314,14 @@ public:
         if (!(width > 0.0f) || !(roundness > 0.0f) || roundness > 100.0f) {
             throw std::runtime_error("calligraphy: width must be above 0 and roundness in 0..100");
         }
-        const double major = width * 0.5, minor = std::max(major * roundness / 100.0, 0.05);
-        const double turn = -double(getFloat("angle")) * 3.14159265358979323846 / 180.0, c = std::cos(turn), s = std::sin(turn);
-        constexpr int kSides = 16;
-        const double tolerance = std::max(0.0, double(getFloat("tolerance")));
-        std::vector<std::pair<double, double>> nib;
-        for (int k = 0; k < kSides; ++k) {
-            const double t = 2.0 * 3.14159265358979323846 * k / kSides, x = major * std::cos(t), y = minor * std::sin(t);
-            nib.push_back({x * c - y * s, x * s + y * c});
-        }
+        const NibBrush nib = NibBrush::oval(width, getFloat("angle"), roundness);
+        TrajectoryParams trajectoryParams;
+        trajectoryParams.forward = true;
+        trajectoryParams.tolerance =
+            getFloat("trajectoryTolerance") > 0.0f ? double(getFloat("trajectoryTolerance")) : std::clamp(double(width) / 4.0, 0.05, 1.0);
+        const double thickness = double(width) * double(roundness) / 100.0;
+        const double outlineTolerance =
+            getFloat("outlineTolerance") > 0.0f ? double(getFloat("outlineTolerance")) : std::max(std::min(double(width) * 0.075, thickness * 0.3), 0.05);
 
         const AlignedArray<float>* scale = src.findPointAttrib(getString("scaleAttr"));
         bool scaled = false;
@@ -330,61 +335,40 @@ public:
         std::vector<Primitive> prims;
         std::vector<uint32_t> srcPrim;
         for (uint32_t pi = 0; pi < src.primitiveCount(); ++pi) {
-            std::vector<PathSample> samples = flatten(src, src.primitives()[pi], scaled ? scale : nullptr);
+            const Primitive& path = src.primitives()[pi];
+            const std::vector<PathSample> samples = flatten(src, path, scaled ? scale : nullptr);
             if (samples.size() < 2) {
                 continue;
             }
-            PathSample last = samples.front();
-            size_t lastIndex = 0;
-            for (size_t i = 1; i < samples.size();) {
-                // One hull can stand for a run of samples: the nib swept along a chord is the nib swept along a path that stays close to it. The
-                // run grows while the skipped samples lie within `tolerance` of the chord, the pressure scale hardly changes, and the chord is no
-                // longer than the nib's radius.
-                size_t reach = i;
-                while (tolerance > 0.0 && reach + 1 < samples.size()) {
-                    const PathSample& candidate = samples[reach + 1];
-                    const double dx = candidate.x - last.x, dy = candidate.y - last.y;
-                    const double length = std::hypot(dx, dy);
-                    if (std::abs(candidate.scale - last.scale) > 0.1 * std::max(double(last.scale), 1e-3)) {
-                        break;
-                    }
-                    bool straight = true;
-                    for (size_t k = lastIndex + 1; k <= reach && straight; ++k) {
-                        const double ox = samples[k].x - last.x, oy = samples[k].y - last.y;
-                        const double off = length > 1e-9 ? std::abs(ox * dy - oy * dx) / length : std::hypot(ox, oy);
-                        straight = off <= tolerance;
-                    }
-                    if (!straight) {
-                        break;
-                    }
-                    ++reach;
+            std::vector<CurveFit::Point> points;
+            std::vector<double> scales;
+            for (const PathSample& s : samples) {
+                points.push_back({s.x, s.y});
+                scales.push_back(s.scale);
+            }
+            std::vector<std::vector<double>> attributes;
+            if (scaled) {
+                attributes.push_back(scales);
+            }
+            const Trajectory trajectory = TrajectoryFit::fit(points, attributes, trajectoryParams);
+            const BrushBorders borders = BrushEnvelope::sweep(nib, trajectory.vertices, scaled ? trajectory.attributes[0] : std::vector<double>(), path.closed);
+            // Two borders closer than the tolerance fit into one and the stroke drops out, so the automatic tolerance follows the stroke's thinnest scale.
+            const double thinnest = scaled ? *std::min_element(scales.begin(), scales.end()) : 1.0;
+            const double pathTolerance = getFloat("outlineTolerance") > 0.0f
+                                             ? outlineTolerance
+                                             : std::max(std::min(double(width) * 0.075, thickness * std::clamp(thinnest, 0.3, 1.0) * 0.3), 0.05);
+            for (const std::vector<CurveFit::Point>& outline : OutlineFit::outlines(borders, pathTolerance)) {
+                Primitive made;
+                made.start = static_cast<uint32_t>(xs.size());
+                made.count = static_cast<uint32_t>(outline.size());
+                made.closed = true;
+                made.kind = PrimKind::cubic;
+                for (const CurveFit::Point& p : outline) {
+                    xs.push_back(static_cast<float>(p.x));
+                    ys.push_back(static_cast<float>(p.y));
                 }
-                const PathSample& next = samples[reach];
-                const size_t nextIndex = reach;
-                i = reach + 1;
-                if (std::hypot(next.x - last.x, next.y - last.y) < 0.05 && nextIndex + 1 < samples.size()) {
-                    continue;
-                }
-                std::vector<std::pair<double, double>> both;
-                for (const auto& p : nib) {
-                    both.push_back({p.first * last.scale + last.x, p.second * last.scale + last.y});
-                    both.push_back({p.first * next.scale + next.x, p.second * next.scale + next.y});
-                }
-                const std::vector<std::pair<double, double>> hull = convexHull(std::move(both));
-                if (hull.size() >= 3) {
-                    Primitive made;
-                    made.start = static_cast<uint32_t>(xs.size());
-                    made.count = static_cast<uint32_t>(hull.size());
-                    made.closed = true;
-                    for (const auto& p : hull) {
-                        xs.push_back(static_cast<float>(p.first));
-                        ys.push_back(static_cast<float>(p.second));
-                    }
-                    prims.push_back(made);
-                    srcPrim.push_back(pi);
-                }
-                last = next;
-                lastIndex = nextIndex;
+                prims.push_back(made);
+                srcPrim.push_back(pi);
             }
         }
 
@@ -408,32 +392,6 @@ public:
         }
         transferPrimAttribs(src, *out, srcPrim);
         return out;
-    }
-
-private:
-    static double cross(const std::pair<double, double>& o, const std::pair<double, double>& a, const std::pair<double, double>& b) {
-        return (a.first - o.first) * (b.second - o.second) - (a.second - o.second) * (b.first - o.first);
-    }
-
-    // Andrew's monotone chain: always wound the same way.
-    static std::vector<std::pair<double, double>> convexHull(std::vector<std::pair<double, double>> pts) {
-        std::sort(pts.begin(), pts.end());
-        std::vector<std::pair<double, double>> hull(pts.size() * 2);
-        size_t k = 0;
-        for (size_t i = 0; i < pts.size(); ++i) {
-            while (k >= 2 && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0.0) {
-                --k;
-            }
-            hull[k++] = pts[i];
-        }
-        for (size_t i = pts.size() - 1, t = k + 1; i > 0; --i) {
-            while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i - 1]) <= 0.0) {
-                --k;
-            }
-            hull[k++] = pts[i - 1];
-        }
-        hull.resize(k > 1 ? k - 1 : k);
-        return hull;
     }
 };
 
@@ -559,8 +517,7 @@ void add(const char* typeName) {
 void registerStrokeNodes() {
     add<PathMotionNode>("pathMotion");
     add<StrokeCleanNode>("strokeClean");
-    add<CalligraphyNode>("calligraphy");
-    add<StrokeScatterNode>("strokeScatter");
+    add<CalligraphyNode>("calligraphy");    add<StrokeScatterNode>("strokeScatter");
 }
 
 }  // namespace jitnodes

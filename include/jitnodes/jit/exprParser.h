@@ -19,6 +19,12 @@ struct WrangleParam {
     float minimum = 0.0f;
     float maximum = 0.0f;
     int slot = 0;
+    // A ramp (`profile = ramp("0 0, 1 1")`, read as `profile(x)`) takes rampSlots parameters from `slot`: the first position, the
+    // entries per unit of position, then the curve's values at rampSamples evenly spaced positions from the first point to the last.
+    bool ramp = false;
+    std::string rampDefault;
+    static constexpr int rampSamples = 256;
+    static constexpr int rampSlots = rampSamples + 2;
 };
 
 // Parses a small VEX-like wrangle language into a KernelSpec.
@@ -39,7 +45,8 @@ struct WrangleParam {
 // with a message on syntax errors.
 //
 // With `declared` given, a list `| name [= value] [(min, max)], ... |` before the first assignment declares runtime parameters: each name
-// reads like a, b, c, d (it is appended to `declared` in order, and cannot be assigned). Without `declared` (parameter expressions,
+// reads like a, b, c, d (it is appended to `declared` in order, and cannot be assigned). An item `name = ramp("...")` declares a ramp
+// (the text may be empty, `ramp()`, for a straight line, or `parent.<name>`), called as `name(x)`. Without `declared` (parameter expressions,
 // transform) a '|' is not part of the language.
 KernelSpec parseWrangle(const std::string& source, const std::vector<std::string>& paramNames,
                         const std::map<std::string, float>& constants = {}, std::vector<WrangleParam>* declared = nullptr);

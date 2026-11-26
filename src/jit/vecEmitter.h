@@ -35,7 +35,11 @@ public:
     asmjit::x86::Vec laneIndices();
     void advance(const asmjit::x86::Vec& v, const asmjit::x86::Vec& step);
 
-    // Computational IR ops (everything except constant/param/load).
+    // Op::gather: lane i of the result is the float at table[base + int(offset lane i)]. Done lane by lane through the stack, so one
+    // path serves every instruction set.
+    asmjit::x86::Vec gather(const asmjit::x86::Gp& table, int base, const asmjit::x86::Vec& offset);
+
+    // Computational IR ops (everything except constant/param/load/gather).
     asmjit::x86::Vec op(Op op, const asmjit::x86::Vec& a, const asmjit::x86::Vec& b, const asmjit::x86::Vec& c);
 
 private:

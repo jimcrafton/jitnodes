@@ -45,8 +45,11 @@ GeometryHandle SubnetNode::cookInner(const Network& outer, double time, const st
 
     std::vector<float> spare;
     for (const std::string& name : spareNames()) spare.push_back(getFloat(name));
-    if (refresh || !cooked_ || spare != lastSpare_) inner_.invalidateReferencesTo("parent");
+    std::vector<std::string> ramps;   // the followed texts, so a ramp that itself follows an outer one counts
+    for (const std::string& name : spareRampNames()) ramps.push_back(rampText(name));
+    if (refresh || !cooked_ || spare != lastSpare_ || ramps != lastSpareRamps_) inner_.invalidateReferencesTo("parent");
     lastSpare_ = std::move(spare);
+    lastSpareRamps_ = std::move(ramps);
     cooked_ = true;
 
     const NodeId output = inner_.displayNode();

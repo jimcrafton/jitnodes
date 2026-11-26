@@ -319,7 +319,9 @@ std::string AssetDefinition::toText() const {
     // "promote" stays for readers from before params existed.
     b.push_object();
     for (const AssetParam& p : params) {
-        b[p.name] = json5::value(static_cast<double>(p.defaultValue));
+        if (!p.ramp) {
+            b[p.name] = json5::value(static_cast<double>(p.defaultValue));
+        }
     }
     b["promote"] = b.pop();
     b["params"] = writeAssetParams(b, params);
@@ -362,6 +364,13 @@ std::string AssetDefinition::validate() const {
         }
         if (!seen.insert(p.name).second) {
             return "parameter '" + p.name + "' appears twice";
+        }
+        if (p.ramp) {
+            const std::string problem = Ramp::check(p.defaultRamp);
+            if (!problem.empty()) {
+                return "parameter '" + p.name + "': " + problem;
+            }
+            continue;
         }
         if (p.minimum && p.maximum && *p.minimum > *p.maximum) {
             return "parameter '" + p.name + "': the minimum is above the maximum";
@@ -406,16 +415,26 @@ void AssetDefinition::applyTo(Network& net, NodeId subnet) const {
         throw std::runtime_error("node '" + n.name() + "' is not a subnet");
     }
     loadGraphText(*child, graphText);
-    std::set<std::string> wanted;
+    std::set<std::string> numbers, ramps;
     for (const AssetParam& p : params) {
-        wanted.insert(p.name);
-        if (!n.isSpare(p.name)) {
-            n.addSpareFloat(p.name, p.defaultValue);
+        (p.ramp ? ramps : numbers).insert(p.name);
+    }
+    // The ones that go first, so a name may change from a number to a ramp or back.
+    for (const std::string& existing : n.spareNames()) {
+        if (numbers.count(existing) == 0) {
+            n.removeSpareFloat(existing);
         }
     }
-    for (const std::string& existing : n.spareNames()) {
-        if (wanted.count(existing) == 0) {
-            n.removeSpareFloat(existing);
+    for (const std::string& existing : n.spareRampNames()) {
+        if (ramps.count(existing) == 0) {
+            n.removeSpareRamp(existing);
+        }
+    }
+    for (const AssetParam& p : params) {
+        if (p.ramp && !n.isSpareRamp(p.name)) {
+            n.addSpareRamp(p.name, p.defaultRamp);
+        } else if (!p.ramp && !n.isSpare(p.name)) {
+            n.addSpareFloat(p.name, p.defaultValue);
         }
     }
 }
@@ -456,13 +475,14 @@ size_t renameSpareParameter(Network& net, NodeId subnet, const std::string& from
     if (!child || n.isAssetInstance()) {
         throw std::runtime_error("node '" + n.name() + "' is not a subnet");
     }
-    if (!n.isSpare(from)) {
+    const bool ramp = n.isSpareRamp(from);
+    if (!ramp && !n.isSpare(from)) {
         throw std::runtime_error("'" + from + "' is not a promoted parameter of '" + n.name() + "'");
     }
     if (!isIdentifier(to)) {
         throw std::runtime_error("'" + to + "' is not a valid parameter name");
     }
-    if (n.hasFloat(to)) {
+    if (n.hasFloat(to) || n.hasString(to)) {
         throw std::runtime_error("parameter '" + to + "' already exists on '" + n.name() + "'");
     }
     struct Edit {
@@ -484,11 +504,27 @@ size_t renameSpareParameter(Network& net, NodeId subnet, const std::string& from
             }
         }
     }
-    n.renameSpareFloat(from, to);
+    std::vector<Edit> rampEdits;
+    if (ramp) {
+        for (NodeId id : child->nodeIds()) {
+            const Node& c = child->node(id);
+            for (const std::string& param : c.rampNames()) {
+                if (Ramp::parentReference(c.getString(param)) == from) {
+                    rampEdits.push_back({id, param, "parent." + to});
+                }
+            }
+        }
+        n.renameSpareRamp(from, to);
+    } else {
+        n.renameSpareFloat(from, to);
+    }
     for (const Edit& e : edits) {
         child->node(e.node).setExpression(e.param, e.text);
     }
-    return edits.size();
+    for (const Edit& e : rampEdits) {
+        child->node(e.node).setString(e.param, e.text);
+    }
+    return edits.size() + rampEdits.size();
 }
 
 }  // namespace jitnodes

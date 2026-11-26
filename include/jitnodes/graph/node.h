@@ -82,6 +82,10 @@ struct PointKernel {
 
 class Node;
 
+// What kind of value a parameter holds, as Node::paramKind says it. An editor lets only a scalar be changed by dragging. `number` is a number
+// that is typed only, `none` is no such parameter.
+enum class ParamKind { none, scalar, number, color, choice, ramp, text };
+
 // What Node::save and Node::load talk to, so a node does not depend on the file format. standard() writes or reads what every node has
 // (position, bypass, freeze, spare names, parameters, expressions, keyframes); number, text and geometry are fields of the node's own, kept
 // apart from those. A reader returns false for a field that is not in the file (a file from before the field existed).
@@ -110,6 +114,8 @@ class Node {
 public:
     Node(std::string typeName, int inputCount);
     virtual ~Node();
+    Node(const Node&) = delete;
+    Node& operator=(const Node&) = delete;
 
     NodeId id() const { return id_; }
     // Unlike the id, which only has to be unique in its network, the uid is unique in the whole document (a per-document counter held by the
@@ -161,6 +167,8 @@ public:
     const std::vector<std::string>& userParamTags(const std::string& name) const;
     void setParamTags(const std::string& name, std::vector<std::string> tags);
     void addParamTag(const std::string& name, const std::string& tag);
+    // A float is a scalar unless its tags say otherwise: "kind:color", "choices:..." or any other "kind:" than "kind:scalar" (a number).
+    ParamKind paramKind(const std::string& name) const;
 
     // Expression symbols: own parameter names, time, frame, pi, and node.param references to other
     // nodes by name. Setting an expression replaces keyframes; an empty text clears it. Throws on
@@ -183,6 +191,18 @@ public:
     // The parsed ramp; throws std::runtime_error when the parameter is not a ramp parameter or its text is not a ramp.
     // @scriptable ignore=true
     Ramp getRamp(const std::string& name) const;
+    // The text the ramp is made from: the parameter's own, or for `parent.<name>` (see Ramp::parentReference) that ramp of the subnet around
+    // the node, followed as far as it goes. Throws std::runtime_error when there is no such parent ramp.
+    std::string rampText(const std::string& name) const;
+
+    // Spare ramp parameters are added at run time like spare floats (a subnet's or asset's promoted ramps) and saved with the node.
+    // Add throws std::runtime_error when the name is taken or the text is neither a ramp nor a parent reference.
+    void addSpareRamp(const std::string& name, const std::string& defaultText);
+    bool removeSpareRamp(const std::string& name);
+    void renameSpareRamp(const std::string& from, const std::string& to);
+    bool isSpareRamp(const std::string& name) const { return spareRamps_.count(name) != 0; }
+    std::vector<std::string> spareRampNames() const { return std::vector<std::string>(spareRamps_.begin(), spareRamps_.end()); }
+    bool hasString(const std::string& name) const { return strings_.count(name) != 0; }
 
     // Geometry parameters hold authored geometry (a drawn curve, a point cloud): saved with the node in full, so they take part in undo
     // snapshots, clips and copies like any other parameter. A null handle and an empty geometry are the same, and read back as an empty one.
@@ -310,6 +330,24 @@ public:
     virtual void save(NodeWriter& out) const { out.standard(*this); }
     virtual void load(NodeReader& in) { in.standard(*this); }
 
+    // A node of the same type, name, input count and saved state, outside any network (no id, no wiring, nothing cooked, so it is dirty). Made through
+    // the registry. The saved state is what save writes: the standard body and the node type's own fields. A subnet's child graph is not copied
+    // (it is not part of the body). Geometry is shared, not copied: a GeometryHandle never changes.
+    // @scriptable ignore=true
+    std::unique_ptr<Node> clone() const;
+    // Makes this node's saved state equal to `source`'s without text: the uid, position, bypass, freeze, tags, spare and all parameters with their
+    // expressions (already compiled), keyframes, parameter tags and geometry, then the node type's own fields through its save and load. Name,
+    // id and wiring stay. A string that differs from the node's own goes through stringChanged afterwards, so a node type that derives state from
+    // its text (the wrangle's compiled code, declared parameters and limits) has it. Throws std::runtime_error when the types differ. In a
+    // network the node is marked changed.
+    // @scriptable ignore=true
+    void copyStateFrom(const Node& source);
+    // True when `other` is of the same type and holds the same saved state as copyStateFrom copies: the uid, position, flags, tags, spare names,
+    // parameter values with their expressions, keyframes and tags, geometry (the same handle, or equal contents) and the node type's own fields.
+    // Not compared: id, name, wiring and anything cooked. An override that keeps state outside save and load calls this first.
+    // @scriptable ignore=true
+    virtual bool hasSameStateAs(const Node& other) const;
+
 protected:
     // For overrides of save and load: a change to the state they write, so a snapshot writes the node out again. It does not dirty the cook.
     void savedStateChanged() { touch(); }
@@ -340,6 +378,19 @@ private:
             KernelSpec expressionSpec;
             std::vector<Keyframe> keys;
         };
+        FloatParam() = default;
+        FloatParam(const FloatParam& other)
+            : value(other.value), resolved(other.resolved), tags(other.tags), userTags(other.userTags),
+              animation(other.animation ? std::make_unique<Animation>(*other.animation) : nullptr) {}
+        FloatParam(FloatParam&&) = default;
+        FloatParam& operator=(const FloatParam& other) {
+            if (this != &other) {
+                FloatParam copy(other);
+                *this = std::move(copy);
+            }
+            return *this;
+        }
+        FloatParam& operator=(FloatParam&&) = default;
         float value = 0.0f;
         float resolved = 0.0f;
         std::vector<std::string> tags;       // the declared ones, then the user's
@@ -378,6 +429,7 @@ private:
     std::map<std::string, GeometryHandle> geometries_;
     std::set<std::string> referencedNodes_;
     std::set<std::string> spare_;
+    std::set<std::string> spareRamps_;
     std::vector<std::string> tags_;
     bool dirty_ = true;
     bool bypassed_ = false;

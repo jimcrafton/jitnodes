@@ -81,6 +81,8 @@ void bindParam(py::module_& m) {
         .def_readwrite("step", &AssetParam::step)
         .def_readwrite("group", &AssetParam::group)
         .def_readwrite("tooltip", &AssetParam::tooltip)
+        .def_readwrite("ramp", &AssetParam::ramp, "True for a ramp parameter; default_ramp is then its default.")
+        .def_readwrite("default_ramp", &AssetParam::defaultRamp)
         .def("__repr__", [](const AssetParam& p) { return "<AssetParam " + p.name + ">"; });
 }
 
@@ -118,9 +120,12 @@ void bindDefinition(py::module_& m) {
         .def("set_file", [](AssetDefinition& d, const std::string& name, const std::string& text) { d.files[name] = text; })
         .def("remove_file", [](AssetDefinition& d, const std::string& name) { return d.files.erase(name) != 0; })
         .def("add_param", [](py::object self, const std::string& name, float defaultValue, const std::string& label, std::optional<float> minimum,
-                             std::optional<float> maximum, float step, const std::string& group, const std::string& tooltip) {
+                             std::optional<float> maximum, float step, const std::string& group, const std::string& tooltip,
+                             std::optional<std::string> ramp) {
                  AssetDefinition& d = self.cast<AssetDefinition&>();
                  AssetParam p;
+                 p.ramp = ramp.has_value();
+                 p.defaultRamp = ramp.value_or("");
                  p.name = name;
                  p.defaultValue = defaultValue;
                  p.label = label;
@@ -133,7 +138,8 @@ void bindDefinition(py::module_& m) {
                  return py::cast(&d.params.back(), py::return_value_policy::reference_internal, self);
              },
              py::arg("name"), py::arg("default") = 0.0f, py::arg("label") = "", py::arg("minimum") = py::none(), py::arg("maximum") = py::none(),
-             py::arg("step") = 0.0f, py::arg("group") = "", py::arg("tooltip") = "", "Adds a promoted parameter and returns it.")
+             py::arg("step") = 0.0f, py::arg("group") = "", py::arg("tooltip") = "", py::arg("ramp") = py::none(),
+             "Adds a promoted parameter and returns it. With ramp (a ramp's text) it is a ramp parameter.")
         .def("param", [](py::object self, const std::string& name) -> py::object {
             AssetDefinition& d = self.cast<AssetDefinition&>();
             for (AssetParam& p : d.params) {

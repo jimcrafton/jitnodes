@@ -233,6 +233,11 @@ void writeStandardBody(json5::builder& b, const Node& n) {
         for (const std::string& name : n.spareNames()) b += b.new_string(name);
         b["spare"] = b.pop();
     }
+    if (!n.spareRampNames().empty()) {
+        b.push_array();
+        for (const std::string& name : n.spareRampNames()) b += b.new_string(name);
+        b["spareRamps"] = b.pop();
+    }
 
     // Only the tags a person added to a parameter; the ones the node type declares come from the type.
     bool hasParamTags = false;
@@ -259,7 +264,7 @@ void writeStandardBody(json5::builder& b, const Node& n) {
 
     b.push_object();
     for (const std::string& name : n.stringNames()) {
-        if (fresh != nullptr && fresh->getString(name) == n.getString(name)) continue;
+        if (fresh != nullptr && fresh->hasString(name) && fresh->getString(name) == n.getString(name)) continue;
         b[name] = b.new_string(n.getString(name));
     }
     b["strings"] = b.pop();
@@ -499,7 +504,14 @@ void readStandardBody(Node& n, const json5::value& nv, bool declareSpare) {
             const json5::array_view names(spare);
             if (!names.is_valid()) fail("spare must be an array of names");
             for (const json5::value& s : names) n.addSpareFloat(requireString(s, "spare parameter name"), 0.0f);
-        }        for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
+        }
+        json5::value spareRamps;
+        if (declareSpare && member(nv, "spareRamps", spareRamps)) {
+            const json5::array_view names(spareRamps);
+            if (!names.is_valid()) fail("spareRamps must be an array of names");
+            for (const json5::value& s : names) n.addSpareRamp(requireString(s, "spare ramp name"), Ramp().toText());
+        }
+        for (auto [key, value] : json5::object_view(nv["floats"])) n.setFloat(key, static_cast<float>(requireNumber(value, std::string("floats.") + key)));
         // Absent means none, like tags, so a restored snapshot drops parameter tags added since.
         for (const std::string& name : n.floatNames()) n.setParamTags(name, {});
         for (auto [key, value] : json5::object_view(nv["ptags"])) {
@@ -687,7 +699,10 @@ std::unique_ptr<Node> instantiateAsset(const std::string& type, const std::strin
     if (json5::from_string(text, doc)) fail("stored definition of asset '" + type + "' is corrupt");
     auto node = std::make_unique<AssetNode>(type, static_cast<int>(requireNumberMember(doc, "inputs", "asset inputs")));
     auto params = std::make_shared<std::vector<AssetParam>>(readAssetParams(doc));
-    for (const AssetParam& p : *params) node->addSpareFloat(p.name, p.defaultValue);
+    for (const AssetParam& p : *params) {
+        if (p.ramp) node->addSpareRamp(p.name, p.defaultRamp);
+        else node->addSpareFloat(p.name, p.defaultValue);
+    }
     node->setParams(std::move(params));
     json5::value graph;
     if (!member(doc, "graph", graph)) fail("asset '" + type + "' has no graph");
@@ -784,6 +799,24 @@ std::string saveAsset(const Network& net, NodeId subnet, const std::string& type
     b.push_object();
     for (const std::string& name : n.spareNames()) b[name] = floatValue(n.baseFloat(name));
     b["promote"] = b.pop();
+    // "promote" holds numbers only; with a ramp among them the full list is written.
+    if (!n.spareRampNames().empty()) {
+        std::vector<AssetParam> params;
+        for (const std::string& name : n.spareNames()) {
+            AssetParam p;
+            p.name = name;
+            p.defaultValue = n.baseFloat(name);
+            params.push_back(std::move(p));
+        }
+        for (const std::string& name : n.spareRampNames()) {
+            AssetParam p;
+            p.name = name;
+            p.ramp = true;
+            p.defaultRamp = n.getString(name);
+            params.push_back(std::move(p));
+        }
+        b["params"] = writeAssetParams(b, params);
+    }
     std::set<std::string> assets;
     collectAssets(*child, assets);
     assets.erase(typeName);
@@ -841,7 +874,13 @@ std::vector<AssetParam> readAssetParams(const json5::value& def) {
             p.name = requireStringMember(item, "name", "asset parameter name");
             json5::value v;
             if (member(item, "label", v)) p.label = requireString(v, "asset parameter label");
-            if (member(item, "default", v)) p.defaultValue = static_cast<float>(requireNumber(v, "asset parameter default"));
+            if (member(item, "kind", v)) p.ramp = requireString(v, "asset parameter kind") == "ramp";
+            if (p.ramp) {
+                p.defaultRamp = Ramp().toText();
+                if (member(item, "default", v)) p.defaultRamp = requireString(v, "asset parameter default");
+            } else if (member(item, "default", v)) {
+                p.defaultValue = static_cast<float>(requireNumber(v, "asset parameter default"));
+            }
             if (member(item, "min", v)) p.minimum = static_cast<float>(requireNumber(v, "asset parameter min"));
             if (member(item, "max", v)) p.maximum = static_cast<float>(requireNumber(v, "asset parameter max"));
             if (member(item, "step", v)) p.step = static_cast<float>(requireNumber(v, "asset parameter step"));
@@ -866,7 +905,12 @@ json5::value writeAssetParams(json5::builder& b, const std::vector<AssetParam>& 
         b.push_object();
         b["name"] = b.new_string(p.name);
         if (!p.label.empty()) b["label"] = b.new_string(p.label);
-        b["default"] = floatValue(p.defaultValue);
+        if (p.ramp) {
+            b["kind"] = b.new_string("ramp");
+            b["default"] = b.new_string(p.defaultRamp);
+        } else {
+            b["default"] = floatValue(p.defaultValue);
+        }
         if (p.minimum) b["min"] = floatValue(*p.minimum);
         if (p.maximum) b["max"] = floatValue(*p.maximum);
         if (p.step != 0.0f) b["step"] = floatValue(p.step);
@@ -925,6 +969,17 @@ void applyAssetRenames(const Node& from, Node& to) {
         }
         if (target != oldName && to.hasFloat(target)) copyFloatParameter(from, oldName, to, target);
     }
+    for (const std::string& oldName : from.spareRampNames()) {
+        if (to.hasString(oldName)) continue;
+        std::string target = oldName;
+        for (int hops = 0; hops < 16; ++hops) {
+            const auto step = renames->find(target);
+            if (step == renames->end()) break;
+            target = step->second;
+            if (to.hasString(target)) break;
+        }
+        if (target != oldName && to.isSpareRamp(target)) to.setString(target, from.getString(oldName));
+    }
 }
 
 }  // namespace
@@ -936,6 +991,11 @@ void copyNodeParameters(const Node& from, Node& to, bool addMissing) {
             to.addSpareFloat(name, 0.0f);
         }
         copyFloatParameter(from, name, to, name);
+    }
+    if (addMissing) {
+        for (const std::string& name : from.spareRampNames()) {
+            if (!to.hasString(name)) to.addSpareRamp(name, from.getString(name));
+        }
     }
     const std::vector<std::string> kept = to.stringNames();
     for (const std::string& name : from.stringNames())
@@ -1025,6 +1085,7 @@ void unlockAssetInstance(Network& net, NodeId id) {
     if (!member(doc, "graph", graph)) fail("the asset has no graph");
     loadGraphBody(subnet->network(), graph);
     for (const std::string& name : old.spareNames()) subnet->addSpareFloat(name, 0.0f);
+    for (const std::string& name : old.spareRampNames()) subnet->addSpareRamp(name, old.getString(name));
     transferParameters(old, *fresh);
 
     std::vector<NodeId> inputs;
@@ -1070,16 +1131,13 @@ GraphSnapshot snapshotNetwork(const Network& net, const GraphSnapshot* previous)
         // Edits inside a subnet do not touch the container node, so its contents are snapshotted separately (and are not part of its text).
         const Network* child = n.childNetwork();
         const bool ownsChild = child != nullptr && !n.isAssetInstance();
-        s.revision = child != nullptr && !ownsChild ? 0 : n.revision();
-        if (old && s.revision != 0 && old->revision == s.revision) {
-            s.text = old->text;
+        s.revision = n.revision();
+        if (old && old->revision == s.revision) {
+            s.state = old->state;
         } else {
-            json5::document doc;
-            json5::builder b(doc);
-            writeNode(b, net, id, false, !ownsChild);
-            std::string text = dump(doc);
-            if (old && *old->text == text) s.text = old->text;
-            else s.text = std::make_shared<const std::string>(std::move(text));
+            std::shared_ptr<const Node> state = n.clone();
+            if (old && old->state->hasSameStateAs(*state)) s.state = old->state;
+            else s.state = std::move(state);
         }
         if (ownsChild) s.child = std::make_shared<const GraphSnapshot>(snapshotNetwork(*child, old ? old->child.get() : nullptr));
         if (child != nullptr) snap.volatileNodes.push_back(id);
@@ -1195,7 +1253,7 @@ std::vector<NodeId> pasteNodes(Network& net, const std::vector<NodeClip>& clips)
 
 namespace {
 
-bool sameText(const NodeSnapshot& a, const NodeSnapshot& b) { return a.text == b.text || *a.text == *b.text; }
+bool sameState(const NodeSnapshot& a, const NodeSnapshot& b) { return a.state == b.state || a.state->hasSameStateAs(*b.state); }
 
 bool sameMeta(const NodeSnapshot& a, const NodeSnapshot& b) {
     return a.meta == b.meta || (a.meta->type == b.meta->type && a.meta->name == b.meta->name && a.meta->spare == b.meta->spare);
@@ -1229,7 +1287,7 @@ bool sameGraph(const GraphSnapshot& a, const GraphSnapshot& b) {
         if (ea.size() != eb.size()) return false;
         for (std::size_t k = 0; k < ea.size(); ++k) {
             if (ea[k].first != eb[k].first || !sameMeta(ea[k].second, eb[k].second) || !sameInputs(ea[k].second, eb[k].second) ||
-                !sameText(ea[k].second, eb[k].second) || !sameChild(ea[k].second, eb[k].second))
+                !sameState(ea[k].second, eb[k].second) || !sameChild(ea[k].second, eb[k].second))
                 return false;
         }
     }
@@ -1263,7 +1321,7 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
                     net.removeNode(had[i].first);
                     toAdd.push_back(had[i].first);
                     ++stats.rebuilt;
-                } else if (!sameText(had[i].second, want[j].second) || !sameChild(had[i].second, want[j].second)) {
+                } else if (!sameState(had[i].second, want[j].second) || !sameChild(had[i].second, want[j].second)) {
                     toUpdate.push_back(had[i].first);
                 }
                 ++i;
@@ -1285,27 +1343,17 @@ RestoreStats restoreSnapshot(Network& net, const GraphSnapshot& target, const Gr
         }
     }
 
-    auto parse = [](const NodeSnapshot& s, json5::document& doc) {
-        if (json5::from_string(*s.text, doc)) fail("a stored node snapshot is corrupt");
-    };
     for (NodeId id : toAdd) {
         const NodeSnapshot& t = target.nodes.at(id);
-        json5::document doc;
-        parse(t, doc);
         net.addNodeWithId(id, t.meta->type, t.meta->name);
-        readNodeBody(net.node(id), doc, true);
-        readNodeGraph(net.node(id), doc);
+        net.node(id).copyStateFrom(*t.state);
         if (t.child) restoreSnapshot(*net.node(id).childNetwork(), *t.child);
     }
     for (NodeId id : toUpdate) {
         const NodeSnapshot& t = target.nodes.at(id);
         Node& n = net.node(id);
-        if (!sameText(current->nodes.at(id), t)) {
-            json5::document doc;
-            parse(t, doc);
-            for (const std::string& name : n.floatNames()) n.clearAnimation(name);
-            readNodeBody(n, doc, false);
-            readNodeGraph(n, doc);
+        if (!sameState(current->nodes.at(id), t)) {
+            n.copyStateFrom(*t.state);
         }
         if (t.child) restoreSnapshot(*n.childNetwork(), *t.child, current->nodes.at(id).child.get());
         ++stats.updated;

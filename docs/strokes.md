@@ -58,13 +58,22 @@ copied whole.
 
 ## calligraphy (one input)
 
-A calligraphic pen. Every path (polyline or cubic; a cubic is sampled 12 times per segment) is swept by a slanted oval nib and comes out as closed
-polylines to fill. The result is one convex piece per step of the path, all wound the same way, so a non-zero fill is their union; the pieces keep
-the shape key of their path. All point attributes are dropped (the output is plain polygons).
+A calligraphic pen. Every path (polyline or cubic; a cubic is sampled 12 times per segment) is swept by a slanted oval nib and comes out as one closed
+cubic outline to fill: a few dozen cubics for a hand-drawn stroke, not a polygon per sample. A closed path gives two outlines, the outer and the inner
+loop, wound opposite ways under the one shape key so a non-zero fill leaves the inside open. A path of a single point (a tap) gives the nib itself.
+The outlines keep the shape key of their path. All point attributes are dropped.
 
-Samples are not one piece each: a run of samples that lie within `tolerance` of the straight line between the run's ends, with a pressure scale that
-changes by under 10 %, becomes one piece (the nib swept along a chord is the nib swept along a path that stays close to it). `tolerance` 0 keeps a
-piece for every sample. A mouse's samples are whole pixels, so their jitter is about 0.5 and a tolerance of 0.25 merges only part of it.
+How it works (Pudet 1993, "Real time fitting of hand-sketched pressure brushes"; see curvy `docs/brush-research.md`):
+
+1. `TrajectoryFit` fits the path's samples to cubics within `trajectoryTolerance`, flattens the result to a polygon and carries the pressure by arc length.
+   The node uses the forward mode of `CurveFit`: each cubic grows from the previous join as far as it fits and is then frozen, so the start of a stroke does
+   not move while the stroke is still being drawn (the global mode re-split the whole run on every sample).
+2. `BrushEnvelope` walks the nib along that polygon. On each segment the nib touches each border with one fixed corner; round the outside of a
+   turn the border follows the nib's corners, across the inside it takes the crossing of the offset segments. A turn too sharp for the segments
+   to cross, taken across the path (a hairpin), keeps both points and marks them as corners. The caps are the nib's own corners.
+3. `OutlineFit` fits the border polygon, with the corners as cuts, to cubics within `outlineTolerance`. For an open stroke (`openStrokeCubic`) the seam sits in
+   the middle of the start cap and the left and right borders are each fitted forward in stroke order, sharing one tangent at the seam and at the end-cap
+   middle; this keeps the outline of the start stable too. Closed paths and single points use the cyclic fit (`closedCubic`).
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -72,9 +81,13 @@ piece for every sample. A mouse's samples are whole pixels, so their jitter is a
 | `angle` | 45 | the nib's tilt in degrees, counter-clockwise from horizontal |
 | `roundness` | 25 | the nib's thickness as a percentage of its length, above 0 up to 100 (100 is a round pen) |
 | `scaleAttr` | `w` | the point attribute that scales the nib along the stroke (pen pressure); ignored when the points have none or it is 0 everywhere |
-| `tolerance` | 0.25 | how far (document units) a skipped sample may lie from the chord that replaces it; 0 keeps every sample |
+| `trajectoryTolerance` | 0 | how far (document units) the fitted path may stray from the samples; 0 is a quarter of `width`, at most 1 (a wide nib on a tight scribble was 9.9 units and 8 percent of the area off at `width`/4). A mouse path is a coarse polyline (about 9 units between samples, 8 degrees of turn each); following every corner of it costs a cubic or two per sample |
+| `outlineTolerance` | 0 | how far the outline may stray from the swept border; 0 is 0.075 of `width` or 0.3 of the nib's thickness at the stroke's thinnest scale (taken as at least 0.3), whichever is less, and at least 0.05; following the thinnest pressure keeps the two borders of a light stretch from fitting into one |
 
-Ported from curvy v1's `BrushDef::nibOutline`.
+The `tolerance` parameter of 2026-11-24 (skip samples on straight runs) is gone. Measured on curvy's `perf2.curvy` (23 strokes, 8 wide nib): 3,751
+primitives and 67,518 points before, 23 primitives and 2,232 points now, the outline within 2.83 units of the exact union of per-step hulls, area 0.55 percent smaller.
+
+The nib is `NibBrush::oval`, ported from curvy v1's `BrushDef::nibOutline`.
 
 ## strokeScatter (two inputs)
 

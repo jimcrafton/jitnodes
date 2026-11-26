@@ -23,6 +23,7 @@ std::vector<int> copyGraph(ExprGraph& dst, const KernelSpec& src, const std::vec
                 break;
             }
             case Op::index: map[i] = dst.index(); break;
+            case Op::gather: map[i] = dst.gather(n.index + paramOffset, m(n.a)); break;
             case Op::select: map[i] = dst.select(m(n.a), m(n.b), m(n.c)); break;
             case Op::neg:
             case Op::abs:

@@ -38,6 +38,11 @@ add_library(jitnodes STATIC
   src/geo/geometry.cpp
   src/geo/topology.cpp
   src/geo/pathMotion.cpp
+  src/geo/curveFit.cpp
+  src/geo/trajectoryFit.cpp
+  src/geo/nibBrush.cpp
+  src/geo/brushEnvelope.cpp
+  src/geo/outlineFit.cpp
   src/geo/svgExport.cpp
   src/geo/raster.cpp
   src/geo/floatImage.cpp

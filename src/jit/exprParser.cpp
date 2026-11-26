@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "jitnodes/core/stackGuard.h"
+#include "jitnodes/graph/ramp.h"
 
 namespace jitnodes {
 
@@ -38,7 +39,7 @@ public:
             if (name.empty()) fail("expected assignment target");
             for (const auto& p : paramNames_)
                 if (p == name) fail("cannot assign to parameter '" + name + "'");
-            if (declaredSlots_.count(name) != 0) {
+            if (declaredSlots_.count(name) != 0 || rampSlots_.count(name) != 0) {
                 fail("cannot assign to parameter '" + name + "'");
             }
             expect('=');
@@ -100,7 +101,7 @@ private:
             fail("expected a parameter name");
         }
         static const char* const reserved[] = {"code", "class", "time", "frame", "pi", "parent", "sampleIndex"};
-        bool taken = declaredSlots_.count(name) != 0 || constants_.count(name) != 0 || isLocal(name) || name.find('.') != std::string::npos ||
+        bool taken = declaredSlots_.count(name) != 0 || rampSlots_.count(name) != 0 || constants_.count(name) != 0 || isLocal(name) || name.find('.') != std::string::npos ||
                      name.compare(0, 2, "__") == 0;
         for (const auto& p : paramNames_) {
             taken = taken || p == name;
@@ -114,6 +115,10 @@ private:
         WrangleParam param;
         param.name = name;
         if (accept("=")) {
+            if (acceptRamp()) {
+                rampDeclaration(param);
+                return;
+            }
             param.value = signedNumber();
         }
         if (accept("(")) {
@@ -134,6 +139,57 @@ private:
         param.slot = spec_.paramCount++;
         declaredSlots_[name] = param.slot;
         declared_->push_back(param);
+    }
+
+    // Takes `ramp(`, leaving anything else where it is.
+    bool acceptRamp() {
+        skipSpace();
+        const size_t start = pos_;
+        if (identifier() == "ramp" && accept("(")) {
+            return true;
+        }
+        pos_ = start;
+        return false;
+    }
+
+    // The rest of `name = ramp("...")`.
+    void rampDeclaration(WrangleParam& param) {
+        static const char* const functions[] = {"min", "max", "abs", "sqrt", "sin", "cos", "exp", "log", "floor", "ceil", "pow", "clamp", "lerp"};
+        for (const char* function : functions) {
+            if (param.name == function) {
+                fail("cannot declare ramp '" + param.name + "', a function has that name");
+            }
+        }
+        param.ramp = true;
+        param.rampDefault = atStringLiteral() ? stringLiteral() : Ramp().toText();
+        expect(')');
+        if (Ramp::parentReference(param.rampDefault).empty()) {
+            const std::string problem = Ramp::check(param.rampDefault);
+            if (!problem.empty()) {
+                fail("ramp '" + param.name + "': " + problem);
+            }
+        }
+        param.slot = spec_.paramCount;
+        spec_.paramCount += WrangleParam::rampSlots;
+        rampSlots_[param.name] = param.slot;
+        declared_->push_back(param);
+    }
+
+    // The value of a declared ramp at `x`: linear between the two table entries around it. The comparisons are written so that a NaN
+    // ends up at the start of the table, never outside it.
+    int rampCall(int slot, int x) {
+        ExprGraph& g = spec_.graph;
+        const int zero = g.constant(0.0f);
+        const int last = g.constant(static_cast<float>(WrangleParam::rampSamples - 1));
+        int t = g.binary(Op::mul, g.binary(Op::sub, x, g.param(slot)), g.param(slot + 1));
+        t = g.select(g.binary(Op::gt, t, zero), t, zero);
+        t = g.select(g.binary(Op::lt, t, last), t, last);
+        const int low = g.unary(Op::floor, t);
+        const int next = g.binary(Op::add, low, g.constant(1.0f));
+        const int high = g.select(g.binary(Op::lt, next, last), next, last);
+        const int from = g.gather(slot + 2, low);
+        const int to = g.gather(slot + 2, high);
+        return g.binary(Op::add, from, g.binary(Op::mul, g.binary(Op::sub, to, from), g.binary(Op::sub, t, low)));
     }
 
     // '__' is reserved (the scalar-expression wrapper stores to `__result`).
@@ -355,6 +411,9 @@ private:
         if (declaredSlot != declaredSlots_.end()) {
             return spec_.graph.param(declaredSlot->second);
         }
+        if (rampSlots_.count(name) != 0) {
+            fail("'" + name + "' is a ramp; read it as " + name + "(x)");
+        }
         const auto constant = constants_.find(name);
         if (constant != constants_.end()) return spec_.graph.constant(constant->second);
         if (name == "sampleIndex") return spec_.graph.index();
@@ -379,6 +438,11 @@ private:
         auto need = [&](size_t n) {
             if (args.size() != n) fail(fn + "() expects " + std::to_string(n) + " argument(s)");
         };
+        const auto ramp = rampSlots_.find(fn);
+        if (ramp != rampSlots_.end()) {
+            need(1);
+            return rampCall(ramp->second, asValue(args[0]));
+        }
         if (fn == "min") { need(2); return g.binary(Op::min, args[0], args[1]); }
         if (fn == "max") { need(2); return g.binary(Op::max, args[0], args[1]); }
         if (fn == "abs") { need(1); return g.unary(Op::abs, args[0]); }
@@ -413,6 +477,7 @@ private:
     const std::map<std::string, float>& constants_;
     std::vector<WrangleParam>* declared_ = nullptr;
     std::map<std::string, int> declaredSlots_;
+    std::map<std::string, int> rampSlots_;
     bool assigned_ = false;   // an assignment was seen: declarations must come before it
     int depth_ = 0;
     size_t pos_ = 0;

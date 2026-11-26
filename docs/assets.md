@@ -62,6 +62,9 @@ A definition is a JSON5 file, conventionally named `<type>.asset.json` (`example
 - **Output.** The result of the child's `display` node.
 - **Promoted parameters** (`promote`) become float parameters of every instance, with these defaults. Inside, they are
   read as `parent.<name>` in *parameter expressions* (not in wrangle code, see the pitfalls).
+- **Promoted ramps** are ramp parameters of every instance. They are listed in `params` with `kind: "ramp"` and the curve text as
+  `default` (not in `promote`, which holds numbers). Inside, a ramp parameter whose text is `parent.<name>` follows it; a wrangle does
+  the same with a ramp it declares. On a subnet add one with `addSpareRamp`; in an asset definition with `add_param(name, ramp="...")`.
 - **Time.** Inside an asset, `time`, `frame` and `pi` work as everywhere; the child follows the graph's time and fps.
 - **Nested assets.** An asset may use other assets. Their definitions are embedded in `assets`, so the file stands alone.
 - **Instances do not store their contents.** A graph file stores only the instance (type, name, parameter values,

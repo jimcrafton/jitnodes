@@ -188,6 +188,10 @@ void Kernel::compileJit() {
             continue;
         }
         auto operand = [&](int idx) { return idx >= 0 ? value[static_cast<size_t>(idx)] : x86::Vec(); };
+        if (n.op == Op::gather) {
+            value[i] = em.gather(paramBlock, n.index, operand(n.a));
+            continue;
+        }
         value[i] = em.op(n.op, operand(n.a), operand(n.b), operand(n.c));
     }
 
@@ -224,6 +228,7 @@ void Kernel::interpret(void* const* channels, const float* params, size_t padded
                 case Op::constant: v[i] = n.value; break;
                 case Op::param: v[i] = params[n.index]; break;
                 case Op::index: v[i] = static_cast<float>(e); break;
+                case Op::gather: v[i] = params[n.index + static_cast<int>(operand(n.a))]; break;
                 case Op::load:
                     v[i] = isIntegerStorage(spec_.channelTypes[static_cast<size_t>(n.index)])
                                ? static_cast<float>(static_cast<const int32_t*>(channels[n.index])[e])

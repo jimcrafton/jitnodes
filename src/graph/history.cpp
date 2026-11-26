@@ -40,11 +40,23 @@ bool History::redo() {
 }
 
 size_t History::storedBytes() const {
-    std::set<const std::string*> seen;
+    // An estimate: each distinct node state counts its geometry and a fixed amount for the node itself.
+    constexpr size_t nodeBytes = 512;
+    std::set<const Node*> seenNodes;
+    std::set<const Geometry*> seenGeometry;
     size_t bytes = 0;
-    for (const State& s : states_)
-        for (const auto& entry : s.snapshot.nodes)
-            if (seen.insert(entry.second.text.get()).second) bytes += entry.second.text->size();
+    const auto addGeometry = [&](const GeometryHandle& handle) {
+        if (handle && seenGeometry.insert(handle.get()).second) bytes += handle->memoryBytes();
+    };
+    for (const State& s : states_) {
+        for (const auto& entry : s.snapshot.nodes) {
+            const Node& state = *entry.second.state;
+            if (!seenNodes.insert(&state).second) continue;
+            bytes += nodeBytes;
+            addGeometry(state.frozenGeometry());
+            for (const std::string& name : state.geometryNames()) addGeometry(state.geometryParam(name));
+        }
+    }
     return bytes;
 }
 

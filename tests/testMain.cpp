@@ -1245,6 +1245,130 @@ TEST(aNodeSavesAndLoadsStateOfItsOwn) {
     CHECK(extraNode(again, bare).gain() == 1.0 && extraNode(again, bare).label().empty() && !extraNode(again, bare).shape());
 }
 
+TEST(aNodeCloneHasTheSavedStateOfItsOriginalAndNothingElse) {
+    Network net;
+    const NodeId line = net.addNode("line", "line");
+    const NodeId xf = net.addNode("transform", "mover");
+    net.connect(line, xf);
+    Node& original = net.node(xf);
+    original.setFloat("px", 3.0f);
+    original.setExpression("rot", "line.length * 2");
+    original.setKeyframes("sx", {{0.0, 1.0f, KeyInterp::linear}, {2.0, 3.0f, KeyInterp::linear}});
+    original.setPosition(7.0f, 8.0f);
+    original.setBypassed(true);
+    original.addTag("layer");
+    original.addParamTag("px", "unit:0.5");
+    original.addSpareFloat("extra", 4.0f);
+    original.setFrozenGeometry(authoredCurve(0.0f));
+    net.cook(xf);
+
+    std::unique_ptr<Node> copy = original.clone();
+    CHECK(copy->typeName() == "transform" && copy->name() == "mover" && copy->inputCount() == original.inputCount());
+    CHECK(copy->uid() == original.uid() && copy->id() == invalidNodeId);
+    CHECK(copy->baseFloat("px") == 3.0f && copy->expression("rot") == "line.length * 2");
+    CHECK(copy->keyframes("sx").size() == 2 && copy->keyframes("sx")[1].value == 3.0f);
+    CHECK(copy->hasPosition() && copy->posX() == 7.0f && copy->posY() == 8.0f);
+    CHECK(copy->bypassed() && copy->hasTag("layer") && copy->hasParamTag("px", "unit:0.5"));
+    CHECK(copy->isSpare("extra") && copy->baseFloat("extra") == 4.0f);
+    CHECK(copy->frozenGeometry() == original.frozenGeometry());
+    CHECK(copy->dirty() && copy->cookCount() == 0 && copy->revision() != original.revision());
+
+    CHECK(copy->hasSameStateAs(original) && original.hasSameStateAs(*copy));
+    CHECK(!copy->hasSameStateAs(net.node(line)));
+    {
+        std::unique_ptr<Node> changed = original.clone();
+        changed->setFloat("px", 3.5f);
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->setKeyframes("sx", {{0.0, 1.0f, KeyInterp::linear}, {2.0, 4.0f, KeyInterp::linear}});
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->setExpression("rot", "line.length * 3");
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->setPosition(7.0f, 9.0f);
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->setBypassed(false);
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->addParamTag("px", "extra");
+        CHECK(!changed->hasSameStateAs(original));
+        changed = original.clone();
+        changed->setFrozenGeometry(authoredCurve(1.0f));
+        CHECK(!changed->hasSameStateAs(original));
+        changed->setFrozenGeometry(std::make_shared<Geometry>(*original.frozenGeometry()));
+        CHECK(changed->hasSameStateAs(original) && changed->frozenGeometry() != original.frozenGeometry());
+    }
+
+    copy->setFloat("px", 9.0f);
+    copy->setExpression("rot", "");
+    copy->addTag("other");
+    CHECK(original.baseFloat("px") == 3.0f && original.expression("rot") == "line.length * 2" && !original.hasTag("other"));
+
+    // the copy's expression was compiled with the original's: it works once the copy is put into a network
+    Network other;
+    const NodeId otherLine = other.addNode("line", "line");
+    const NodeId target = other.addNode("transform");
+    other.connect(otherLine, target);
+    other.node(target).copyStateFrom(original);
+    CHECK(other.node(target).expression("rot") == "line.length * 2" && other.node(target).uid() == original.uid());
+    CHECK(other.node(target).name() == "transform" + std::to_string(target));
+    other.cook(target);
+    CHECK(other.node(target).dirty() == false);
+    other.node(target).copyStateFrom(*copy);
+    CHECK(other.node(target).dirty() && other.node(target).baseFloat("px") == 9.0f && other.node(target).expression("rot").empty());
+
+    bool refused = false;
+    try {
+        other.node(otherLine).copyStateFrom(original);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+
+TEST(aWrangleCloneHasTheParametersAndLimitsItsCodeDeclares) {
+    Network net;
+    const NodeId id = net.addNode("wrangle");
+    net.node(id).setString("code", "| gain = 2(0, 10) |\ny = y * gain;");
+    net.node(id).setFloat("gain", 7.0f);
+    float low = -1.0f, high = -1.0f;
+    CHECK(net.node(id).floatMinimum("gain", low) && net.node(id).floatMaximum("gain", high));
+
+    std::unique_ptr<Node> copy = net.node(id).clone();
+    CHECK(copy->hasFloat("gain") && copy->isSpare("gain") && copy->baseFloat("gain") == 7.0f);
+    float copyLow = -1.0f, copyHigh = -1.0f;
+    CHECK(copy->floatMinimum("gain", copyLow) && copy->floatMaximum("gain", copyHigh) && copyLow == low && copyHigh == high);
+    CHECK(copy->hasSameStateAs(net.node(id)));
+
+    const NodeId plain = net.addNode("wrangle");
+    net.node(plain).copyStateFrom(*copy);
+    CHECK(net.node(plain).floatMaximum("gain", copyHigh) && copyHigh == high && net.node(plain).baseFloat("gain") == 7.0f);
+}
+
+TEST(aNodeCloneCarriesTheFieldsOfANodeTypeThroughSaveAndLoad) {
+    static const bool registered = (NodeRegistry::instance().registerType("testExtraState", [] { return std::make_unique<ExtraStateNode>(); }), true);
+    (void)registered;
+    Network net;
+    const NodeId id = net.addNode("testExtraState");
+    const GeometryHandle shape = authoredCurve(0.0f);
+    extraNode(net, id).set(2.5, "layer one", shape);
+
+    std::unique_ptr<Node> copy = net.node(id).clone();
+    const ExtraStateNode& typed = static_cast<const ExtraStateNode&>(*copy);
+    CHECK(typed.gain() == 2.5 && typed.label() == "layer one" && typed.shape() == shape);
+    CHECK(copy->hasSameStateAs(net.node(id)));
+    extraNode(net, id).set(2.5, "layer two", shape);
+    CHECK(!copy->hasSameStateAs(net.node(id)));
+    extraNode(net, id).set(2.5, "layer one", std::make_shared<Geometry>(*shape));
+    CHECK(copy->hasSameStateAs(net.node(id)));
+
+    extraNode(net, id).set(7.0, "", nullptr);
+    net.node(id).copyStateFrom(*copy);
+    CHECK(extraNode(net, id).gain() == 2.5 && extraNode(net, id).label() == "layer one" && extraNode(net, id).shape() == shape);
+}
+
 TEST(transformRotatesSkewsAndKeepsItsPivotFixed) {
     Network net;
     NodeId line = net.addNode("line");
@@ -1361,6 +1485,123 @@ TEST(parameterTagsAPersonAddedSurviveSaveSnapshotAndPasteButTheDeclaredOnesAreNo
 
     const std::vector<NodeId> pasted = pasteNodes(net, clipsFromText(clipsToText({copyNode(net, id)})));
     CHECK(pasted.size() == 1 && net.node(pasted[0]).paramTags("mine") == n.paramTags("mine") && net.node(pasted[0]).paramTags("sx") == n.paramTags("sx"));
+}
+
+TEST(aParameterSaysWhatKindOfValueItIs) {
+    Network net;
+    Node& n = net.node(net.addNode("transform"));
+    CHECK(n.paramKind("sx") == ParamKind::scalar);
+    CHECK(n.paramKind("nothing") == ParamKind::none);
+
+    n.addSpareFloat("tint", 0.0f);
+    n.addParamTag("tint", "kind:color");
+    CHECK(n.paramKind("tint") == ParamKind::color);
+    n.addSpareFloat("mode", 0.0f);
+    n.addParamTag("mode", "choices:A,B");
+    CHECK(n.paramKind("mode") == ParamKind::choice);
+    n.addSpareFloat("seed", 0.0f);
+    n.addParamTag("seed", "kind:id");
+    CHECK(n.paramKind("seed") == ParamKind::number);
+    n.addSpareFloat("amount", 0.0f);
+    n.addParamTag("amount", "kind:scalar");
+    CHECK(n.paramKind("amount") == ParamKind::scalar);
+
+    Node& remap = net.node(net.addNode("remap"));
+    CHECK(remap.paramKind("ramp") == ParamKind::ramp);
+    CHECK(remap.paramKind("attribute") == ParamKind::text);
+}
+
+TEST(aSubnetsRampIsFollowedByInnerRampsThroughSaveAssetsAndRename) {
+    Network net;
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 3.0f);
+    const NodeId sub = net.addNode("subnet");
+    net.connect(line, sub);
+    Network& inner = *net.node(sub).childNetwork();
+    const NodeId in = inner.addNode("subnetInput");
+    const NodeId remap = inner.addNode("remap");
+    inner.node(remap).setString("attribute", "x");
+    inner.node(remap).setString("output", "w");
+    inner.node(remap).setString("ramp", "parent.profile");
+    inner.connect(in, remap);
+    inner.setDisplayNode(remap);
+    net.node(sub).addSpareRamp("profile", "0 0.25, 1 0.25");
+    const auto w = [](Network& of, NodeId id) {
+        const GeometryHandle geometry = of.cook(id);
+        return (*geometry->findPointAttrib("w"))[0];
+    };
+    CHECK(w(net, sub) == 0.25f);
+    net.node(sub).setString("profile", "0 0.5, 1 0.5");
+    CHECK(w(net, sub) == 0.5f);
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    CHECK(loaded.node(sub).isSpareRamp("profile") && w(loaded, sub) == 0.5f);
+
+    const AssetDefinition definition = AssetDefinition::fromNode(net, sub, "rampAssetUnderTest");
+    CHECK(definition.params.size() == 1 && definition.params[0].ramp && definition.params[0].defaultRamp == "0 0.5, 1 0.5");
+    CHECK(definition.validate().empty());
+    registerAsset(AssetDefinition::fromText(definition.toText()).toText());
+    const NodeId instance = net.addNode("rampAssetUnderTest");
+    net.connect(line, instance);
+    CHECK(w(net, instance) == 0.5f);
+    net.node(instance).setString("profile", "0 0.75, 1 0.75");
+    CHECK(w(net, instance) == 0.75f);
+
+    CHECK(renameSpareParameter(net, sub, "profile", "shape") == 1);
+    CHECK(inner.node(remap).getString("ramp") == "parent.shape" && w(net, sub) == 0.5f);
+}
+
+TEST(aWrangleRampMatchesTheRampOnEveryInstructionSetAndWithoutTheJit) {
+    Network net;
+    const NodeId line = net.addNode("line");
+    net.node(line).setFloat("count", 101.0f);
+    net.node(line).setFloat("length", 1.0f);
+    const NodeId wrangle = net.addNode("wrangle");
+    net.connect(line, wrangle);
+    net.node(wrangle).setString("code", "| gain = 2, profile = ramp(\"0 0 smooth, 0.5 1 linear, 1 0.25\") |\nw = profile(x * 1.5 - 0.25) * gain;\nbad = profile(sqrt(0 - 1));");
+    CHECK(net.node(wrangle).isSpareRamp("profile") && net.node(wrangle).isSpare("gain"));
+
+    const auto check = [&](const std::string& text) {
+        const Ramp ramp = Ramp::parse(text);
+        const GeometryHandle out = net.cook(wrangle);
+        const AlignedArray<float>& w = *out->findPointAttrib("w");
+        for (size_t i = 0; i < out->pointCount(); ++i) {
+            CHECK(std::fabs(w[i] - 2.0f * ramp.eval(out->x()[i] * 1.5f - 0.25f)) < 0.02f);
+        }
+        CHECK((*out->findPointAttrib("bad"))[0] == ramp.eval(ramp.points().front().pos));
+    };
+    for (const Isa isa : net.compiler().supportedIsas()) {
+        net.compiler().setIsa(isa);
+        net.node(wrangle).invalidateCook();
+        check(net.node(wrangle).getString("profile"));
+    }
+    net.compiler().setJitEnabled(false);
+    net.node(wrangle).invalidateCook();
+    check(net.node(wrangle).getString("profile"));
+    net.compiler().setJitEnabled(true);
+
+    // editing the curve does not compile again
+    net.node(wrangle).invalidateCook();   // switching the JIT emptied the kernel cache
+    check(net.node(wrangle).getString("profile"));
+    const size_t compiled = net.compiler().compileCount();
+    net.node(wrangle).setString("profile", "0 1, 1 0");
+    check("0 1, 1 0");
+    CHECK(net.compiler().compileCount() == compiled);
+
+    // fused with a following wrangle, the table keeps its place in the parameter block
+    const NodeId after = net.addNode("wrangle");
+    net.connect(wrangle, after);
+    net.node(after).setString("code", "| lift = ramp(\"0 3, 1 3\") |\nv = w + lift(x);");
+    const GeometryHandle fused = net.cook(after);
+    CHECK(std::fabs((*fused->findPointAttrib("v"))[0] - (*fused->findPointAttrib("w"))[0] - 3.0f) < 1e-5f);
+
+    Network loaded;
+    loadNetwork(loaded, saveNetwork(net));
+    CHECK(loaded.node(wrangle).getString("profile") == "0 1, 1 0");
+
+    net.node(wrangle).setString("code", "w = x;");
+    CHECK(!net.node(wrangle).hasString("profile") && !net.node(wrangle).hasFloat("gain"));
 }
 
 TEST(geometryNodeOutputsItsStoredGeometryAndFollowsEdits) {
@@ -2595,7 +2836,7 @@ TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
 
     GraphSnapshot same = snapshotNetwork(net, &before);
     CHECK(sameGraph(before, same));
-    for (const auto& [id, node] : before.nodes) CHECK(id == rig.sub || node.text == same.nodes.at(id).text);
+    for (const auto& [id, node] : before.nodes) CHECK(id == rig.sub || node.state == same.nodes.at(id).state);
 
     const std::vector<std::pair<const char*, std::function<void()>>> edits = {
         {"plain value", [&] { net.node(other).setFloat("tx", 4.0f); }},
@@ -2615,7 +2856,7 @@ TEST(snapshotsReuseUntouchedNodesAndSeeEveryKindOfEdit) {
         const GraphSnapshot fresh = snapshotNetwork(net);
         CHECK(sameGraph(incremental, fresh));
         CHECK(!sameGraph(incremental, previous));
-        for (const auto& [id, node] : fresh.nodes) CHECK(*node.text == *incremental.nodes.at(id).text);
+        for (const auto& [id, node] : fresh.nodes) CHECK(node.state->hasSameStateAs(*incremental.nodes.at(id).state));
         previous = std::move(incremental);
         if (!sameGraph(previous, fresh)) std::printf("edit '%s' lost\n", what);
     }
@@ -2665,6 +2906,74 @@ TEST(snapshotsOfSubnetsRestoreThemInPlace) {
     restoreSnapshot(net, withSub, &without);
     CHECK(sameGraph(snapshotNetwork(net), withSub));
     CHECK(subnetOf(net, rig.sub).network().nodeIds().size() == 4);
+}
+
+TEST(snapshotsOfNodesHoldingStrokeGeometryAreTimed) {
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point s) { return std::chrono::duration<double, std::milli>(Clock::now() - s).count(); };
+    auto stroke = [](size_t samples, float phase) {
+        auto geo = std::make_shared<Geometry>();
+        geo->resizePoints(samples);
+        for (const char* name : {"t", "pressure", "tiltx", "tilty", "speed", "width", "angle", "d"}) {
+            float* values = geo->attrib(AttribClass::point, name).floats().data();
+            for (size_t i = 0; i < samples; ++i) values[i] = std::sin(float(i) * 0.037f + phase) * 12.3456789f;
+        }
+        for (size_t i = 0; i < samples; ++i) {
+            geo->x()[i] = float(i) * 0.731f + phase;
+            geo->y()[i] = std::sin(float(i) * 0.11f + phase) * 40.0f;
+        }
+        Primitive prim;
+        prim.start = 0;
+        prim.count = static_cast<uint32_t>(samples);
+        geo->addPrimitive(prim);
+        return geo;
+    };
+    for (const size_t samples : {size_t(150), size_t(800)}) {
+        Network net;
+        for (int i = 0; i < 30; ++i) {
+            const NodeId id = net.addNode("geometry");
+            net.node(id).setGeometryParam("geometry", stroke(samples, float(i)));
+            const NodeId xf = net.addNode("transform");
+            net.connect(id, xf);
+        }
+        const GraphSnapshot base = snapshotNetwork(net);
+        const GraphSnapshot before = snapshotNetwork(net, &base);
+
+        auto t = Clock::now();
+        const NodeId added = net.addNode("geometry");
+        net.node(added).setGeometryParam("geometry", stroke(samples, 99.0f));
+        const GraphSnapshot withStroke = snapshotNetwork(net, &before);
+        const double addMs = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, before, &withStroke);
+        const double undoAdd = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, withStroke, &before);
+        const double redoAdd = since(t);
+
+        const NodeId dragged = net.nodeIds().front();
+        t = Clock::now();
+        net.node(dragged).setGeometryParam("geometry", stroke(samples, 7.5f));
+        const GraphSnapshot dragSnap = snapshotNetwork(net, &withStroke);
+        const double dragMs = since(t);
+        t = Clock::now();
+        restoreSnapshot(net, withStroke, &dragSnap);
+        const double undoDrag = since(t);
+
+        NodeId other = invalidNodeId;
+        for (const NodeId id : net.nodeIds()) {
+            if (net.node(id).typeName() == "transform") {
+                other = id;
+            }
+        }
+        t = Clock::now();
+        net.node(other).setFloat("tx", 5.0f);
+        const GraphSnapshot floatSnap = snapshotNetwork(net, &withStroke);
+        const double floatMs = since(t);
+        CHECK(!sameGraph(floatSnap, withStroke));
+        std::printf("  snapshot cost, %zu-sample strokes: add %.3f ms (undo %.3f, redo %.3f), replace geometry %.3f ms (undo %.3f), float edit %.3f ms\n", samples,
+                    addMs, undoAdd, redoAdd, dragMs, undoDrag, floatMs);
+    }
 }
 
 TEST(snapshotsOfBigSubnetsCostAboutAsMuchAsFlatOnes) {
@@ -8657,7 +8966,438 @@ std::array<float, 4> pointBox(const Geometry& g) {
     return box;
 }
 
-TEST(calligraphySweepsAPathIntoClosedOutlinesOfTheNibsSize) {
+static std::vector<CurveFit::Point> curveFitArc(int count) {
+    std::vector<CurveFit::Point> pts;
+    for (int i = 0; i < count; ++i) {
+        const double a = 1.5 * double(i) / double(count - 1);
+        pts.push_back({100.0 * std::cos(a), 100.0 * std::sin(a)});
+    }
+    return pts;
+}
+
+TEST(curveFitTurnsASmoothArcIntoAFewCurvesThroughItsEnds) {
+    const auto samples = curveFitArc(120);
+    const auto anchors = CurveFit::fit(samples, 1.0);
+    CHECK(anchors.size() >= 2 && anchors.size() < 8);
+    CHECK_NEAR(float(anchors.front().point.x), float(samples.front().x));
+    CHECK_NEAR(float(anchors.back().point.y), float(samples.back().y));
+    CHECK(CurveFit::controlPoints(anchors).size() == 3 * (anchors.size() - 1) + 1);
+    CHECK(anchors.front().index == 0 && anchors.back().index == 119);
+    for (size_t i = 1; i < anchors.size(); ++i) {
+        CHECK(anchors[i].index > anchors[i - 1].index);
+    }
+}
+
+static std::vector<CurveFit::Point> curveFitWave(int count) {
+    std::vector<CurveFit::Point> pts;
+    for (int i = 0; i < count; ++i) {
+        pts.push_back({double(i) * 2.0, 40.0 * std::sin(double(i) * 0.05)});
+    }
+    return pts;
+}
+
+TEST(curveFitForwardStaysWithinTheToleranceOfEverySample) {
+    const auto samples = curveFitWave(300);
+    const auto anchors = CurveFit::fit(samples, 1.0, {}, CurveFit::Mode::forward);
+    CHECK(anchors.size() >= 3 && anchors.size() < 24);
+    CHECK(anchors.front().index == 0 && anchors.back().index == 299);
+    const auto control = CurveFit::controlPoints(anchors);
+    std::vector<CurveFit::Point> dense;
+    for (size_t seg = 0; seg + 3 < control.size(); seg += 3) {
+        for (int k = 0; k <= 200; ++k) {
+            const double t = k / 200.0, u = 1.0 - t;
+            dense.push_back({u * u * u * control[seg].x + 3 * u * u * t * control[seg + 1].x + 3 * u * t * t * control[seg + 2].x + t * t * t * control[seg + 3].x,
+                             u * u * u * control[seg].y + 3 * u * u * t * control[seg + 1].y + 3 * u * t * t * control[seg + 2].y + t * t * t * control[seg + 3].y});
+        }
+    }
+    double worst = 0.0;
+    for (const CurveFit::Point& s : samples) {
+        double best = 1e18;
+        for (const CurveFit::Point& p : dense) {
+            best = std::min(best, std::hypot(p.x - s.x, p.y - s.y));
+        }
+        worst = std::max(worst, best);
+    }
+    CHECK(worst < 1.1);
+}
+
+TEST(curveFitForwardKeepsTheEarlyCurvesWhenSamplesAreAddedAtTheEnd) {
+    const auto all = curveFitWave(300);
+    const auto full = CurveFit::fit(all, 1.0, {}, CurveFit::Mode::forward);
+    const std::vector<CurveFit::Point> prefix(all.begin(), all.begin() + 200);
+    const auto part = CurveFit::fit(prefix, 1.0, {}, CurveFit::Mode::forward);
+    CHECK(part.size() >= 4);
+    // Everything but the live tip curves (the last two) is the same, to the pixel.
+    for (size_t i = 0; i + 2 < part.size(); ++i) {
+        CHECK(i < full.size());
+        CHECK(part[i].index == full[i].index);
+        CHECK_NEAR(float(part[i].point.x), float(full[i].point.x));
+        CHECK_NEAR(float(part[i].out.x), float(full[i].out.x));
+        CHECK_NEAR(float(part[i].out.y), float(full[i].out.y));
+    }
+    // The global fit does not promise that: it is not asserted here.
+}
+
+TEST(curveFitForcedBreakpointsCutTheLineWhereAskedAndReportTheirIndex) {
+    const auto samples = curveFitArc(120);
+    const auto plain = CurveFit::fit(samples, 1.0);
+    const auto cut = CurveFit::fit(samples, 1.0, {40, 80});
+    bool at40 = false, at80 = false;
+    for (const auto& a : cut) {
+        at40 = at40 || a.index == 40;
+        at80 = at80 || a.index == 80;
+    }
+    CHECK(at40 && at80);
+    CHECK(cut.size() >= plain.size());
+    for (const auto& a : cut) {
+        if (a.index == 40 || a.index == 80) {
+            CHECK(a.hasIn && a.hasOut);
+        }
+    }
+}
+
+TEST(curveFitIgnoresBreakpointsAtTheEndsOrOutOfRange) {
+    const auto samples = curveFitArc(60);
+    const auto plain = CurveFit::fit(samples, 1.0);
+    const auto cut = CurveFit::fit(samples, 1.0, {0, 59, 500});
+    CHECK(cut.size() == plain.size());
+}
+
+TEST(curveFitGivesWhatThereIsForFewPointsAndKeepsInputIndices) {
+    CHECK(CurveFit::fit({}, 1.0).empty());
+    CHECK(CurveFit::fit({{1, 1}, {1, 1}}, 1.0).size() == 1);
+    const auto two = CurveFit::fit({{0, 0}, {0, 0}, {5, 5}}, 1.0);
+    CHECK(two.size() == 2 && two[1].index == 2);
+}
+
+static double distanceToPolygon(const std::vector<CurveFit::Point>& poly, double x, double y) {
+    double best = 1e300;
+    for (size_t i = 0; i + 1 < poly.size(); ++i) {
+        const double dx = poly[i + 1].x - poly[i].x, dy = poly[i + 1].y - poly[i].y, len2 = dx * dx + dy * dy;
+        const double t = len2 > 0.0 ? std::clamp(((x - poly[i].x) * dx + (y - poly[i].y) * dy) / len2, 0.0, 1.0) : 0.0;
+        best = std::min(best, std::hypot(x - (poly[i].x + t * dx), y - (poly[i].y + t * dy)));
+    }
+    return best;
+}
+
+TEST(trajectoryFitOfAStraightLineIsOneCurveWithLinearArcLength) {
+    std::vector<CurveFit::Point> pts;
+    std::vector<double> w;
+    for (int i = 0; i <= 50; ++i) {
+        pts.push_back({double(i) * 2.0, 0.0});
+        w.push_back(double(i) / 50.0);
+    }
+    const Trajectory t = TrajectoryFit::fit(pts, {w});
+    CHECK(t.anchors.size() == 2);
+    CHECK(std::abs(t.length - 100.0) < 1e-6);
+    CHECK(t.arc.front() == 0.0 && std::abs(t.arc.back() - 1.0) < 1e-12);
+    for (size_t i = 0; i < t.vertices.size(); ++i) {
+        CHECK(std::abs(t.attributes[0][i] - t.arc[i]) < 1e-9);
+        if (i > 0) {
+            CHECK(t.arc[i] > t.arc[i - 1]);
+        }
+    }
+    CHECK(t.anchorVertex.size() == 2 && t.anchorVertex.back() == t.vertices.size() - 1);
+}
+
+TEST(trajectoryFitOfACircleStaysWithinToleranceOfTheSamples) {
+    std::vector<CurveFit::Point> pts;
+    for (int i = 0; i <= 200; ++i) {
+        const double a = 4.5 * double(i) / 200.0;
+        pts.push_back({50.0 * std::cos(a), 50.0 * std::sin(a)});
+    }
+    TrajectoryParams params;
+    params.tolerance = 0.3;
+    const Trajectory t = TrajectoryFit::fit(pts, {}, params);
+    CHECK(t.anchors.size() < 12);
+    double worst = 0.0;
+    for (const auto& p : pts) {
+        worst = std::max(worst, distanceToPolygon(t.vertices, p.x, p.y));
+    }
+    CHECK(worst < params.tolerance + params.flatness + 1e-6);
+    CHECK(std::abs(t.length - 225.0) < 2.0);
+    CHECK(std::abs(t.arc.back() - 1.0) < 1e-12);
+}
+
+TEST(trajectoryFitOfANoisyLineIsFewerCurvesThanSamples) {
+    std::vector<CurveFit::Point> pts;
+    for (int i = 0; i <= 300; ++i) {
+        pts.push_back({double(i), 0.1 * ((i * 7919) % 11 - 5) / 5.0});
+    }
+    const Trajectory t = TrajectoryFit::fit(pts, {});
+    CHECK(t.anchors.size() <= 3);   // was 19 for 301 samples when the end tangent came from 4 noisy samples
+}
+
+TEST(trajectoryFitMapsAPressureRampOntoTheVerticesByArcLength) {
+    std::vector<CurveFit::Point> pts;
+    std::vector<double> w;
+    for (int i = 0; i <= 100; ++i) {
+        const double a = 3.0 * double(i) / 100.0;
+        pts.push_back({40.0 * std::cos(a), 40.0 * std::sin(a)});
+        w.push_back(i < 50 ? 0.2 : 1.0);
+    }
+    const Trajectory t = TrajectoryFit::fit(pts, {w});
+    CHECK(std::abs(t.attributes[0].front() - 0.2) < 1e-9);
+    CHECK(std::abs(t.attributes[0].back() - 1.0) < 1e-9);
+    CHECK(std::abs(t.attributes[0][t.vertices.size() / 4] - 0.2) < 1e-9);
+    CHECK(std::abs(t.attributes[0][t.vertices.size() * 3 / 4] - 1.0) < 1e-9);
+}
+
+TEST(trajectoryFitHandlesOneTwoAndThreePoints) {
+    CHECK(TrajectoryFit::fit({}, {}).vertices.empty());
+    const Trajectory one = TrajectoryFit::fit({{3, 4}}, {{0.5}});
+    CHECK(one.vertices.size() == 1 && one.length == 0.0 && one.attributes[0][0] == 0.5);
+    const Trajectory two = TrajectoryFit::fit({{0, 0}, {10, 0}}, {{0.0, 1.0}});
+    CHECK(two.vertices.size() >= 2 && std::abs(two.length - 10.0) < 1e-9);
+    CHECK(std::abs(two.attributes[0].back() - 1.0) < 1e-9);
+    const Trajectory three = TrajectoryFit::fit({{0, 0}, {5, 1}, {10, 0}}, {{0.0, 0.5, 1.0}});
+    CHECK(three.vertices.size() >= 3 && std::abs(three.arc.back() - 1.0) < 1e-12);
+    bool threw = false;
+    try {
+        TrajectoryFit::fit({{0, 0}, {1, 1}}, {{0.0}});
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+static double polygonArea(const std::vector<CurveFit::Point>& p) {
+    double sum = 0.0;
+    for (size_t i = 0; i < p.size(); ++i) {
+        const auto& a = p[i];
+        const auto& b = p[(i + 1) % p.size()];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    return 0.5 * sum;
+}
+
+static std::vector<CurveFit::Point> lineVertices(double length, int steps) {
+    std::vector<CurveFit::Point> v;
+    for (int i = 0; i <= steps; ++i) {
+        v.push_back({length * i / steps, 0.0});
+    }
+    return v;
+}
+
+TEST(brushEnvelopeOfARoundNibOnALineHasParallelBordersAndRoundEnds) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    const BrushBorders b = BrushEnvelope::sweep(nib, lineVertices(100.0, 10), {}, false);
+    CHECK(b.left.size() == 11 && b.right.size() == 11);
+    for (const auto& p : b.left) {
+        CHECK(std::abs(p.y - 5.0) < 1e-9);
+    }
+    for (const auto& p : b.right) {
+        CHECK(std::abs(p.y + 5.0) < 1e-9);
+    }
+    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
+    const auto poly = BrushEnvelope::polygon(b);
+    const double expected = 100.0 * 10.0 + 0.5 * 16 * 25.0 * std::sin(2.0 * 3.14159265358979 / 16.0);
+    CHECK(std::abs(std::abs(polygonArea(poly)) - expected) < 1e-6);
+}
+
+TEST(brushEnvelopeOfAFlatNibIsThinAcrossItsAngleAndThickAlongIt) {
+    const NibBrush flat = NibBrush::oval(20.0, 0.0, 5.0);   // 20 long, 1 thick, horizontal
+    const BrushBorders horizontal = BrushEnvelope::sweep(flat, lineVertices(100.0, 5), {}, false);
+    CHECK(std::abs(horizontal.left[2].y - horizontal.right[2].y) < 1.0 + 1e-9);
+    std::vector<CurveFit::Point> up;
+    for (int i = 0; i <= 5; ++i) {
+        up.push_back({0.0, 20.0 * i});
+    }
+    const BrushBorders vertical = BrushEnvelope::sweep(flat, up, {}, false);
+    CHECK(std::abs(vertical.left[2].x - vertical.right[2].x) > 19.9);
+}
+
+TEST(brushEnvelopeWidensWithAPressureRamp) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    std::vector<double> scale;
+    for (int i = 0; i <= 10; ++i) {
+        scale.push_back(1.0 + 0.2 * i);
+    }
+    const BrushBorders b = BrushEnvelope::sweep(nib, lineVertices(100.0, 10), scale, false);
+    CHECK(std::abs(b.left.front().y - 5.0) < 1e-9);
+    CHECK(std::abs(b.left.back().y - 15.0) < 1e-9);
+    CHECK(std::abs(b.right.back().y + 15.0) < 1e-9);
+}
+
+TEST(brushEnvelopeRoundsTheOutsideOfATurnAndCrossesOnTheInside) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    const BrushBorders b = BrushEnvelope::sweep(nib, {{0, 0}, {50, 0}, {50, 50}}, {}, false);   // turns left at (50, 0)
+    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
+    CHECK(b.left.size() == 3);                       // the inside (left) is one crossing point
+    CHECK(std::abs(b.left[1].x - 45.0) < 1e-9 && std::abs(b.left[1].y - 5.0) < 1e-9);
+    CHECK(b.right.size() > 3);                       // the outside follows the tip round the corner
+    for (const auto& p : b.right) {
+        CHECK(std::hypot(p.x - 50.0, p.y) <= 5.0 + 1e-9 || std::abs(p.y + 5.0) < 1e-9 || std::abs(p.x - 55.0) < 1e-9);
+    }
+}
+
+TEST(brushEnvelopeMarksBreakpointsWhereASharpTurnHasNoCrossing) {
+    const NibBrush nib = NibBrush::oval(20.0, 0.0, 100.0);
+    const BrushBorders b = BrushEnvelope::sweep(nib, {{0, 0}, {30, 0}, {30, 2}, {0, 2}}, {}, false);   // a hairpin much tighter than the tip
+    CHECK(!b.leftBreaks.empty() || !b.rightBreaks.empty());
+    CHECK((b.leftBreaks.size() + b.rightBreaks.size()) % 2 == 0);
+    const BrushBorders smooth = BrushEnvelope::sweep(nib, {{0, 0}, {30, 5}, {60, 20}, {90, 45}}, {}, false);
+    CHECK(smooth.leftBreaks.empty() && smooth.rightBreaks.empty());
+}
+
+TEST(brushEnvelopeFollowsAFittedCurveWithAboutOnePointPerVertex) {
+    const NibBrush nib = NibBrush::oval(8.0, 30.0, 40.0);
+    std::vector<CurveFit::Point> arc;
+    for (int n : {100, 1000}) {
+        arc.clear();
+        for (int i = 0; i <= n; ++i) {
+            const double a = 3.0 * double(i) / n;
+            arc.push_back({80.0 * std::cos(a), 80.0 * std::sin(a)});
+        }
+        const BrushBorders b = BrushEnvelope::sweep(nib, arc, {}, false);
+        CHECK(b.left.size() <= size_t(n + 1) + 40 && b.right.size() <= size_t(n + 1) + 40);
+        CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
+    }
+}
+
+TEST(brushEnvelopeOfAClosedCircleGivesTwoConcentricLoops) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    std::vector<CurveFit::Point> ring;
+    for (int i = 0; i < 200; ++i) {
+        const double a = 2.0 * 3.14159265358979 * i / 200.0;
+        ring.push_back({50.0 * std::cos(a), 50.0 * std::sin(a)});
+    }
+    const BrushBorders b = BrushEnvelope::sweep(nib, ring, {}, true);
+    CHECK(b.closed && b.startCap.empty() && b.endCap.empty());
+    double leftMin = 1e9, leftMax = 0, rightMin = 1e9, rightMax = 0;
+    for (const auto& p : b.left) {
+        leftMin = std::min(leftMin, std::hypot(p.x, p.y));
+        leftMax = std::max(leftMax, std::hypot(p.x, p.y));
+    }
+    for (const auto& p : b.right) {
+        rightMin = std::min(rightMin, std::hypot(p.x, p.y));
+        rightMax = std::max(rightMax, std::hypot(p.x, p.y));
+    }
+    // the tip is a 16-gon of radius 5, so a border is at most 5 and at least 5 cos(11.25 degrees) from the path
+    CHECK(leftMin > 44.0 && leftMax < 45.1);   // counter-clockwise travel: the left border is the inner loop
+    CHECK(rightMin > 54.9 && rightMax < 55.1);
+    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
+}
+
+TEST(brushEnvelopeOfAClosedRectangleRoundsTheOutsideAndCrossesTheInside) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    const BrushBorders b = BrushEnvelope::sweep(nib, {{0, 0}, {100, 0}, {100, 60}, {0, 60}}, {}, true);   // counter-clockwise
+    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
+    CHECK(b.left.size() == 4);   // inside: four crossings, the inset rectangle
+    for (const auto& p : b.left) {
+        CHECK(std::abs(std::abs(p.x - 50.0) - 45.0) < 1e-9 && std::abs(std::abs(p.y - 30.0) - 25.0) < 1e-9);
+    }
+    CHECK(b.right.size() > 4 + 8);   // outside: the tip's corners round each corner
+}
+
+static bool insideConvexHull(std::vector<CurveFit::Point> pts, double px, double py) {
+    std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+    const auto cross3 = [](const CurveFit::Point& o, const CurveFit::Point& a, const CurveFit::Point& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+    std::vector<CurveFit::Point> hull(pts.size() * 2);
+    size_t k = 0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+        while (k >= 2 && cross3(hull[k - 2], hull[k - 1], pts[i]) <= 0.0) {
+            --k;
+        }
+        hull[k++] = pts[i];
+    }
+    for (size_t i = pts.size() - 1, t = k + 1; i > 0; --i) {
+        while (k >= t && cross3(hull[k - 2], hull[k - 1], pts[i - 1]) <= 0.0) {
+            --k;
+        }
+        hull[k++] = pts[i - 1];
+    }
+    hull.resize(k - 1);
+    for (size_t i = 0; i < hull.size(); ++i) {
+        if (cross3(hull[i], hull[(i + 1) % hull.size()], {px, py}) < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool insidePolygonNonZero(const std::vector<CurveFit::Point>& poly, double px, double py) {
+    int winding = 0;
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const auto& a = poly[i];
+        const auto& b = poly[(i + 1) % poly.size()];
+        const double side = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+        if (a.y <= py && b.y > py && side > 0.0) {
+            ++winding;
+        } else if (a.y > py && b.y <= py && side < 0.0) {
+            --winding;
+        }
+    }
+    return winding != 0;
+}
+
+TEST(brushEnvelopeCoversTheSameAreaAsTheUnionOfTheOldPerStepHulls) {
+    const NibBrush nib = NibBrush::oval(12.0, 35.0, 30.0);
+    std::vector<CurveFit::Point> path;
+    std::vector<double> scale;
+    for (int i = 0; i <= 100; ++i) {
+        const double x = double(i);
+        path.push_back({x, 12.0 * std::sin(x / 14.0)});
+        scale.push_back(1.0 + 0.4 * std::sin(x / 9.0));
+    }
+    const auto poly = BrushEnvelope::polygon(BrushEnvelope::sweep(nib, path, scale, false));
+    size_t tested = 0, differing = 0;
+    for (double y = -30.0; y <= 30.0; y += 0.37) {
+        for (double x = -15.0; x <= 115.0; x += 0.41) {
+            bool inHulls = false;
+            for (size_t i = 0; i + 1 < path.size() && !inHulls; ++i) {
+                if (std::hypot(x - path[i].x, y - path[i].y) > 14.0) {
+                    continue;
+                }
+                std::vector<CurveFit::Point> both;
+                for (const auto& c : nib.corners) {
+                    both.push_back({path[i].x + scale[i] * c.x, path[i].y + scale[i] * c.y});
+                    both.push_back({path[i + 1].x + scale[i + 1] * c.x, path[i + 1].y + scale[i + 1] * c.y});
+                }
+                inHulls = insideConvexHull(both, x, y);
+            }
+            ++tested;
+            differing += inHulls != insidePolygonNonZero(poly, x, y) ? 1 : 0;
+        }
+    }
+    CHECK(tested > 20000);
+    CHECK(differing * 500 < tested);   // under 0.2 percent, all of it on the boundary
+}
+
+TEST(brushEnvelopeOfOnePointIsTheTipAtItsScale) {
+    const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
+    const BrushBorders b = BrushEnvelope::sweep(nib, {{20, 30}, {20, 30}}, {2.0, 2.0}, false);
+    CHECK(b.single);
+    const auto poly = BrushEnvelope::polygon(b);
+    CHECK(poly.size() == 16);
+    CHECK(std::abs(std::abs(polygonArea(poly)) - 0.5 * 16 * 100.0 * std::sin(2.0 * 3.14159265358979 / 16.0)) < 1e-6);
+    CHECK(BrushEnvelope::sweep(nib, {}, {}, false).left.empty());
+}
+
+static std::array<float, 4> curveBox(const Geometry& g) {
+    return pointBox(flattenCurves(g, 0.01f));
+}
+
+static int windingAt(const Geometry& flat, float px, float py) {
+    int winding = 0;
+    for (const Primitive& prim : flat.primitives()) {
+        for (uint32_t k = 0; k < prim.count; ++k) {
+            const uint32_t a = prim.start + k, b = prim.start + (k + 1) % prim.count;
+            const double ax = flat.x()[a], ay = flat.y()[a], bx = flat.x()[b], by = flat.y()[b];
+            const double side = (bx - ax) * (py - ay) - (px - ax) * (by - ay);
+            if (ay <= py && by > py && side > 0.0) {
+                ++winding;
+            } else if (ay > py && by <= py && side < 0.0) {
+                --winding;
+            }
+        }
+    }
+    return winding;
+}
+
+TEST(calligraphySweepsAPathIntoOneClosedCubicOfTheNibsSize) {
     Network net(1);
     auto geo = strokeOf({{0, 0, 0}, {50, 0, 1}, {100, 0, 2}});
     NodeId src = strokeSource(net, geo);
@@ -8666,66 +9406,64 @@ TEST(calligraphySweepsAPathIntoClosedOutlinesOfTheNibsSize) {
     net.node(pen).setFloat("width", 10.0f);
     net.node(pen).setFloat("angle", 0.0f);
     net.node(pen).setFloat("roundness", 100.0f);
-    net.node(pen).setFloat("tolerance", 0.0f);
+    net.node(pen).setFloat("trajectoryTolerance", 1.25f);
+    net.node(pen).setFloat("outlineTolerance", 0.33f);
     auto out = net.cook(pen);
-    CHECK(out->primitiveCount() == 2);
-    for (const Primitive& prim : out->primitives()) {
-        CHECK(prim.closed && prim.count >= 3);
-    }
-    const auto box = pointBox(*out);
-    CHECK_NEAR(box[0], -5.0f);
-    CHECK_NEAR(box[2], 105.0f);
-    CHECK_NEAR(box[1], -5.0f);
-    CHECK_NEAR(box[3], 5.0f);
+    CHECK(out->primitiveCount() == 1);
+    const Primitive& prim = out->primitives()[0];
+    CHECK(prim.closed && prim.kind == PrimKind::cubic && cubicSegments(prim) > 0);
+    CHECK(out->pointCount() < 40);
+    const auto box = curveBox(*out);
+    CHECK(std::fabs(box[0] + 5.0f) < 0.4f);
+    CHECK(std::fabs(box[2] - 105.0f) < 0.4f);
+    CHECK(std::fabs(box[1] + 5.0f) < 0.4f);
+    CHECK(std::fabs(box[3] - 5.0f) < 0.4f);
     CHECK(!out->hasPointAttrib("t"));
 }
 
-TEST(calligraphySkipsSamplesOnAStraightRunAndKeepsTheOnesThatTurn) {
+TEST(calligraphyKeepsALongPathWithATurnToFewCubics) {
     Network net(1);
     std::vector<std::array<float, 3>> points;
     for (int i = 0; i <= 40; ++i) {
-        points.push_back({float(i) * 2.0f, 0.0f, float(i)});   // 40 steps along a line
+        points.push_back({float(i) * 2.0f, 0.0f, float(i)});
     }
     for (int i = 1; i <= 40; ++i) {
-        points.push_back({80.0f, float(i) * 2.0f, float(40 + i)});   // then a right-angle turn and 40 more
+        points.push_back({80.0f, float(i) * 2.0f, float(40 + i)});   // a right angle, 81 samples in all
     }
     NodeId src = strokeSource(net, strokeOf(points));
     NodeId pen = net.addNode("calligraphy");
     net.connect(src, pen);
     net.node(pen).setFloat("width", 6.0f);
     net.node(pen).setFloat("roundness", 100.0f);
-
-    net.node(pen).setFloat("tolerance", 0.0f);
-    const size_t everySample = net.cook(pen)->primitiveCount();
-    CHECK(everySample == 80);
-
-    net.node(pen).setFloat("tolerance", 0.25f);
-    auto merged = net.cook(pen);
-    CHECK(merged->primitiveCount() == 2);   // one piece per straight leg
-    const auto box = pointBox(*merged);
-    CHECK_NEAR(box[0], -3.0f);   // the sweep is as wide and as long as before
-    CHECK_NEAR(box[2], 83.0f);
-    CHECK_NEAR(box[3], 83.0f);
+    net.node(pen).setFloat("trajectoryTolerance", 0.75f);
+    net.node(pen).setFloat("outlineTolerance", 0.2f);
+    auto out = net.cook(pen);
+    CHECK(out->primitiveCount() == 1);
+    CHECK(out->pointCount() < 100);   // 63 measured; was 160 samples' worth of hulls
+    const auto box = curveBox(*out);
+    CHECK(std::fabs(box[0] + 3.0f) < 0.4f);
+    CHECK(std::fabs(box[2] - 83.0f) < 0.4f);
+    CHECK(std::fabs(box[3] - 83.0f) < 0.4f);
 }
 
-TEST(calligraphyTolerancePassesAJitteredStraightLineButNotACurve) {
-    Network net(1);
+TEST(calligraphyTrajectoryToleranceSmoothsJitterButFollowsABend) {
     std::vector<std::array<float, 3>> line, arc;
     for (int i = 0; i <= 60; ++i) {
         line.push_back({float(i) * 3.0f, (i % 2 == 0 ? 0.1f : -0.1f), float(i)});   // a line with 0.1 jitter
         arc.push_back({float(i) * 3.0f, 40.0f * std::sin(float(i) * 0.1f), float(i)});   // a bend
     }
     Network lineNet(1), arcNet(1);
-    NodeId lineSrc = strokeSource(lineNet, strokeOf(line));
-    NodeId arcSrc = strokeSource(arcNet, strokeOf(arc));
     NodeId linePen = lineNet.addNode("calligraphy");
     NodeId arcPen = arcNet.addNode("calligraphy");
-    lineNet.connect(lineSrc, linePen);
-    arcNet.connect(arcSrc, arcPen);
-    CHECK(lineNet.cook(linePen)->primitiveCount() <= 2);
-    CHECK(arcNet.cook(arcPen)->primitiveCount() > 6);   // the bend keeps its pieces
-    arcNet.node(arcPen).setFloat("tolerance", 0.0f);
-    CHECK(arcNet.cook(arcPen)->primitiveCount() == 60);
+    lineNet.connect(strokeSource(lineNet, strokeOf(line)), linePen);
+    arcNet.connect(strokeSource(arcNet, strokeOf(arc)), arcPen);
+    const uint32_t flatPoints = lineNet.cook(linePen)->pointCount();
+    const uint32_t bentPoints = arcNet.cook(arcPen)->pointCount();
+    CHECK(flatPoints < bentPoints);
+    CHECK(flatPoints < 40);
+    lineNet.node(linePen).setFloat("trajectoryTolerance", 0.01f);
+    lineNet.node(linePen).setFloat("outlineTolerance", 0.01f);   // the outline's own tolerance (0.6 here) would smooth a 0.1 jitter again
+    CHECK(lineNet.cook(linePen)->pointCount() > flatPoints);   // a tight fit follows the jitter
 }
 
 TEST(calligraphyFlatNibIsThinAcrossItsAngle) {
@@ -8736,10 +9474,12 @@ TEST(calligraphyFlatNibIsThinAcrossItsAngle) {
     net.node(pen).setFloat("width", 20.0f);
     net.node(pen).setFloat("angle", 0.0f);
     net.node(pen).setFloat("roundness", 10.0f);
-    auto box = pointBox(*net.cook(pen));
+    net.node(pen).setFloat("trajectoryTolerance", 2.5f);
+    net.node(pen).setFloat("outlineTolerance", 0.25f);
+    auto box = curveBox(*net.cook(pen));
     CHECK(box[3] - box[1] < 3.0f);   // a horizontal nib drawing a horizontal line is thin
     net.node(pen).setFloat("angle", 90.0f);
-    box = pointBox(*net.cook(pen));
+    box = curveBox(*net.cook(pen));
     CHECK(box[3] - box[1] > 19.0f);  // turned upright it is as tall as it is long
 }
 
@@ -8754,9 +9494,10 @@ TEST(calligraphyNibFollowsThePressureAttribute) {
     net.connect(src, pen);
     net.node(pen).setFloat("width", 20.0f);
     net.node(pen).setFloat("roundness", 100.0f);
-    auto box = pointBox(*net.cook(pen));
-    CHECK_NEAR(box[0], -2.5f);    // the thin start
-    CHECK_NEAR(box[2], 110.0f);   // the full end
+    auto box = curveBox(*net.cook(pen));
+    CHECK(std::fabs(box[0] + 2.5f) < 0.4f);     // the thin start
+    CHECK(std::fabs(box[2] - 110.0f) < 0.4f);   // the full end
+    CHECK(std::fabs(box[3] - 10.0f) < 0.4f);
 }
 
 TEST(calligraphyKeepsShapeKeysAndSweepsCubics) {
@@ -8776,7 +9517,7 @@ TEST(calligraphyKeepsShapeKeysAndSweepsCubics) {
     NodeId pen = net.addNode("calligraphy");
     net.connect(src, pen);
     auto out = net.cook(pen);
-    CHECK(out->primitiveCount() > 4);
+    CHECK(out->primitiveCount() == 1);
     CHECK(out->shapes().size() == 1);
     CHECK(out->shapes()[0].key == "pathA");
     out->checkShapes();
@@ -8788,6 +9529,38 @@ TEST(calligraphyKeepsShapeKeysAndSweepsCubics) {
         refused = true;
     }
     CHECK(refused);
+}
+
+TEST(calligraphyOfAClosedPathIsARingWithTheInsideLeftOpen) {
+    Network net(1);
+    auto geo = std::make_shared<Geometry>();
+    geo->resizePoints(24);
+    for (int i = 0; i < 24; ++i) {
+        const double a = 2.0 * 3.14159265358979 * i / 24.0;
+        geo->x()[i] = float(50.0 * std::cos(a));
+        geo->y()[i] = float(50.0 * std::sin(a));
+    }
+    Primitive prim;
+    prim.count = 24;
+    prim.closed = true;
+    geo->addShapePrimitive(prim, "ring");
+    NodeId src = strokeSource(net, geo);
+    NodeId pen = net.addNode("calligraphy");
+    net.connect(src, pen);
+    net.node(pen).setFloat("width", 10.0f);
+    net.node(pen).setFloat("roundness", 100.0f);
+    net.node(pen).setFloat("trajectoryTolerance", 1.25f);
+    net.node(pen).setFloat("outlineTolerance", 0.33f);
+    auto out = net.cook(pen);
+    CHECK(out->primitiveCount() == 2);
+    CHECK(out->shapes().size() == 1 && out->shapes()[0].key == "ring");
+    const Geometry flat = flattenCurves(*out, 0.01f);
+    CHECK(windingAt(flat, 0.0f, 0.0f) == 0);       // the middle is open
+    CHECK(windingAt(flat, 50.0f, 0.0f) != 0);      // the stroke itself is filled
+    CHECK(windingAt(flat, 0.0f, -50.0f) != 0);
+    CHECK(windingAt(flat, 58.0f, 0.0f) == 0);      // and outside it is open too
+    const auto box = pointBox(flat);
+    CHECK(std::fabs(box[2] - 55.0f) < 0.6f);
 }
 
 // A square of side `side` centred on the origin, one closed polygon.
@@ -9477,9 +10250,19 @@ TEST(imageOutRefusesAnEmptyPathABadFormatAndNothingWiredIn) {
 
 }  // namespace
 
-int main() {
+// With arguments only the tests whose name contains one of them run (case matters).
+int main(int argc, char** argv) {
     int failed = 0;
+    size_t ran = 0;
     for (const auto& t : tests()) {
+        bool wanted = argc < 2;
+        for (int i = 1; i < argc; ++i) {
+            wanted = wanted || std::string(t.name).find(argv[i]) != std::string::npos;
+        }
+        if (!wanted) {
+            continue;
+        }
+        ++ran;
         try {
             t.fn();
             std::printf("[ ok ] %s\n", t.name);
@@ -9488,6 +10271,6 @@ int main() {
             std::printf("[FAIL] %s: %s\n", t.name, e.what());
         }
     }
-    std::printf("%zu tests, %d failed\n", tests().size(), failed);
+    std::printf("%zu tests, %d failed\n", ran, failed);
     return failed ? 1 : 0;
 }

@@ -294,7 +294,31 @@ void VecEmitter::advance(const Vec& v, const Vec& step) {
     else cc_.addps(v, step);
 }
 
-x86::Vec VecEmitter::op(Op o, const Vec& a, const Vec& b, const Vec& c) {
+x86::Vec VecEmitter::gather(const x86::Gp& table, int base, const Vec& offset) {
+    const uint32_t bytes = static_cast<uint32_t>(lanes() * sizeof(float));
+    x86::Mem offsets = cc_.new_stack(bytes, 16, "gatherOffsets");
+    x86::Mem values = cc_.new_stack(bytes, 16, "gatherValues");
+    const Vec whole = cvtt(offset);
+    if (vex()) cc_.vmovups(offsets, whole);
+    else cc_.movups(offsets, whole);
+    x86::Gp at = cc_.new_gp_ptr("gatherAt");
+    x86::Gp bits = cc_.new_gp32("gatherBits");
+    for (size_t lane = 0; lane < lanes(); ++lane) {
+        x86::Mem from = offsets.clone_adjusted(static_cast<int64_t>(lane * sizeof(float)));
+        from.set_size(4);
+        cc_.movsxd(at, from);
+        cc_.mov(bits, x86::dword_ptr(table, at, 2, base * 4));
+        x86::Mem to = values.clone_adjusted(static_cast<int64_t>(lane * sizeof(float)));
+        to.set_size(4);
+        cc_.mov(to, bits);
+    }
+    Vec d = newVec("gathered");
+    if (vex()) cc_.vmovups(d, values);
+    else cc_.movups(d, values);
+    return d;
+}
+
+x86::Vec VecEmitter::op(Op o,const Vec& a, const Vec& b, const Vec& c) {
     switch (o) {
         case Op::add: return add(a, b);
         case Op::sub: return sub(a, b);

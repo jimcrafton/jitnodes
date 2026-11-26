@@ -24,9 +24,11 @@ struct AssetParam {
     float step = 0.0f;      // how much a drag moves the value per pixel; 0 leaves it to the editor
     std::string group;      // parameters with the same group are shown together
     std::string tooltip;
+    bool ramp = false;           // a ramp parameter: defaultRamp is its default text; the number members do not apply
+    std::string defaultRamp;
     bool operator==(const AssetParam& o) const {
         return name == o.name && label == o.label && defaultValue == o.defaultValue && minimum == o.minimum && maximum == o.maximum && step == o.step &&
-               group == o.group && tooltip == o.tooltip;
+               group == o.group && tooltip == o.tooltip && ramp == o.ramp && defaultRamp == o.defaultRamp;
     }
 };
 

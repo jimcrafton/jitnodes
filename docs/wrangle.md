@@ -307,6 +307,21 @@ x = x + sin(y * 2 + speed) * amount;
   with `_`, a name declared twice. The error is `cannot declare parameter 'name'`.
 - Only the `wrangle` node reads declarations. In a [parameter expression](#parameter-expressions) a `|` is not part of the language.
 
+### Ramps
+
+```
+| gain = 1(0, 2), profile = ramp("0 0, 0.5 1, 1 0") |
+width = gain * profile(u);
+```
+
+- `name = ramp("...")` declares a curve (the text form in [ramps.md](ramps.md)); `ramp()` is a straight line. The node gets a ramp
+  parameter of that name, edited like any ramp. `name(x)` is the curve's value at `x`; outside the first and last point the value of that
+  end holds, and a NaN `x` gives the first value. The name alone is an error, and so is a function's name (`min`, `sin`, ...).
+- As with numbers, editing the declared default does not change a curve already set.
+- The ramp parameter's text may be `parent.<name>`, so a curve exposed on the subnet or asset around the node drives it.
+- The curve reaches the code as a table of 256 evenly spaced values with straight lines between them, so a step (`constant`, or two
+  points at one position) is spread over one 255th of the ramp's range. Editing the curve never recompiles.
+
 ## Attribute names other nodes understand
 
 The language has no built-in attributes except `x` and `y`, but several nodes and the editor read specific names:
@@ -593,7 +608,7 @@ Other things that look like bugs but are not:
 ```
 program     := { declarations } { assignment }       (a '#' starts a comment that runs to the end of the line)
 declarations := '|' declaration { ',' declaration } '|'
-declaration := identifier [ '=' signed ] [ '(' [ signed ] ',' [ signed ] ')' ]
+declaration := identifier [ '=' signed ] [ '(' [ signed ] ',' [ signed ] ')' ] | identifier '=' 'ramp' '(' [ string ] ')'
 signed      := [ '-' ] number
 assignment  := identifier '=' expression ';'
 expression  := conditional

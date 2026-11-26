@@ -26,8 +26,13 @@ reached from Python as that string. `Node::isRampParam(name)` and `rampNames()` 
 `getRamp(name)` parses it (throwing the node's name and the parameter with the reason when the text is bad). A bad text is stored as typed and
 fails the cook, not the edit.
 
-A ramp parameter of an asset's inner node is edited inside the asset; promoting one to the asset's own parameters is not supported yet (promoted
-parameters are floats). A wrangle cannot read a ramp.
+`Node::paramKind(name)` says what kind of value any parameter is: `scalar`, `number`, `color`, `choice`, `ramp`, `text` or `none` (no such
+parameter). An editor lets only a `scalar` be changed by dragging. A float is a scalar unless its tags say otherwise: `kind:color`,
+`choices:...`, or another `kind:` than `kind:scalar`, which makes it a `number` (typed only).
+
+A subnet or asset can have ramps of its own (spare ramps: `addSpareRamp`, `removeSpareRamp`, `renameSpareRamp`; `AssetParam::ramp`). A
+ramp parameter inside it whose text is `parent.<name>` follows that ramp (`rampText` gives the followed text; `renameSpareParameter`
+rewrites such references). A wrangle declares and reads ramps with `ramp()` (see [wrangle.md](wrangle.md)).
 
 ## Nodes that use ramps
 

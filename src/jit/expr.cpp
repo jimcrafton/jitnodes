@@ -42,6 +42,14 @@ int ExprGraph::index() {
     return intern(n);
 }
 
+int ExprGraph::gather(int base, int offset) {
+    ExprNode n;
+    n.op = Op::gather;
+    n.a = offset;
+    n.index = base;
+    return intern(n);
+}
+
 int ExprGraph::unary(Op op, int a) {
     ExprNode n;
     n.op = op;

@@ -144,6 +144,7 @@ private:
     std::string workerKey() const {
         std::string key = saveNetwork(network(), false, true);
         for (const std::string& name : spareNames()) key += "\n" + name + "=" + std::to_string(getFloat(name));
+        for (const std::string& name : spareRampNames()) key += "\n" + name + "=" + rampText(name);
         return key;
     }
 
@@ -162,6 +163,7 @@ private:
         worker->node = static_cast<ForeachNode*>(&worker->net.node(id));
         loadNetwork(worker->node->network(), saveNetwork(network(), false, true));
         for (const std::string& name : spareNames()) worker->node->addSpareFloat(name, getFloat(name));
+        for (const std::string& name : spareRampNames()) worker->node->addSpareRamp(name, rampText(name));
         return worker;
     }
 
@@ -215,6 +217,7 @@ public:
         std::string fingerprint = saveNetwork(network(), false, true);
         for (const std::string& name : floatNames())
             if (name != "step" && name != "dt") fingerprint += "\n" + name + "=" + std::to_string(getFloat(name));
+        for (const std::string& name : spareRampNames()) fingerprint += "\n" + name + "=" + rampText(name);
         const bool changed = step_ < 0 || source_ != inputs[0] || fingerprint != fingerprint_;
         if (changed) checkpoints_.clear();
         const auto* saved = !changed ? checkpoints_.resumeFor(step_, target) : nullptr;

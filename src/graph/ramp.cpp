@@ -193,6 +193,25 @@ std::string Ramp::check(const std::string& text) {
     return {};
 }
 
+std::string Ramp::parentReference(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const std::string trimmed = text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    static const std::string prefix = "parent.";
+    if (trimmed.compare(0, prefix.size(), prefix) != 0) {
+        return {};
+    }
+    const std::string name = trimmed.substr(prefix.size());
+    for (const char c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+            return {};
+        }
+    }
+    return name;
+}
+
 std::string Ramp::toText() const {
     std::string text;
     for (const RampPoint& p : points_) {

@@ -42,6 +42,7 @@ enum class Op : uint8_t {
     floor,
     ceil,
     index,  // element position within the run, as a float (exact below 2^24)
+    gather,  // params[index + int(a)], per element; the graph must keep `a` a whole number inside the table (never NaN)
 };
 
 struct ExprNode {
@@ -61,6 +62,7 @@ public:
     int param(int index);
     int load(int channel);
     int index();
+    int gather(int base, int offset);   // see Op::gather
     int unary(Op op, int a);
     int binary(Op op, int a, int b);
     int select(int mask, int whenTrue, int whenFalse);

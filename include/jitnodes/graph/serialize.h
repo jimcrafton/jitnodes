@@ -63,7 +63,7 @@ void copyNodeParameters(const Node& from, Node& to, bool addMissing);
 // not an asset instance or has more than four inputs. Not allowed while the network cooks.
 void unlockAssetInstance(Network& net, NodeId id);
 
-// Structural snapshots of a graph's root level for undo: unchanged nodes share their serialized text with the
+// Structural snapshots of a graph's root level for undo: unchanged nodes share their cloned state with the
 // previous snapshot, and restoring only touches the nodes that differ, so caches of the others survive. Subnet
 // contents are part of the subnet node's text and are reloaded when it changes.
 struct GraphSnapshot;
@@ -77,8 +77,8 @@ struct NodeMeta {
 };
 
 struct NodeSnapshot {
-    std::shared_ptr<const std::string> text;  // the node's JSON without its wiring (and without a subnet's child graph, see child)
-    uint64_t revision = 0;                    // Node::revision() when the text was written; 0 = never reuse it (asset instances)
+    std::shared_ptr<const Node> state;        // a clone of the node (Node::clone): its saved state without wiring, and without a subnet's child graph (see child)
+    uint64_t revision = 0;                    // Node::revision() when the clone was made; the next snapshot reuses the clone while the node still has it
     std::shared_ptr<const GraphSnapshot> child;  // a subnet's contents, snapshotted the same way so an edit inside costs what an edit at the root does
     std::shared_ptr<const NodeMeta> meta;     // shared with the previous snapshot while it is unchanged, so copying and comparing stay cheap
 };

@@ -38,6 +38,9 @@ public:
     static Ramp parse(const std::string& text);
     // "" when the text is a ramp, else the reason; for an editor that checks a typed value before storing it.
     static std::string check(const std::string& text);
+    // The `name` of a ramp text of the form `parent.<name>`, which means "the ramp <name> of the subnet around the node"; "" for any other
+    // text. Such a text is not a ramp by itself: parse and check refuse it, Node::rampText follows it.
+    static std::string parentReference(const std::string& text);
     static const char* interpName(RampInterp interp);
     // Throws std::runtime_error for an unknown name (case and a '-' are ignored: "Catmull-Rom" is catmullRom).
     static RampInterp interpFromName(const std::string& name);

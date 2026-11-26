@@ -129,7 +129,18 @@ public:
         out.params = {getFloat("a"), getFloat("b"), getFloat("c"), getFloat("d")};
         out.params.resize(static_cast<size_t>(out.spec.paramCount), 0.0f);  // the slots after the named ones belong to string literals
         for (const WrangleParam& p : declared_) {
-            out.params[static_cast<size_t>(p.slot)] = getFloat(p.name);
+            const size_t slot = static_cast<size_t>(p.slot);
+            if (!p.ramp) {
+                out.params[slot] = getFloat(p.name);
+                continue;
+            }
+            const Ramp ramp = getRamp(p.name);
+            const float first = ramp.points().front().pos;
+            const float span = ramp.points().back().pos - first;
+            out.params[slot] = first;
+            out.params[slot + 1] = span > 0.0f ? static_cast<float>(WrangleParam::rampSamples - 1) / span : 0.0f;
+            const std::vector<float> table = ramp.bake(WrangleParam::rampSamples);
+            std::copy(table.begin(), table.end(), out.params.begin() + static_cast<std::ptrdiff_t>(slot + 2));
         }
         return true;
     }
@@ -173,7 +184,7 @@ private:
         std::vector<WrangleParam> declared;
         KernelSpec spec = parseWrangle(code, {"a", "b", "c", "d"}, {}, &declared);
         for (const WrangleParam& p : declared) {
-            if (hasFloat(p.name) && !isSpare(p.name)) {
+            if ((hasFloat(p.name) && !isSpare(p.name)) || (hasString(p.name) && !isSpareRamp(p.name))) {
                 throw std::runtime_error("wrangle parse error: cannot declare parameter '" + p.name + "', the node has one of that name");
             }
         }
@@ -185,17 +196,26 @@ private:
 
     // Adds the spare floats of new declarations and drops those of declarations that are gone; one that stays keeps its value, expression and keys.
     void syncDeclared() {
-        std::set<std::string> now;
+        std::set<std::string> now, numbers, ramps;
         for (const WrangleParam& p : declared_) {
             now.insert(p.name);
+            (p.ramp ? ramps : numbers).insert(p.name);
         }
+        // The ones that go first, so a name may change from a number to a ramp or back.
         for (const std::string& name : declaredNames_) {
-            if (now.count(name) == 0) {
+            if (numbers.count(name) == 0) {
                 removeSpareFloat(name);
+            }
+            if (ramps.count(name) == 0) {
+                removeSpareRamp(name);
             }
         }
         for (const WrangleParam& p : declared_) {
-            if (!hasFloat(p.name)) {
+            if (p.ramp && !hasString(p.name)) {
+                removeSpareFloat(p.name);
+                addSpareRamp(p.name, p.rampDefault);
+            } else if (!p.ramp && !hasFloat(p.name)) {
+                removeSpareRamp(p.name);
                 addSpareFloat(p.name, p.value);
             }
         }
