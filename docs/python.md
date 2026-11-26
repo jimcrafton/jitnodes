@@ -256,7 +256,8 @@ Asset definitions, the asset library and the rules for asset scripts (the C++ si
 * `AssetDef` is a *value*: `AssetDef()`, `AssetDef.from_text(text)`, `assets.get(name)` or `assets.create(subnet_node, name=None, path=None)`
   give a copy that does not touch the library until `apply()` (register in memory) or `save(path=None)` (write the file, one version up,
   register). Fields: `name`, `label`, `category`, `description`, `author`, `icon`, `help`, `version`, `inputs`, `input_labels`, and read-only
-  `source`, `graph_text`. `params` is a list of live `AssetParam` objects of the definition (`d.params[0].label = "x"` edits it; also
+  `source`, `graph_text`. `params` is a list of live `AssetParam` objects of the definition (`d.params[0].label = "x"` edits it. One stays
+  valid while parameters are added, removed or reordered; once its own parameter is removed, using it raises `StaleHandleError`; also
   `name`, `default`, `minimum`, `maximum`, `step`, `group`, `tooltip`); `add_param(name, default=0, label="", minimum=None, maximum=None,
   step=0, group="", tooltip="")`, `param(name)`, `remove_param(name)`, `rename_param(old, new, record=True)` (rewrites `parent.<old>` in the
   contents and returns how many expressions changed; with `record` the old name goes into `renames` for older instances, pass `False` for a

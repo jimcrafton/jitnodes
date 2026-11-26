@@ -1,6 +1,8 @@
 #include "pyAssets.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -61,29 +63,78 @@ private:
     std::unique_ptr<EventRestriction> restriction_;
 };
 
+// A parameter as Python sees it: a value of its own, or one of a definition's, found again by serial number on every use because adding,
+// removing or reordering moves the list.
+class PyAssetParam {
+public:
+    PyAssetParam() = default;
+
+    PyAssetParam(py::object definition, AssetParam& param) : definition_(std::move(definition)) {
+        static std::atomic<std::uint64_t> lastSerial{0};
+        if (param.serial == 0) {
+            param.serial = ++lastSerial;
+        }
+        serial_ = param.serial;
+    }
+
+    AssetParam* find() const {
+        if (!definition_) {
+            return &own_;
+        }
+        for (AssetParam& p : definition_.cast<AssetDefinition&>().params) {
+            if (p.serial == serial_) {
+                return &p;
+            }
+        }
+        return nullptr;
+    }
+
+    AssetParam& get() const {
+        AssetParam* p = find();
+        if (p == nullptr) {
+            throw StaleHandleError("the parameter is no longer part of its asset definition");
+        }
+        return *p;
+    }
+
+private:
+    py::object definition_;
+    std::uint64_t serial_ = 0;
+    mutable AssetParam own_;
+};
+
 py::list liveParams(py::object self) {
     AssetDefinition& definition = self.cast<AssetDefinition&>();
     py::list out;
     for (AssetParam& p : definition.params) {
-        out.append(py::cast(&p, py::return_value_policy::reference_internal, self));
+        out.append(py::cast(PyAssetParam(self, p)));
     }
     return out;
 }
 
+template <typename T>
+void bindField(py::class_<PyAssetParam>& cls, const char* name, T AssetParam::*member, const char* doc = "") {
+    cls.def_property(name, [member](const PyAssetParam& p) { return p.get().*member; },
+                     [member](const PyAssetParam& p, T value) { p.get().*member = std::move(value); }, doc);
+}
+
 void bindParam(py::module_& m) {
-    py::class_<AssetParam>(m, "AssetParam", "One promoted parameter of an asset: its default and what an editor shows for it.")
-        .def(py::init<>())
-        .def_readwrite("name", &AssetParam::name)
-        .def_readwrite("label", &AssetParam::label)
-        .def_readwrite("default", &AssetParam::defaultValue)
-        .def_readwrite("minimum", &AssetParam::minimum)
-        .def_readwrite("maximum", &AssetParam::maximum)
-        .def_readwrite("step", &AssetParam::step)
-        .def_readwrite("group", &AssetParam::group)
-        .def_readwrite("tooltip", &AssetParam::tooltip)
-        .def_readwrite("ramp", &AssetParam::ramp, "True for a ramp parameter; default_ramp is then its default.")
-        .def_readwrite("default_ramp", &AssetParam::defaultRamp)
-        .def("__repr__", [](const AssetParam& p) { return "<AssetParam " + p.name + ">"; });
+    py::class_<PyAssetParam> cls(m, "AssetParam", "One promoted parameter of an asset: its default and what an editor shows for it.");
+    cls.def(py::init<>())
+        .def("__repr__", [](const PyAssetParam& p) {
+            const AssetParam* param = p.find();
+            return param != nullptr ? "<AssetParam " + param->name + ">" : std::string("<AssetParam (removed)>");
+        });
+    bindField(cls, "name", &AssetParam::name);
+    bindField(cls, "label", &AssetParam::label);
+    bindField(cls, "default", &AssetParam::defaultValue);
+    bindField(cls, "minimum", &AssetParam::minimum);
+    bindField(cls, "maximum", &AssetParam::maximum);
+    bindField(cls, "step", &AssetParam::step);
+    bindField(cls, "group", &AssetParam::group);
+    bindField(cls, "tooltip", &AssetParam::tooltip);
+    bindField(cls, "ramp", &AssetParam::ramp, "True for a ramp parameter; default_ramp is then its default.");
+    bindField(cls, "default_ramp", &AssetParam::defaultRamp);
 }
 
 void bindDefinition(py::module_& m) {
@@ -135,7 +186,7 @@ void bindDefinition(py::module_& m) {
                  p.group = group;
                  p.tooltip = tooltip;
                  d.params.push_back(std::move(p));
-                 return py::cast(&d.params.back(), py::return_value_policy::reference_internal, self);
+                 return PyAssetParam(self, d.params.back());
              },
              py::arg("name"), py::arg("default") = 0.0f, py::arg("label") = "", py::arg("minimum") = py::none(), py::arg("maximum") = py::none(),
              py::arg("step") = 0.0f, py::arg("group") = "", py::arg("tooltip") = "", py::arg("ramp") = py::none(),
@@ -144,7 +195,7 @@ void bindDefinition(py::module_& m) {
             AssetDefinition& d = self.cast<AssetDefinition&>();
             for (AssetParam& p : d.params) {
                 if (p.name == name) {
-                    return py::cast(&p, py::return_value_policy::reference_internal, self);
+                    return py::cast(PyAssetParam(self, p));
                 }
             }
             return py::none();

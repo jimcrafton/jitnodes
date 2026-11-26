@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -26,6 +27,7 @@ struct AssetParam {
     std::string tooltip;
     bool ramp = false;           // a ramp parameter: defaultRamp is its default text; the number members do not apply
     std::string defaultRamp;
+    std::uint64_t serial = 0;    // neither saved nor compared: lets a binding find this parameter again after the list moved
     bool operator==(const AssetParam& o) const {
         return name == o.name && label == o.label && defaultValue == o.defaultValue && minimum == o.minimum && maximum == o.maximum && step == o.step &&
                group == o.group && tooltip == o.tooltip && ramp == o.ramp && defaultRamp == o.defaultRamp;
