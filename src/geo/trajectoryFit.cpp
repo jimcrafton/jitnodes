@@ -11,6 +11,34 @@ using Point = CurveFit::Point;
 
 double distance(const Point& a, const Point& b) { return std::hypot(b.x - a.x, b.y - a.y); }
 
+// The direction through the first point of a loop (its last point repeats the first), read from the points `reach` of path length either side.
+// False when there is none: too few points, or the loop turns a corner (60 degrees or more) there.
+bool loopDirection(const std::vector<Point>& points, double reach, Point& direction) {
+    if (points.size() < 4 || distance(points.front(), points.back()) > 1e-6) {
+        return false;
+    }
+    const std::size_t n = points.size() - 1;
+    const auto walk = [&](std::size_t step) {
+        std::size_t at = 0;
+        double run = 0.0;
+        for (std::size_t k = 0; k < n / 2 && (k == 0 || run < reach); ++k) {
+            const std::size_t next = (at + step) % n;
+            run += distance(points[at], points[next]);
+            at = next;
+        }
+        return points[at];
+    };
+    const Point before = walk(n - 1), after = walk(1), here = points.front();
+    const double inX = here.x - before.x, inY = here.y - before.y, outX = after.x - here.x, outY = after.y - here.y;
+    const double turn = std::abs(std::atan2(inX * outY - inY * outX, inX * outX + inY * outY));
+    const double length = distance(before, after);
+    if (turn >= 3.14159265358979 / 3.0 || length < 1e-9) {
+        return false;
+    }
+    direction = {(after.x - before.x) / length, (after.y - before.y) / length};
+    return true;
+}
+
 
 // Appends the vertices after the first of the cubic p0..p3, as many as keep the polygon within `flatness` of it.
 void flatten(const Point& p0, const Point& p1, const Point& p2, const Point& p3, double flatness, std::vector<Point>& out) {
@@ -133,8 +161,11 @@ Trajectory TrajectoryFit::fit(const std::vector<CurveFit::Point>& points, const 
     if (points.empty()) {
         return out;
     }
+    Point seam;
+    const bool smoothSeam = params.closed && loopDirection(points, 6.0 * params.tolerance, seam);
     out.anchors = CurveFit::fit(points, params.tolerance, std::vector<uint32_t>(breakpoints.begin(), breakpoints.end()),
-                                params.forward ? CurveFit::Mode::forward : CurveFit::Mode::global);
+                                params.forward ? CurveFit::Mode::forward : CurveFit::Mode::global, smoothSeam ? &seam : nullptr,
+                                smoothSeam ? &seam : nullptr);
     const std::vector<Point> control = CurveFit::controlPoints(out.anchors);
     out.vertices.push_back(control.front());
     out.anchorVertex.push_back(0);

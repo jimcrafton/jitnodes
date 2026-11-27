@@ -49,6 +49,106 @@ Point ringDirection(const std::vector<Point>& ring, std::size_t at, double reach
     const double length = std::hypot(dx, dy);
     return length > 1e-12 ? Point{dx / length, dy / length} : Point{1.0, 0.0};
 }
+
+// The ring indices of the polygon points `round` names (ascending), with the points put between two neighbouring ones.
+std::vector<uint32_t> ringIndices(const std::vector<std::size_t>& round, const std::vector<uint32_t>& newIndex, std::size_t ringSize) {
+    std::vector<uint32_t> out;
+    for (std::size_t k = 0; k < round.size(); ++k) {
+        const std::size_t i = round[k];
+        if (i + 1 >= newIndex.size()) {
+            continue;
+        }
+        const bool run = k + 1 < round.size() && round[k + 1] == i + 1;
+        const bool wraps = i + 2 == newIndex.size() && round.front() == 0;
+        const std::size_t last = wraps ? ringSize - 1 : !run ? newIndex[i] : (i + 2 < newIndex.size() ? newIndex[i + 1] : ringSize) - 1;
+        for (std::size_t at = newIndex[i]; at <= last; ++at) {
+            out.push_back(static_cast<uint32_t>(at));
+        }
+    }
+    return out;
+}
+
+// Where to open a loop for fitting: the middle of its longest stretch that does not turn (by 20 degrees or more over `reach` either side) and
+// holds no break, so the join is not at a corner and the corners are all inside the line the fitter looks at. False when it turns everywhere.
+bool flattestPlace(const std::vector<Point>& ring, const std::vector<uint32_t>& breaks, double reach, std::size_t& place) {
+    const std::size_t n = ring.size();
+    std::vector<char> turns(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t before = i, after = i;
+        double run = 0.0;
+        for (std::size_t k = 0; k < n / 2 && (k == 0 || run < reach); ++k) {
+            const std::size_t next = (after + 1) % n;
+            run += std::hypot(ring[next].x - ring[after].x, ring[next].y - ring[after].y);
+            after = next;
+        }
+        run = 0.0;
+        for (std::size_t k = 0; k < n / 2 && (k == 0 || run < reach); ++k) {
+            const std::size_t previous = (before + n - 1) % n;
+            run += std::hypot(ring[before].x - ring[previous].x, ring[before].y - ring[previous].y);
+            before = previous;
+        }
+        const double inX = ring[i].x - ring[before].x, inY = ring[i].y - ring[before].y;
+        const double outX = ring[after].x - ring[i].x, outY = ring[after].y - ring[i].y;
+        turns[i] = std::abs(std::atan2(inX * outY - inY * outX, inX * outX + inY * outY)) >= 3.14159265358979 / 9.0;
+    }
+    for (const uint32_t i : breaks) {
+        turns[i % n] = 1;
+    }
+    const auto first = std::find(turns.begin(), turns.end(), char(1));
+    if (first == turns.end()) {
+        place = 0;
+        return true;
+    }
+    const std::size_t from = std::size_t(first - turns.begin());
+    std::size_t longest = 0, run = 0;
+    for (std::size_t k = 1; k <= n; ++k) {
+        const std::size_t i = (from + k) % n;
+        run = turns[i] ? 0 : run + 1;
+        if (run > longest) {
+            longest = run;
+            place = (i + n - run / 2) % n;
+        }
+    }
+    return longest > 0;
+}
+
+// One loop of a closed path's outline, fitted so that it meets itself as smoothly as it runs anywhere else.
+std::vector<Point> loopCubic(const std::vector<Point>& polygon, const std::vector<std::size_t>& breaks, const std::vector<std::size_t>& round,
+                             double tolerance) {
+    if (polygon.size() < 3) {
+        return {};
+    }
+    std::vector<uint32_t> newIndex;
+    const std::vector<Point> ring = subdivided(polygon, tolerance, newIndex);
+    std::vector<uint32_t> cuts;
+    for (const std::size_t i : breaks) {
+        if (i < polygon.size()) {
+            cuts.push_back(newIndex[i]);
+        }
+    }
+    std::size_t place = 0;
+    const bool smooth = flattestPlace(ring, cuts, tolerance * 4.0, place);
+    std::vector<Point> opened(ring.begin() + place, ring.end());
+    opened.insert(opened.end(), ring.begin(), ring.begin() + place);
+    opened.push_back(opened.front());
+    for (uint32_t& cut : cuts) {
+        cut = static_cast<uint32_t>((cut + ring.size() - place) % ring.size());
+    }
+    std::vector<uint32_t> arcs = ringIndices(round, newIndex, ring.size());
+    for (uint32_t& at : arcs) {
+        at = static_cast<uint32_t>((at + ring.size() - place) % ring.size());
+    }
+    std::sort(arcs.begin(), arcs.end());
+    const Point direction = smooth ? ringDirection(ring, place, tolerance * 4.0) : Point{};
+    const std::vector<CurveFit::Anchor> anchors = CurveFit::fit(opened, tolerance, cuts, CurveFit::Mode::global, smooth ? &direction : nullptr,
+                                                                smooth ? &direction : nullptr, arcs);
+    std::vector<Point> control = CurveFit::controlPoints(anchors);
+    if (control.size() < 4 || (control.size() - 1) % 3 != 0) {
+        return {};
+    }
+    control.pop_back();
+    return control;
+}
 }  // namespace
 
 std::vector<CurveFit::Point> OutlineFit::openStrokeCubic(const BrushBorders& borders, const std::vector<std::size_t>& breaks, double tolerance) {
@@ -96,11 +196,39 @@ std::vector<CurveFit::Point> OutlineFit::openStrokeCubic(const BrushBorders& bor
             backwardBreaks.push_back(static_cast<uint32_t>(g));
         }
     }
+    // The caps and the outsides of sharp turns are arcs of the tip, in the order of the polygon.
+    // A cap's arc begins and ends on the border points it joins.
+    std::vector<std::size_t> round = borders.leftRound;
+    const std::size_t rightAt = borders.left.size() + borders.endCap.size();
+    for (std::size_t i = borders.left.size() - 1; i <= rightAt; ++i) {
+        round.push_back(i);
+    }
+    for (auto it = borders.rightRound.rbegin(); it != borders.rightRound.rend(); ++it) {
+        round.push_back(rightAt + borders.right.size() - 1 - *it);
+    }
+    for (std::size_t i = rightAt + borders.right.size() - 1; i < polygon.size(); ++i) {
+        round.push_back(i);
+    }
+    round.push_back(0);
+    std::sort(round.begin(), round.end());
+    round.erase(std::unique(round.begin(), round.end()), round.end());
+    std::vector<uint32_t> forwardRound, backwardRound;
+    for (const uint32_t at : ringIndices(round, newIndex, n)) {
+        const std::size_t f = (at + n - seamAt) % n, g = (seamAt + n - at) % n;
+        if (f < forwardChain.size()) {
+            forwardRound.push_back(static_cast<uint32_t>(f));
+        }
+        if (g < backwardChain.size()) {
+            backwardRound.push_back(static_cast<uint32_t>(g));
+        }
+    }
+    std::sort(forwardRound.begin(), forwardRound.end());
+    std::sort(backwardRound.begin(), backwardRound.end());
     const Point backSeam{-seamDirection.x, -seamDirection.y}, backTip{-tipDirection.x, -tipDirection.y};
     const std::vector<CurveFit::Anchor> forwardAnchors =
-        CurveFit::fit(forwardChain, tolerance, forwardBreaks, CurveFit::Mode::forward, &seamDirection, &tipDirection);
+        CurveFit::fit(forwardChain, tolerance, forwardBreaks, CurveFit::Mode::forward, &seamDirection, &tipDirection, forwardRound);
     const std::vector<CurveFit::Anchor> backwardAnchors =
-        CurveFit::fit(backwardChain, tolerance, backwardBreaks, CurveFit::Mode::forward, &backSeam, &backTip);
+        CurveFit::fit(backwardChain, tolerance, backwardBreaks, CurveFit::Mode::forward, &backSeam, &backTip, backwardRound);
     std::vector<Point> control = CurveFit::controlPoints(forwardAnchors);
     std::vector<Point> back = CurveFit::controlPoints(backwardAnchors);
     if (control.size() < 4 || back.size() < 4 || (control.size() - 1) % 3 != 0 || (back.size() - 1) % 3 != 0) {
@@ -149,8 +277,12 @@ std::vector<std::vector<CurveFit::Point>> OutlineFit::outlines(const BrushBorder
         for (const std::size_t i : borders.rightBreaks) {
             rightBreaks.push_back(borders.right.size() - 1 - i);
         }
-        std::vector<CurveFit::Point> a = closedCubic(borders.left, borders.leftBreaks, tolerance);
-        std::vector<CurveFit::Point> b = closedCubic(right, rightBreaks, tolerance);
+        std::vector<std::size_t> rightRound;
+        for (auto it = borders.rightRound.rbegin(); it != borders.rightRound.rend(); ++it) {
+            rightRound.push_back(borders.right.size() - 1 - *it);
+        }
+        std::vector<CurveFit::Point> a = loopCubic(borders.left, borders.leftBreaks, borders.leftRound, tolerance);
+        std::vector<CurveFit::Point> b = loopCubic(right, rightBreaks, rightRound, tolerance);
         if (!a.empty()) {
             out.push_back(std::move(a));
         }

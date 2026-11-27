@@ -30,8 +30,8 @@ public:
     BrushBorders run() {
         BrushBorders out;
         out.closed = closed_;
-        border(true, out.left, out.leftBreaks);
-        border(false, out.right, out.rightBreaks);
+        border(true, out.left, out.leftBreaks, out.leftRound);
+        border(false, out.right, out.rightBreaks, out.rightRound);
         if (!closed_) {
             const std::size_t k = nib_.size();
             const std::size_t startFrom = supportRight_.front(), startTo = supportLeft_.front();
@@ -53,9 +53,16 @@ private:
 
     std::size_t support(bool left, std::size_t segment) const { return left ? supportLeft_[segment] : supportRight_[segment]; }
 
-    void border(bool left, std::vector<Point>& pts, std::vector<std::size_t>& breaks) const {
+    void border(bool left, std::vector<Point>& pts, std::vector<std::size_t>& breaks, std::vector<std::size_t>& round) const {
         const std::size_t k = nib_.size();
         const double sigma = left ? 1.0 : -1.0;
+        // Two arcs (the ends of an open border belong to the caps' arcs) that follow each other are one straight edge apart: a point on that
+        // edge, in neither arc, keeps them apart.
+        const auto separate = [&](const Point& next) {
+            if (!pts.empty() && ((!round.empty() && round.back() == pts.size() - 1) || (!closed_ && pts.size() == 1))) {
+                pts.push_back({(pts.back().x + next.x) * 0.5, (pts.back().y + next.y) * 0.5});
+            }
+        };
         for (std::size_t i = 0; i < n_; ++i) {
             const bool hasPrev = closed_ || i > 0;
             const bool hasNext = closed_ || i + 1 < n_;
@@ -65,6 +72,7 @@ private:
                 continue;
             }
             if (!hasNext) {
+                separate(corner(i, support(left, prev)));
                 pts.push_back(corner(i, support(left, prev)));
                 continue;
             }
@@ -78,9 +86,22 @@ private:
                 d -= std::ptrdiff_t(k);
             }
             const double turn = cross(tx_[prev], ty_[prev], tx_[next], ty_[next]);
+            const bool sharp = std::atan2(std::abs(turn), tx_[prev] * tx_[next] + ty_[prev] * ty_[next]) >= 3.14159265358979 / 6.0 - 1e-3;
             if (sigma * turn <= 0.0) {   // the outside of the turn: round the tip's corners
+                // The tip's corner turns the way the path does. Near a reversal that is the longer way by index, which the shortest way would miss.
+                if (turn < -1e-12 && d > 0) {
+                    d -= std::ptrdiff_t(k);
+                } else if (turn > 1e-12 && d < 0) {
+                    d += std::ptrdiff_t(k);
+                }
                 const std::ptrdiff_t step = d > 0 ? 1 : -1;
+                if (sharp) {
+                    separate(corner(i, jp));
+                }
                 for (std::ptrdiff_t m = 0; m <= std::abs(d); ++m) {
+                    if (sharp) {
+                        round.push_back(pts.size());
+                    }
                     pts.push_back(corner(i, std::size_t((std::ptrdiff_t(jp) + step * m + std::ptrdiff_t(k) * 2) % std::ptrdiff_t(k))));
                 }
                 continue;
@@ -93,6 +114,9 @@ private:
                 const double t = cross(b0.x - a0.x, b0.y - a0.y, qx, qy) / den;
                 const double u = cross(b0.x - a0.x, b0.y - a0.y, rx, ry) / den;
                 if (t >= -1e-9 && t <= 1.0 + 1e-9 && u >= -1e-9 && u <= 1.0 + 1e-9) {
+                    if (sharp) {
+                        breaks.push_back(pts.size());
+                    }
                     pts.push_back({a0.x + t * rx, a0.y + t * ry});
                     continue;
                 }
@@ -109,6 +133,9 @@ private:
             pts.push_back(a1);
             breaks.push_back(pts.size());
             pts.push_back(b0);
+        }
+        if (closed_ && !round.empty() && round.front() == 0 && round.back() == pts.size() - 1) {
+            separate(pts.front());
         }
     }
 

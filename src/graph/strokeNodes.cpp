@@ -304,6 +304,29 @@ std::vector<PathSample> flatten(const Geometry& src, const Primitive& prim, cons
     return out;
 }
 
+// The samples where a drawn-as-given polyline (a rectangle, a polygon: not a recorded stroke) has a corner: it turns 30 degrees or more between
+// two edges of at least `shortest`. A closed one repeats its first sample at the end, so that sample can be a corner too.
+std::vector<unsigned> authoredCorners(const std::vector<PathSample>& samples, bool closed, double shortest) {
+    std::vector<unsigned> corners;
+    if (samples.size() < 3) {
+        return corners;
+    }
+    const std::size_t last = samples.size() - 1;
+    for (std::size_t i = closed ? 0 : 1; i < last; ++i) {
+        const PathSample& before = samples[i == 0 ? last - 1 : i - 1];
+        const PathSample& here = samples[i];
+        const PathSample& after = samples[i + 1];
+        const double inX = here.x - before.x, inY = here.y - before.y, outX = after.x - here.x, outY = after.y - here.y;
+        if (std::hypot(inX, inY) < shortest || std::hypot(outX, outY) < shortest) {
+            continue;
+        }
+        if (std::abs(std::atan2(inX * outY - inY * outX, inX * outX + inY * outY)) >= 3.14159265358979 / 6.0) {
+            corners.push_back(static_cast<unsigned>(i));
+        }
+    }
+    return corners;
+}
+
 // 0 <= value < 1, the same for the same key, so scattered copies do not shimmer when the graph is cooked again.
 double scatterNoise(uint32_t key) {
     key *= 2654435761u;
@@ -320,7 +343,7 @@ double scatterNoise(uint32_t key) {
 // diameter, `angle` its tilt in degrees (counter-clockwise from horizontal), `roundness` its thickness as a percentage of its length (100 is a round
 // pen). The point attribute named by `scaleAttr` (pen pressure `w`, when the points have it) scales the nib along the stroke. The path is first
 // fitted to cubics within `trajectoryTolerance` of its samples (0: a quarter of the width, at most 1; a mouse path is a coarse polyline, and following every corner of it costs a cubic or two per sample), the nib is swept along the fitted curve, and
-// the border of the sweep is fitted to cubics within `outlineTolerance` (0: 7.5% of the width or 30% of the nib's thickness at the stroke's thinnest scale (at least 0.3), whichever is less, at least 0.05). The outlines keep the shape
+// the border of the sweep is fitted to cubics within `outlineTolerance` (0: 7.5% of the width or 30% of the nib's thickness at the stroke's thinnest scale (at least 0.3), whichever is less, between 0.05 and 0.6). The outlines keep the shape
 // key of their path; the point attributes are dropped. See TrajectoryFit, BrushEnvelope and OutlineFit.
 class CalligraphyNode : public Node {
 public:
@@ -339,7 +362,7 @@ public:
         if (!(width > 0.0f) || !(roundness > 0.0f) || roundness > 100.0f) {
             throw std::runtime_error("calligraphy: width must be above 0 and roundness in 0..100");
         }
-        const NibBrush nib = NibBrush::oval(width, getFloat("angle"), roundness);
+        const NibBrush nib = NibBrush::oval(width, getFloat("angle"), roundness, NibBrush::sidesFor(width));
         TrajectoryParams trajectoryParams;
         trajectoryParams.forward = true;
         trajectoryParams.tolerance =
@@ -379,10 +402,16 @@ public:
             const double thinnest = scaled ? *std::min_element(scales.begin(), scales.end()) : 1.0;
             const double pathTolerance = getFloat("outlineTolerance") > 0.0f
                                              ? outlineTolerance
-                                             : std::max(std::min(double(width) * 0.075, thickness * std::clamp(thinnest, 0.3, 1.0) * 0.3), 0.05);
+                                             : std::clamp(std::min(double(width) * 0.075, thickness * std::clamp(thinnest, 0.3, 1.0) * 0.3), 0.05, 0.6);
             // A scale change this small moves a border by half the outline tolerance.
             trajectoryParams.attributeTolerance = pathTolerance / double(width);
-            const Trajectory trajectory = TrajectoryFit::fit(points, attributes, trajectoryParams);
+            // A recorded stroke carries the time of each sample; its corners are found by the fit, which smooths the jitter of a hand. The
+            // vertices of any other polyline are meant as they are.
+            const std::vector<unsigned> corners = path.kind == PrimKind::polyline && src.findPointAttrib("t") == nullptr
+                                                      ? authoredCorners(samples, path.closed, 2.0 * trajectoryParams.tolerance)
+                                                      : std::vector<unsigned>();
+            trajectoryParams.closed = path.closed && (corners.empty() || corners.front() != 0);
+            const Trajectory trajectory = TrajectoryFit::fit(points, attributes, trajectoryParams, corners);
             const BrushBorders borders = BrushEnvelope::sweep(nib, trajectory.vertices, scaled ? trajectory.attributes[0] : std::vector<double>(), path.closed);
             for (const std::vector<CurveFit::Point>& outline : OutlineFit::outlines(borders, pathTolerance)) {
                 Primitive made;

@@ -17,6 +17,8 @@ public:
     // A slanted oval: `width` is its long diameter, `angleDegrees` its tilt counter-clockwise from horizontal, `roundness` its thickness as a
     // percentage of its length (100 is a circle, small is a chisel edge).
     static NibBrush oval(double width, double angleDegrees, double roundness, int sides = 16);
+    // How many sides an oval of this long diameter needs to stay within a tenth of a unit of the true curve: 16 to 96, a multiple of 4.
+    static int sidesFor(double width);
 
     std::size_t size() const { return corners.size(); }
     // The corner furthest along `direction` (the first of equals): where a sweep in a direction at right angles to it touches the tip.

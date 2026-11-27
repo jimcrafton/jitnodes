@@ -20,7 +20,7 @@ namespace py = pybind11;
 namespace {
 
 int failures = 0;
-std::atomic<int> probesDestroyed{0};
+std::atomic<int> probesAlive{0};
 
 void check(bool condition, const std::string& what) {
     if (!condition) {
@@ -31,11 +31,12 @@ void check(bool condition, const std::string& what) {
     }
 }
 
-// A node that counts its destruction, so a test can tell when the engine really freed a network.
+// A node that counts the instances alive, so a test can tell when the engine really freed a network. Alive, not destroyed: undo history
+// holds clones of the nodes, which come and go on their own.
 class ProbeNode : public jitnodes::Node {
 public:
-    ProbeNode() : Node("probe", 0) {}
-    ~ProbeNode() override { ++probesDestroyed; }
+    ProbeNode() : Node("probe", 0) { ++probesAlive; }
+    ~ProbeNode() override { --probesAlive; }
     jitnodes::GeometryHandle cook(jitnodes::CookContext&, const std::vector<jitnodes::GeometryHandle>&) override {
         return std::make_shared<jitnodes::Geometry>();
     }
@@ -135,36 +136,30 @@ void scriptOwnedNetworks() {
     py::dict scope;
     run(scope, "import jitnodes\n");
 
-    probesDestroyed = 0;
     run(scope, "node = jitnodes.Network().add_node('probe')");
-    check(probesDestroyed == 0, "a node handle keeps the network a script made alive after the Network variable is gone");
+    check(probesAlive == 1, "a node handle keeps the network a script made alive after the Network variable is gone");
     run(scope, "alive_then = node.valid and node.network.valid\ndel node");
     check(flag(scope, "alive_then"), "and the node and its network answer");
-    check(probesDestroyed == 1, "dropping the last handle destroys the network");
+    check(probesAlive == 0, "dropping the last handle destroys the network");
 
-    probesDestroyed = 0;
     run(scope, "bound = jitnodes.Network().add_node('probe').name");
-    check(probesDestroyed == 0, "a bound method keeps the network alive");
+    check(probesAlive == 1, "a bound method keeps the network alive");
     run(scope, "del bound");
-    check(probesDestroyed == 1, "dropping the bound method destroys the network");
+    check(probesAlive == 0, "dropping the bound method destroys the network");
 
-    probesDestroyed = 0;
     run(scope, "net = jitnodes.Network()\nnet.add_node('probe')\nhistory = jitnodes.History(net)\ndel net");
-    check(probesDestroyed == 0, "a history keeps the network alive");
+    check(probesAlive >= 1, "a history keeps the network alive");
     run(scope, "answers = not history.can_undo()\ndel history");
-    check(flag(scope, "answers") && probesDestroyed == 1, "and dropping it destroys the network");
+    check(flag(scope, "answers") && probesAlive == 0, "and dropping it destroys the network and the history's copies");
 
-    probesDestroyed = 0;
-    run(scope, "net = jitnodes.Network()\nfirst = net.add_node('probe')\nnet.remove_node(first)\ndel net");
-    check(probesDestroyed == 1, "a removed node is destroyed at once, even while its stale handle exists");
-    run(scope, "del first");
+    run(scope, "net = jitnodes.Network()\nfirst = net.add_node('probe')\nnet.remove_node(first)");
+    check(probesAlive == 0, "a removed node is destroyed at once, even while its stale handle exists");
+    run(scope, "del net, first");
 
-    probesDestroyed = 0;
     run(scope, "net = jitnodes.Network()\nnet.add_node('probe')\nnet.clear()");
-    check(probesDestroyed == 1, "clear destroys the nodes");
+    check(probesAlive == 0, "clear destroys the nodes");
     run(scope, "del net");
 
-    probesDestroyed = 0;
     constexpr int rounds = 200;
     constexpr int perNetwork = 5;
     run(scope, R"py(
@@ -175,8 +170,8 @@ for _ in range(200):
     history = jitnodes.History(net)
 del net, nodes, history
 )py");
-    check(probesDestroyed == rounds * perNetwork, "every node of " + std::to_string(rounds) + " create-and-drop rounds was destroyed (" +
-                                                      std::to_string(probesDestroyed.load()) + " of " + std::to_string(rounds * perNetwork) + ")");
+    check(probesAlive == 0, "no node of " + std::to_string(rounds) + " create-and-drop rounds of " + std::to_string(perNetwork) + " nodes is left alive (" +
+                                std::to_string(probesAlive.load()) + " are)");
 }
 
 void runtimeIsIsolated(jitnodes::python::PythonRuntime& runtime, const std::filesystem::path& extraFolder) {

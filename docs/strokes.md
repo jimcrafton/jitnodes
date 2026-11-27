@@ -72,10 +72,31 @@ How it works (Pudet 1993, "Real time fitting of hand-sketched pressure brushes";
    not move while the stroke is still being drawn (the global mode re-split the whole run on every sample).
 2. `BrushEnvelope` walks the nib along that polygon. On each segment the nib touches each border with one fixed corner; round the outside of a
    turn the border follows the nib's corners, across the inside it takes the crossing of the offset segments. A turn too sharp for the segments
-   to cross, taken across the path (a hairpin), keeps both points and marks them as corners. The caps are the nib's own corners.
+   to cross, taken across the path (a hairpin), keeps both points and marks them as corners. The caps are the nib's own corners. Round the outside
+   of a turn of 30 degrees or more the nib's corners are walked the way the path turns (by index that can be the longer way), and those points,
+   like the caps, are marked as arcs (`BrushBorders::leftRound` / `rightRound`), at which the fitter finds no corner. Inside such a turn the
+   crossing point is marked as a corner (a break).
+
+   Two arcs with only a straight edge between them (the sides of a rectangle) get one unmarked point in the middle of that edge. Without it their
+   points are neighbours and the whole side counts as arc.
+
+   **Arcs and sides.** Where a straight run at least 4 tolerances long meets an arc at least that long, `CurveFit` cuts the line and both parts
+   leave the join along the straight, so the side stays straight right up to the arc. A part that is all arc is fitted at half the tolerance.
+   Short or ragged neighbours are not joined this way: pinning the borders of a hair thin stroke end let them cross and the tip dropped out
+   (7 units on one stroke of `perf2.curvy`).
+
+   **Corners of shapes.** A polyline with no point attribute `t` is not a recorded stroke (a rectangle, a polygon, a path of straight edges): each
+   vertex where it turns 30 degrees or more, between edges of at least twice the trajectory tolerance, is a corner of the fitted trajectory, however
+   few points the path has. Strokes (which carry `t`) are left to the fitter's own corner detection (60 degrees, over several samples). Cubic paths
+   are sampled 12 times per segment and use the detection too.
 3. `OutlineFit` fits the border polygon, with the corners as cuts, to cubics within `outlineTolerance`. For an open stroke (`openStrokeCubic`) the seam sits in
    the middle of the start cap and the left and right borders are each fitted forward in stroke order, sharing one tangent at the seam and at the end-cap
-   middle; this keeps the outline of the start stable too. Closed paths and single points use the cyclic fit (`closedCubic`).
+   middle; this keeps the outline of the start stable too. Single points use `closedCubic`.
+
+A closed path meets itself without a join. `TrajectoryFit` (`TrajectoryParams::closed`) gives the first and last cubic one direction at the shared
+point, unless the path turns a corner there (60 degrees or more). Each of the two outlines is opened in the middle of its longest straight enough
+stretch (`flattestPlace`; a loop with no turn opens at its start), so the join is never at a corner and every corner lies inside the line the
+fitter sees, and both ends get the same tangent.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -84,12 +105,15 @@ How it works (Pudet 1993, "Real time fitting of hand-sketched pressure brushes";
 | `roundness` | 25 | the nib's thickness as a percentage of its length, above 0 up to 100 (100 is a round pen) |
 | `scaleAttr` | `w` | the point attribute that scales the nib along the stroke (pen pressure); ignored when the points have none or it is 0 everywhere |
 | `trajectoryTolerance` | 0 | how far (document units) the fitted path may stray from the samples; 0 is a quarter of `width`, at most 1 (a wide nib on a tight scribble was 9.9 units and 8 percent of the area off at `width`/4). A mouse path is a coarse polyline (about 9 units between samples, 8 degrees of turn each); following every corner of it costs a cubic or two per sample |
-| `outlineTolerance` | 0 | how far the outline may stray from the swept border; 0 is 0.075 of `width` or 0.3 of the nib's thickness at the stroke's thinnest scale (taken as at least 0.3), whichever is less, and at least 0.05; following the thinnest pressure keeps the two borders of a light stretch from fitting into one |
+| `outlineTolerance` | 0 | how far the outline may stray from the swept border; 0 is 0.075 of `width` or 0.3 of the nib's thickness at the stroke's thinnest scale (taken as at least 0.3), whichever is less, between 0.05 and 0.6 (a wide nib gets no looser than 0.6, or its edges bulge visibly); following the thinnest pressure keeps the two borders of a light stretch from fitting into one |
 
 The `tolerance` parameter of 2026-11-24 (skip samples on straight runs) is gone. Measured on curvy's `perf2.curvy` (23 strokes, 8 wide nib): 3,751
 primitives and 67,518 points before, 23 primitives and 2,232 points now, the outline within 2.83 units of the exact union of per-step hulls, area 0.55 percent smaller.
 
-The nib is `NibBrush::oval`, ported from curvy v1's `BrushDef::nibOutline`.
+The nib is `NibBrush::oval`, ported from curvy v1's `BrushDef::nibOutline`. The node gives it `NibBrush::sidesFor(width)` sides: enough to stay
+within 0.1 units of the true oval, 16 to 96, a multiple of 4. (16 sides were 0.5 units off a circle at width 53, which showed as uneven arcs.)
+With a round nib 53 wide, the outline of corner shapes is within 0.12 units of the true offset on the sides and 0.29 round the corners
+(0.60 and 0.68 before the arcs were fitted apart).
 
 ## strokeScatter (two inputs)
 

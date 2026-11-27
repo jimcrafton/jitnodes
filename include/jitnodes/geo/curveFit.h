@@ -37,10 +37,14 @@ public:
     enum class Mode { global, forward };
 
     //
-    // `startAlong` / `endAlong` (forward mode only, unit vectors, either may be null) fix the direction of travel at the first and the last sample,
-    // for a caller that knows the curve continues past an end (the halves of a closed outline sharing one seam tangent).
+    // `startAlong` / `endAlong` (unit vectors, either may be null) fix the direction of travel at the first and the last sample, for a caller
+    // that knows the curve continues past an end (the halves of a closed outline sharing one seam tangent, or a loop meeting itself).
+    // `rounded` (ascending input indices) names points the caller knows lie on a curve however fast it turns there, such as an arc of a brush
+    // tip: no corner is found at them, and where a straight run meets a long enough one the two are fitted apart,
+    // joined along the straight.
     static std::vector<Anchor> fit(const std::vector<Point>& points, double tolerance, const std::vector<uint32_t>& breakpoints = {},
-                                   Mode mode = Mode::global, const Point* startAlong = nullptr, const Point* endAlong = nullptr);
+                                   Mode mode = Mode::global, const Point* startAlong = nullptr, const Point* endAlong = nullptr,
+                                   const std::vector<uint32_t>& rounded = {});
 
     // Each pass replaces every point but the two ends with (previous + 2 * itself + next) / 4.
     static std::vector<Point> smooth(const std::vector<Point>& points, int passes);

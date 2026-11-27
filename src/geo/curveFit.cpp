@@ -325,7 +325,7 @@ CurveFit::Anchor anchorAt(const Vec& v, std::size_t index) {
 }  // namespace
 
 std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, double tolerance, const std::vector<uint32_t>& breakpoints, Mode mode,
-                                            const Point* startAlong, const Point* endAlong) {
+                                            const Point* startAlong, const Point* endAlong, const std::vector<uint32_t>& rounded) {
     std::vector<Vec> d;
     std::vector<std::size_t> original;   // the input index of each kept sample
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -348,6 +348,7 @@ std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, do
     const std::size_t span = 4;
     std::vector<std::size_t> cuts;
     cuts.push_back(0);
+    const auto onArc = [&](std::size_t at) { return std::binary_search(rounded.begin(), rounded.end(), static_cast<uint32_t>(original[at])); };
     if (d.size() > 2 * span + 1) {
         double bestTurn = 0.0;
         std::size_t bestAt = 0;
@@ -361,7 +362,7 @@ std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, do
             }
             if (!corner && bestAt != 0) {   // the run of corner-like samples ended: keep its apex
                 const std::size_t apex = apexNear(d, bestAt, span);
-                if (apex > cuts.back() + span) {
+                if (apex > cuts.back() + span && !onArc(apex)) {
                     cuts.push_back(apex);
                 }
                 bestTurn = 0.0;
@@ -370,12 +371,65 @@ std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, do
         }
         if (bestAt != 0 && bestAt + span < d.size()) {
             const std::size_t apex = apexNear(d, bestAt, span);
-            if (apex > cuts.back() + span) {
+            if (apex > cuts.back() + span && !onArc(apex)) {
                 cuts.push_back(apex);
             }
         }
     }
     cuts.push_back(d.size() - 1);
+
+    // Where a straight run meets an arc, the line is cut and both sides leave the join along the straight, so that no one curve has to follow
+    // both. A short or ragged neighbour (a hand drawn stroke) gives no direction to trust, and neither does one the arc does not carry on from.
+    std::vector<Vec> joinAlong(d.size());
+    const auto straightBeyond = [&](std::size_t at, bool forward, const Vec& along) {
+        double run = 0.0;
+        for (std::size_t j = at; run < 4.0 * tolerance;) {
+            if (forward ? j + 1 >= d.size() : j == 0) {
+                return false;
+            }
+            const std::size_t next = forward ? j + 1 : j - 1;
+            const Vec off = d[next] - d[at];
+            if (std::fabs(off.x * along.y - off.y * along.x) > 0.1 * tolerance) {
+                return false;
+            }
+            run += length(d[next] - d[j]);
+            j = next;
+        }
+        return true;
+    };
+    // The cap of a hair thin stroke end is an arc too, but pinning the borders there lets them cross and the tip drops out.
+    const auto longArc = [&](std::size_t at, bool forward) {
+        double run = 0.0;
+        for (std::size_t j = at; run < 4.0 * tolerance;) {
+            if (forward ? j + 1 >= d.size() : j == 0) {
+                return false;
+            }
+            const std::size_t next = forward ? j + 1 : j - 1;
+            if (!onArc(next)) {
+                return false;
+            }
+            run += length(d[next] - d[j]);
+            j = next;
+        }
+        return true;
+    };
+    const auto joinAt =[&](std::size_t at, bool straightAfter, const Vec& straight, const Vec& arc) {
+        if (dot(straight, arc) >= std::cos(kPi / 6.0) && straightBeyond(at, straightAfter, straight) && longArc(at, !straightAfter)) {
+            joinAlong[at] = straight;
+            cuts.push_back(at);
+        }
+    };
+    for (std::size_t i = 1; i + 1 < d.size(); ++i) {
+        if (!onArc(i)) {
+            continue;
+        }
+        const Vec in = unit(d[i] - d[i - 1]), out = unit(d[i + 1] - d[i]);
+        if (!onArc(i - 1) && onArc(i + 1)) {
+            joinAt(i, false, in, out);
+        } else if (onArc(i - 1) && !onArc(i + 1)) {
+            joinAt(i, true, out, in);
+        }
+    }
 
     // Forced breakpoints, moved onto the nearest kept sample at or after the input index (a dropped repeat is the sample before it).
     for (const uint32_t wanted : breakpoints) {
@@ -386,15 +440,21 @@ std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, do
         const std::size_t at = std::size_t(it - original.begin());
         if (at > 0 && at + 1 < d.size()) {
             cuts.push_back(at);
+            joinAlong[at] = Vec{};
         }
     }
     std::sort(cuts.begin(), cuts.end());
     cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
 
-    const double errorSquared = tolerance * tolerance;
     anchors.push_back(anchorAt(d[cuts[0]], original[cuts[0]]));
     for (std::size_t c = 0; c + 1 < cuts.size(); ++c) {
         const std::size_t first = cuts[c], last = cuts[c + 1];
+        // The eye reads any unevenness of a short round arc, and fitting it closely costs a curve at most: half the tolerance.
+        bool arcOnly = true;
+        for (std::size_t i = first; i <= last && arcOnly; ++i) {
+            arcOnly = onArc(i);
+        }
+        const double errorSquared = arcOnly ? 0.25 * tolerance * tolerance : tolerance * tolerance;
         // End tangents come from a line fitted to the samples within `reach` of each end, so the jitter of a hand does not decide which way the
         // curve leaves its end. A short reach follows a tight curve, a long one ignores noise on a flat run (a short reach on a long flat run
         // leaves a handle off by a fraction of a degree, which is several units at its far end), so the reaches are tried and the one that
@@ -405,15 +465,17 @@ std::vector<CurveFit::Anchor> CurveFit::fit(const std::vector<Point>& points, do
         }
         std::vector<Bezier> curves;
         std::vector<std::size_t> ends;
+        // The direction of travel fixed at an end of this part, by the caller or by an arc join; zero where it is read from the samples.
+        const Vec startDirection = c == 0 && startAlong != nullptr ? unit(Vec{startAlong->x, startAlong->y}) : joinAlong[first];
+        const Vec endDirection = c + 2 == cuts.size() && endAlong != nullptr ? unit(Vec{endAlong->x, endAlong->y}) : joinAlong[last];
+        const bool startFixed = dot(startDirection, startDirection) > 0.0, endFixed = dot(endDirection, endDirection) > 0.0;
         if (mode == Mode::forward) {
-            const Vec startDirection = startAlong != nullptr ? unit(Vec{startAlong->x, startAlong->y}) : Vec{};
-            const Vec endDirection = endAlong != nullptr ? unit(Vec{endAlong->x, endAlong->y}) : Vec{};
-            fitForward(d, first, last, 6.0 * tolerance, errorSquared, c == 0 && startAlong != nullptr ? &startDirection : nullptr,
-                       c + 2 == cuts.size() && endAlong != nullptr ? &endDirection : nullptr, curves, ends);
+            fitForward(d, first, last, 6.0 * tolerance, errorSquared, startFixed ? &startDirection : nullptr, endFixed ? &endDirection : nullptr,
+                       curves, ends);
         }
         for (const double reach : mode == Mode::forward ? std::vector<double>{} : std::vector<double>{6.0 * tolerance, 0.1 * partLength, 0.3 * partLength}) {
-            const Vec tangent1 = endTangent(d, first, last, reach);
-            const Vec tangent2 = endTangent(d, last, first, reach);
+            const Vec tangent1 = startFixed ? startDirection : endTangent(d, first, last, reach);
+            const Vec tangent2 = endFixed ? endDirection * -1.0 : endTangent(d, last, first, reach);
             std::vector<Bezier> tryCurves;
             std::vector<std::size_t> tryEnds;
             fitCubic(d, first, last, tangent1, tangent2, errorSquared, tryCurves, tryEnds, 0);

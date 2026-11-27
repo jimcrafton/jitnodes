@@ -12,6 +12,8 @@ struct TrajectoryParams {
     double flatness = 0.05;   // how far the polygon may stray from the fitted curve
     bool forward = false;     // CurveFit::Mode::forward: the start of the curve does not move when samples are added at the end (a stroke being drawn)
     double attributeTolerance = 0.02;   // how far an attribute may stray from its input values between vertices (attribute units)
+    bool closed = false;      // the path is a loop whose last point repeats the first: it leaves and meets that point in one direction, unless
+                              // it turns a corner there
 };
 
 // The fitted trajectory of a stroke.

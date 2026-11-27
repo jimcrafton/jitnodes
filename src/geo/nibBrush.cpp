@@ -19,6 +19,13 @@ NibBrush NibBrush::oval(double width, double angleDegrees, double roundness, int
     return nib;
 }
 
+int NibBrush::sidesFor(double width) {
+    constexpr double kPi = 3.14159265358979323846, kOff = 0.1;
+    const double radius = std::max(width * 0.5, kOff);
+    const int quarter = static_cast<int>(std::ceil(kPi / std::acos(1.0 - kOff / radius) / 4.0));
+    return 4 * std::clamp(quarter, 4, 24);
+}
+
 std::size_t NibBrush::support(double dx, double dy) const {
     std::size_t best = 0;
     double bestValue = -1e300;

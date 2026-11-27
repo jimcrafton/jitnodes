@@ -15,9 +15,14 @@ struct BrushBorders {
     // the direction of travel) and no caps.
     std::vector<CurveFit::Point> left;
     std::vector<CurveFit::Point> right;
-    // Indices into left / right where the border must be cut and joined C0 only: the two points of a shortcut across a sharp inner turn.
+    // Indices into left / right where the border must be cut and joined C0 only: the corner inside a sharp turn, or the two points of a shortcut
+    // across one.
     std::vector<std::size_t> leftBreaks;
     std::vector<std::size_t> rightBreaks;
+    // Indices into left / right (ascending) of the points where the border goes round the tip outside a sharp turn of the trajectory (30 degrees
+    // or more): an arc, not a corner.
+    std::vector<std::size_t> leftRound;
+    std::vector<std::size_t> rightRound;
     // The tip's own corners between the right and left border at the start (after the right border, in outline order) and between the left and right
     // border at the end, without the border points they join. Empty for a closed trajectory.
     std::vector<CurveFit::Point> startCap;

@@ -9276,8 +9276,8 @@ TEST(brushEnvelopeWidensWithAPressureRamp) {
 TEST(brushEnvelopeRoundsTheOutsideOfATurnAndCrossesOnTheInside) {
     const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
     const BrushBorders b = BrushEnvelope::sweep(nib, {{0, 0}, {50, 0}, {50, 50}}, {}, false);   // turns left at (50, 0)
-    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
-    CHECK(b.left.size() == 3);                       // the inside (left) is one crossing point
+    CHECK(b.leftBreaks == std::vector<std::size_t>{1} && b.rightBreaks.empty());
+    CHECK(b.left.size() == 3);                       // the inside (left) is one crossing point, a corner
     CHECK(std::abs(b.left[1].x - 45.0) < 1e-9 && std::abs(b.left[1].y - 5.0) < 1e-9);
     CHECK(b.right.size() > 3);                       // the outside follows the tip round the corner
     for (const auto& p : b.right) {
@@ -9336,8 +9336,8 @@ TEST(brushEnvelopeOfAClosedCircleGivesTwoConcentricLoops) {
 TEST(brushEnvelopeOfAClosedRectangleRoundsTheOutsideAndCrossesTheInside) {
     const NibBrush nib = NibBrush::oval(10.0, 0.0, 100.0);
     const BrushBorders b = BrushEnvelope::sweep(nib, {{0, 0}, {100, 0}, {100, 60}, {0, 60}}, {}, true);   // counter-clockwise
-    CHECK(b.leftBreaks.empty() && b.rightBreaks.empty());
-    CHECK(b.left.size() == 4);   // inside: four crossings, the inset rectangle
+    CHECK(b.leftBreaks.size() == 4 && b.rightBreaks.empty());
+    CHECK(b.left.size() == 4);   // inside: four crossings, the inset rectangle's corners
     for (const auto& p : b.left) {
         CHECK(std::abs(std::abs(p.x - 50.0) - 45.0) < 1e-9 && std::abs(std::abs(p.y - 30.0) - 25.0) < 1e-9);
     }
