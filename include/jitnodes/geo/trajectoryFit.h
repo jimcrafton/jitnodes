@@ -11,6 +11,7 @@ struct TrajectoryParams {
     double tolerance = 0.3;   // how far the fitted curve may stray from the input samples (document units)
     double flatness = 0.05;   // how far the polygon may stray from the fitted curve
     bool forward = false;     // CurveFit::Mode::forward: the start of the curve does not move when samples are added at the end (a stroke being drawn)
+    double attributeTolerance = 0.02;   // how far an attribute may stray from its input values between vertices (attribute units)
 };
 
 // The fitted trajectory of a stroke.
@@ -25,7 +26,8 @@ struct Trajectory {
 
 // Fits a stroke's points to cubics and flattens the result, carrying point attributes (pressure, speed, tilt) onto the polygon by arc length: the
 // value at an input point is placed at that point's normalised chord length, and each vertex takes the value interpolated at its own arc
-// length (Pudet 1993, 3.4). Plain geometry, no graph, so brushes, scatter and skeletal strokes share it.
+// length (Pudet 1993, 3.4). Where an attribute bends between two vertices (a straight stretch has few) more vertices are put on the polygon, so
+// the change is not lost. Plain geometry, no graph, so brushes, scatter and skeletal strokes share it.
 // @scriptable ignore=true
 class TrajectoryFit {
 public:

@@ -8737,6 +8737,37 @@ TEST(strokeCleanSimplifiesWithinTolerance) {
     }
 }
 
+TEST(strokeCleanSimplifyKeepsPointsWhereTheFollowedAttributeChanges) {
+    auto geo = strokeOf(std::vector<std::array<float, 3>>(21, {0.0f, 0.0f, 0.0f}));
+    {
+        float* w = geo->attrib(AttribClass::point, "w").floats().data();
+        for (int i = 0; i <= 20; ++i) {
+            geo->x()[i] = static_cast<float>(i);
+            w[i] = i > 7 && i < 13 ? 1.0f : 0.25f;
+        }
+    }
+    Network net(1);
+    NodeId src = strokeSource(net, geo);
+    NodeId clean = net.addNode("strokeClean");
+    net.connect(src, clean);
+    net.node(clean).setFloat("simplify", 0.5f);
+    auto out = net.cook(clean);
+    CHECK(out->pointCount() == 6);   // the ends and both sides of the two steps
+    const AlignedArray<float>& w = *out->findPointAttrib("w");
+    CHECK_NEAR(out->x()[2], 8.0f);
+    CHECK_NEAR(w[1], 0.25f);
+    CHECK_NEAR(w[2], 1.0f);
+    CHECK_NEAR(w[3], 1.0f);
+
+    net.node(clean).setString("follow", "");
+    CHECK(net.cook(clean)->pointCount() == 2);
+    net.node(clean).setString("follow", "w");
+    net.node(clean).setFloat("followTolerance", 0.0f);
+    CHECK(net.cook(clean)->pointCount() == 2);
+    net.node(clean).setFloat("followTolerance", 1.0f);
+    CHECK(net.cook(clean)->pointCount() == 2);
+}
+
 TEST(strokeCleanDropsCloseAndQuickPointsButKeepsTheEnds) {
     Network net(1);
     auto geo = strokeOf({{0, 0, 0.00f}, {0.1f, 0, 0.01f}, {0.2f, 0, 0.02f}, {5, 0, 0.5f}, {5.05f, 0, 0.51f}});
@@ -9141,6 +9172,29 @@ TEST(trajectoryFitMapsAPressureRampOntoTheVerticesByArcLength) {
     CHECK(std::abs(t.attributes[0].back() - 1.0) < 1e-9);
     CHECK(std::abs(t.attributes[0][t.vertices.size() / 4] - 0.2) < 1e-9);
     CHECK(std::abs(t.attributes[0][t.vertices.size() * 3 / 4] - 1.0) < 1e-9);
+}
+
+TEST(trajectoryFitKeepsAnAttributeThatBendsAlongAStraightStretch) {
+    std::vector<CurveFit::Point> pts;
+    std::vector<double> bump, vee;
+    for (int i = 0; i <= 100; ++i) {
+        pts.push_back({double(i) * 3.0, 0.0});
+        bump.push_back(i > 35 && i < 65 ? 1.0 : 0.25);
+        vee.push_back(0.1 + 0.018 * std::abs(i - 50));
+    }
+    const Trajectory t = TrajectoryFit::fit(pts, {bump, vee});
+    CHECK(t.anchorVertex.size() == t.anchors.size() && t.anchorVertex.back() == t.vertices.size() - 1);
+    for (int i = 0; i <= 100; ++i) {
+        const double s = double(i) / 100.0;
+        size_t v = 0;
+        while (v + 2 < t.vertices.size() && t.arc[v + 1] < s) {
+            ++v;
+        }
+        const double u = (s - t.arc[v]) / (t.arc[v + 1] - t.arc[v]);
+        CHECK(std::abs(t.attributes[0][v] + (t.attributes[0][v + 1] - t.attributes[0][v]) * u - bump[i]) < 0.02 + 1e-6);
+        CHECK(std::abs(t.attributes[1][v] + (t.attributes[1][v + 1] - t.attributes[1][v]) * u - vee[i]) < 0.02 + 1e-6);
+    }
+    CHECK(t.vertices.size() < 20);
 }
 
 TEST(trajectoryFitHandlesOneTwoAndThreePoints) {

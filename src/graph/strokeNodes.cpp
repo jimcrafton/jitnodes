@@ -89,8 +89,9 @@ public:
 
 // Trims a stroke: removes point attributes (`remove` names, `keep` the only ones to stay; x, y and the primitive attributes always stay) and
 // drops points that carry little: closer than `minDistance` to the last kept point, less than `minTime` after it, or within `simplify` of the line
-// between their neighbours (Ramer-Douglas-Peucker). A dropped point takes its attribute values with it. Primitives with fewer than three points
-// and cubic primitives are copied whole.
+// between their neighbours (Ramer-Douglas-Peucker). `simplify` also keeps a point where an attribute named by `follow` differs by more than
+// `followTolerance` from a straight change between the neighbours. A dropped point takes its attribute values with it. Primitives with fewer than
+// three points and cubic primitives are copied whole.
 class StrokeCleanNode : public Node {
 public:
     StrokeCleanNode() : Node("strokeClean", 1) {
@@ -101,13 +102,25 @@ public:
         declareFloat("minDistance", 0.0f);
         declareFloat("minTime", 0.0f);
         declareFloat("keepEnds", 1.0f);
+        declareString("follow", "w");
+        declareFloat("followTolerance", 0.05f);
     }
 
     GeometryHandle cook(CookContext&, const std::vector<GeometryHandle>& in) override {
         const Geometry& src = *in[0];
         const float simplify = getFloat("simplify"), minDistance = getFloat("minDistance"), minTime = getFloat("minTime");
-        if (simplify < 0.0f || minDistance < 0.0f || minTime < 0.0f) {
-            throw std::runtime_error("strokeClean: simplify, minDistance and minTime must not be negative");
+        const float followTolerance = getFloat("followTolerance");
+        if (simplify < 0.0f || minDistance < 0.0f || minTime < 0.0f || followTolerance < 0.0f) {
+            throw std::runtime_error("strokeClean: simplify, minDistance, minTime and followTolerance must not be negative");
+        }
+        std::vector<const AlignedArray<float>*> followed;
+        const std::vector<std::string> followNames = splitWords(getString("follow"));
+        for (const auto& entry : src.attribs(AttribClass::point)) {
+            if (followTolerance > 0.0f && entry.first != "x" && entry.first != "y" && matchesAny(followNames, entry.first)) {
+                if (const AlignedArray<float>* values = src.findPointAttrib(entry.first)) {
+                    followed.push_back(values);
+                }
+            }
         }
         const bool keepEnds = getFloat("keepEnds") != 0.0f;
         const std::vector<std::string> removeNames = splitWords(getString("remove"));
@@ -121,7 +134,7 @@ public:
 
         std::shared_ptr<Geometry> out;
         if (filters) {
-            out = std::make_shared<Geometry>(thinned(src, simplify, minDistance, minTime, keepEnds, time));
+            out = std::make_shared<Geometry>(thinned(src, simplify, minDistance, minTime, keepEnds, time, followed, followTolerance));
         } else {
             out = std::make_shared<Geometry>(src);
         }
@@ -155,7 +168,8 @@ private:
 
     // The kept point indices of one primitive, ascending.
     static std::vector<uint32_t> keptPoints(const Geometry& src, const Primitive& prim, float simplify, float minDistance, float minTime, bool keepEnds,
-                                            const AlignedArray<float>* time) {
+                                            const AlignedArray<float>* time, const std::vector<const AlignedArray<float>*>& followed,
+                                            float followTolerance) {
         const float* x = src.x();
         const float* y = src.y();
         const uint32_t first = prim.start, last = prim.start + prim.count - 1;
@@ -182,19 +196,29 @@ private:
         std::vector<char> keep(kept.size(), 0);
         keep.front() = keep.back() = 1;
         std::vector<std::pair<size_t, size_t>> spans{{0, kept.size() - 1}};
+        // Path length along the kept points: what a brush spreads an attribute by.
+        std::vector<float> along(kept.size(), 0.0f);
+        for (size_t k = 1; k < kept.size(); ++k) {
+            along[k] = along[k - 1] + std::hypot(x[kept[k]] - x[kept[k - 1]], y[kept[k]] - y[kept[k - 1]]);
+        }
         while (!spans.empty()) {
             const auto [a, b] = spans.back();
             spans.pop_back();
-            float worst = -1.0f;
+            float worst = -1.0f;   // in tolerances: above 1 the point has to stay
             size_t at = a;
             for (size_t k = a + 1; k < b; ++k) {
-                const float d = segmentDistance(x[kept[k]], y[kept[k]], x[kept[a]], y[kept[a]], x[kept[b]], y[kept[b]]);
-                if (d > worst) {
-                    worst = d;
+                float off = segmentDistance(x[kept[k]], y[kept[k]], x[kept[a]], y[kept[a]], x[kept[b]], y[kept[b]]) / simplify;
+                const float t = along[b] > along[a] ? (along[k] - along[a]) / (along[b] - along[a]) : 0.0f;
+                for (const AlignedArray<float>* values : followed) {
+                    const float from = (*values)[kept[a]], to = (*values)[kept[b]];
+                    off = std::max(off, std::abs((*values)[kept[k]] - (from + (to - from) * t)) / followTolerance);
+                }
+                if (off > worst) {
+                    worst = off;
                     at = k;
                 }
             }
-            if (worst > simplify) {
+            if (worst > 1.0f) {
                 keep[at] = 1;
                 spans.push_back({a, at});
                 spans.push_back({at, b});
@@ -209,7 +233,8 @@ private:
         return result;
     }
 
-    static Geometry thinned(const Geometry& src, float simplify, float minDistance, float minTime, bool keepEnds, const AlignedArray<float>* time) {
+    static Geometry thinned(const Geometry& src, float simplify, float minDistance, float minTime, bool keepEnds, const AlignedArray<float>* time,
+                            const std::vector<const AlignedArray<float>*>& followed, float followTolerance) {
         std::vector<PointSample> samples;
         std::vector<Primitive> prims;
         std::vector<uint32_t> srcPrim;
@@ -222,7 +247,7 @@ private:
                     samples.push_back({prim.start + k, prim.start + k, 0.0f});
                 }
             } else {
-                for (uint32_t index : keptPoints(src, prim, simplify, minDistance, minTime, keepEnds, time)) {
+                for (uint32_t index : keptPoints(src, prim, simplify, minDistance, minTime, keepEnds, time, followed, followTolerance)) {
                     samples.push_back({index, index, 0.0f});
                 }
             }
@@ -350,13 +375,15 @@ public:
             if (scaled) {
                 attributes.push_back(scales);
             }
-            const Trajectory trajectory = TrajectoryFit::fit(points, attributes, trajectoryParams);
-            const BrushBorders borders = BrushEnvelope::sweep(nib, trajectory.vertices, scaled ? trajectory.attributes[0] : std::vector<double>(), path.closed);
             // Two borders closer than the tolerance fit into one and the stroke drops out, so the automatic tolerance follows the stroke's thinnest scale.
             const double thinnest = scaled ? *std::min_element(scales.begin(), scales.end()) : 1.0;
             const double pathTolerance = getFloat("outlineTolerance") > 0.0f
                                              ? outlineTolerance
                                              : std::max(std::min(double(width) * 0.075, thickness * std::clamp(thinnest, 0.3, 1.0) * 0.3), 0.05);
+            // A scale change this small moves a border by half the outline tolerance.
+            trajectoryParams.attributeTolerance = pathTolerance / double(width);
+            const Trajectory trajectory = TrajectoryFit::fit(points, attributes, trajectoryParams);
+            const BrushBorders borders = BrushEnvelope::sweep(nib, trajectory.vertices, scaled ? trajectory.attributes[0] : std::vector<double>(), path.closed);
             for (const std::vector<CurveFit::Point>& outline : OutlineFit::outlines(borders, pathTolerance)) {
                 Primitive made;
                 made.start = static_cast<uint32_t>(xs.size());

@@ -52,6 +52,8 @@ stay keep their own. `x`, `y` and the primitive attributes always stay, and so d
 | `minTime` | 0 | a point less than this many seconds after the last kept one goes (0: off) |
 | `timeAttr` | `t` | the time attribute `minTime` reads |
 | `keepEnds` | 1 | the last point of a polyline stays (it replaces a kept point that was too close to it) |
+| `follow` | `w` | float point attributes (names or patterns) that `simplify` must not flatten; names the points do not have are ignored |
+| `followTolerance` | 0.05 | `simplify` keeps a point where a followed attribute differs by more than this from a straight change, by path length, between its kept neighbours (0: positions only). `minDistance` and `minTime` do not look at attributes |
 
 The order is: `minDistance` and `minTime`, then `simplify`, then attribute removal. Polylines with fewer than three points and cubic primitives are
 copied whole.
